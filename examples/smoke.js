@@ -86,8 +86,9 @@ async function main() {
   // every visit starts at the picker and the fixture pairing is reached the way any other is
   const load = async () => {
     await send("Page.navigate", { url: URL_ });
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; ; i++) {
       if (await evaluate("!!document.querySelector('#picker .col input')").catch(() => false)) break;
+      if (i === 60) throw new Error("the picker never rendered");
       await sleep(500);
     }
     // a click picks its own box and no more, so the loading is asked for on its own

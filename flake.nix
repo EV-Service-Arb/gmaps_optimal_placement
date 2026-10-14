@@ -84,13 +84,16 @@
             # the smoke promotes and drops pins, so it gets a data dir of its own
             XDG_DATA_HOME="$(mktemp -d)"
             export XDG_DATA_HOME
+            cargo build -p gmaps_optimal_placement # a cold compile outlasts any wait for the port
             cargo run -p gmaps_optimal_placement -- serve --port ${toString port} &
             server=$!
             trap 'kill $server 2>/dev/null || true; rm -rf "$XDG_DATA_HOME"' EXIT
+            up=
             for _ in $(seq 120); do
-              curl -sf -o /dev/null "http://localhost:${toString port}/pkg/gmaps_optimal_placement_web.js" && break
+              curl -sf -o /dev/null "http://localhost:${toString port}/pkg/gmaps_optimal_placement_web.js" && { up=1; break; }
               sleep 1
             done
+            [ -n "$up" ] || { echo "server never came up" >&2; exit 1; }
             node examples/smoke.js "http://localhost:${toString port}/"
           '';
         };
