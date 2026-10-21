@@ -258,6 +258,7 @@ pub struct Loaded {
 	pub imputed: usize,
 	/// How old the competitor inventory under this map is. `None` where it was bought on this run.
 	pub age_d: Option<f64>,
+	pub queries: Vec<(String, usize)>,
 	/// Whether this tab has a trade under it. Everything a slider moves is the trade's, so this is
 	/// what the panel greys out on.
 	pub traded: bool,
@@ -288,6 +289,7 @@ pub fn MapView() -> impl IntoView {
 	// no trade under the tab: λ, the tier weights and both sweeps are functions of a demand surface
 	// and an inventory, and neither is on the page
 	let traded = move || s.loaded.get().is_some_and(|l| l.traded);
+	let show_queries = RwSignal::new(false);
 
 	view! {
 		<crate::tabs::TabBar state=s />
@@ -469,6 +471,36 @@ pub fn MapView() -> impl IntoView {
 					.get()
 					.and_then(|l| l.age_d)
 					.map(|d| view! { <p class="note">{format!("Competitors as of {d:.0} days ago")}</p> })
+			}}
+
+			<button
+				class="sec"
+				style:display=move || {
+					if s.loaded.get().is_some_and(|l| !l.queries.is_empty()) { "block" } else { "none" }
+				}
+				on:click=move |_| show_queries.update(|v| *v = !*v)
+			>
+				"Search queries"
+			</button>
+			{move || {
+				show_queries
+					.get()
+					.then(|| {
+						s.loaded
+							.get()
+							.map(|l| {
+								l.queries
+									.into_iter()
+									.map(|(text, hits)| {
+										view! {
+											<div class="cat">
+												<label>{format!("{text} ({hits})")}</label>
+											</div>
+										}
+									})
+									.collect_view()
+							})
+					})
 			}}
 
 			{move || {
@@ -900,6 +932,7 @@ mod imp {
 			categories: m.payload.trade.iter().flat_map(categories).collect(),
 			imputed: m.payload.imputed.iter().filter(|&&i| i == 1).count(),
 			age_d: m.payload.trade.as_ref().and_then(|t| t.inventory_age_d),
+			queries: m.payload.trade.iter().flat_map(|t| t.queries.iter().map(|q| (q.text.clone(), q.hits))).collect(),
 			traded: m.traded().is_some(),
 			notice: m.payload.notice.clone(),
 		}));

@@ -254,6 +254,23 @@ impl Study {
 			false => nodes,
 		};
 
+		let kept: std::collections::HashSet<&str> = inv.pois.iter().map(|p| p.id.as_str()).collect();
+		let mut queries: Vec<payload::QueryOut> = poi_cfg
+			.queries
+			.iter()
+			.map(|q| {
+				let hit: std::collections::HashSet<&str> = inv
+					.obs
+					.iter()
+					.filter(|o| &o.term == q)
+					.flat_map(|o| o.ids.iter().map(String::as_str))
+					.filter(|id| kept.contains(id))
+					.collect();
+				payload::QueryOut { text: q.clone(), hits: hit.len() }
+			})
+			.collect();
+		queries.sort_by(|a, b| b.hits.cmp(&a.hits));
+
 		let mut pois: Vec<PoiOut> = inv
 			.pois
 			.into_iter()
@@ -288,6 +305,7 @@ impl Study {
 				})
 				.collect(),
 			terms: terms.into_iter().map(|(text, weight)| payload::TermOut { text, weight }).collect(),
+			queries,
 			nodes,
 			pois,
 		})

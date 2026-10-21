@@ -44,6 +44,8 @@ pub struct Trade {
 	/// The study's queries and what each is worth. `w` is already scored against them; the what-if
 	/// needs them because the business it scores does not exist yet.
 	pub terms: Vec<TermOut>,
+	/// The inventory sweep's queries, most competitors on this map first.
+	pub queries: Vec<QueryOut>,
 	/// Where the probe stood, in the order `PoiOut::seen` is indexed by. Empty until a study has been
 	/// probed, which is what decides whether the map offers an observed coverage layer at all.
 	pub nodes: Vec<[f64; 2]>,
@@ -54,6 +56,13 @@ pub struct Trade {
 pub struct TermOut {
 	pub text: String,
 	pub weight: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct QueryOut {
+	pub text: String,
+	/// Distinct competitors on the map it returned, over every tile. The queries overlap by design.
+	pub hits: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
