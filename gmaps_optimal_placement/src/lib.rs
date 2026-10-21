@@ -200,11 +200,15 @@ impl Study {
 			// a half-written trade is not a location, and `trade()` says which block is missing
 			_ => match self.billed(&cells, &place, work) {
 				Ok(t) => (Some(t), None),
-				// the quota is the one refusal that is neither this tool's fault nor a study that will not
-				// build: what the archive paid for is already here, so the map opens on it and says why the
-				// ground is empty. A partial sweep is not served — half an inventory reads as a whole one
-				Err(e) => match e.downcast_ref::<sources::work::Exhausted>() {
-					Some(spent) => (None, Some(format!("{spent}. No competitor is on this map, and nothing that reads one is offered."))),
+				// the quota and `--block-spend` are the refusals that are neither this tool's fault nor a study
+				// that will not build: what the archive paid for is already here, so the map opens on it and
+				// says why the ground is empty. A partial sweep is not served — half an inventory reads as a whole one
+				Err(e) => match e
+					.downcast_ref::<sources::work::Exhausted>()
+					.map(ToString::to_string)
+					.or_else(|| e.downcast_ref::<sources::work::Blocked>().map(ToString::to_string))
+				{
+					Some(why) => (None, Some(format!("{why}. No competitor is on this map, and nothing that reads one is offered."))),
 					None => return Err(e),
 				},
 			},

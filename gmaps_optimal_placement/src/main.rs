@@ -14,6 +14,10 @@ use gmaps_optimal_placement_sources::Work;
 struct Cli {
 	#[clap(flatten)]
 	settings: SettingsFlags,
+	/// Spend no Google Maps credit: Places answers come out of the work dir or not at all. A map
+	/// missing any of its inventory opens on demand alone, and a probe stops at its first miss
+	#[arg(long, global = true)]
+	block_spend: bool,
 	#[command(subcommand)]
 	cmd: Cmd,
 }
@@ -120,7 +124,9 @@ fn main() -> Result<()> {
 	}
 	let cfg = AppConfig::try_build(cli.settings)?;
 	let refresh = matches!(cli.cmd, Cmd::Serve { refresh, .. } | Cmd::Probe { refresh, .. } if refresh);
-	let work = Work::from_env().policy((&cfg.age).into(), (&cfg.sweep).into()).refresh(refresh);
+	eyre::ensure!(!(refresh && cli.block_spend), "`--refresh` buys every answer again, and `--block-spend` buys none");
+	let block_spend = cli.block_spend;
+	let work = Work::from_env().policy((&cfg.age).into(), (&cfg.sweep).into()).refresh(refresh).block_spend(block_spend);
 	match cli.cmd {
 		Cmd::Config { .. } => unreachable!("handled above, and `handle_settings_command` exits"),
 		Cmd::Schema => {
@@ -146,10 +152,11 @@ fn main() -> Result<()> {
 			};
 			// the work dir rather than `work` itself: `Work` holds a `Cell`, and the server calls this
 			// from whichever blocking thread a tab's first request landed on. `--refresh` does not come
-			// along: it belongs to the run that asked for it, and a tab switch is not one
+			// along: it belongs to the run that asked for it, and a tab switch is not one. `--block-spend` does,
+			// because it is about the server and not about a run
 			let (dir, age, tiling) = (work.path().to_owned(), (&cfg.age).into(), (&cfg.sweep).into());
 			let build = std::sync::Arc::new(move |trade: Option<&std::path::Path>, location: &std::path::Path| {
-				let payload = gmaps_optimal_placement::load(trade, location)?.build(&Work::at(dir.clone()).policy(age, tiling))?;
+				let payload = gmaps_optimal_placement::load(trade, location)?.build(&Work::at(dir.clone()).policy(age, tiling).block_spend(block_spend))?;
 				Ok(serde_json::to_string(&payload)?)
 			});
 			gmaps_optimal_placement_web::serve::serve(trades, locations, prebuilt, build, SocketAddr::from(([127, 0, 0, 1], port)), open)

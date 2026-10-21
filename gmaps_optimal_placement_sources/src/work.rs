@@ -93,6 +93,17 @@ impl std::fmt::Display for Exhausted {
 }
 impl std::error::Error for Exhausted {}
 
+/// `--block-spend` met a Places search the work dir has no answer for. A refusal of the same shape as
+/// [`Exhausted`], so a map opens on the grid for either.
+#[derive(Debug)]
+pub struct Blocked;
+impl std::fmt::Display for Blocked {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "`--block-spend` refuses Places searches the work dir has no answer for")
+	}
+}
+impl std::error::Error for Blocked {}
+
 /// Oldest and median age of the answers one run served for a kind.
 pub struct Aged {
 	pub oldest: Duration,
@@ -134,6 +145,8 @@ pub struct Work {
 	/// Re-ask every billed request and overwrite what it answered. The only thing that spends on a
 	/// question already answered; age alone never does.
 	refresh: bool,
+	/// Refuse every Places search the work dir has no answer for.
+	block_spend: bool,
 	/// Age of every cached answer this run served, by kind.
 	served: RefCell<Vec<(Kind, Duration)>>,
 }
@@ -153,6 +166,7 @@ impl Work {
 			age: Age::default(),
 			tiling: crate::poi::Tiling::default(),
 			refresh: false,
+			block_spend: false,
 			served: RefCell::default(),
 		}
 	}
@@ -172,6 +186,11 @@ impl Work {
 
 	pub fn refresh(mut self, yes: bool) -> Self {
 		self.refresh = yes;
+		self
+	}
+
+	pub fn block_spend(mut self, yes: bool) -> Self {
+		self.block_spend = yes;
 		self
 	}
 
@@ -233,6 +252,7 @@ impl Work {
 	pub(crate) fn announce(&self, what: &str, need: Need) {
 		match need {
 			Need::Exact(0) | Need::AtLeast(0) => eprintln!("{what}: answered in full from the work dir, nothing to buy"),
+			_ if self.block_spend => eprintln!("{what}: {need} searches are not in the work dir, and `--block-spend` refuses them"),
 			_ => eprintln!("{what}: {need} searches are not in the work dir and will be bought"),
 		}
 	}
@@ -295,6 +315,9 @@ impl Work {
 			&& let Some(hit) = self.cached(url, body)?
 		{
 			return Ok(hit);
+		}
+		if self.block_spend && url == crate::poi::SEARCH_TEXT {
+			return Err(Blocked.into());
 		}
 		let canonical = serde_json::to_string(body)?;
 		let dst = self.post_path(url, &canonical)?;
@@ -422,5 +445,21 @@ mod tests {
 			.unwrap_err();
 		assert!(e.downcast_ref::<Exhausted>().is_some());
 		assert!(format!("{e:#}").contains("spent"), "the chain carries what the day was refused for: {e:#}");
+	}
+
+	/// Under `--block-spend` a Places miss is refused before it reaches the network, and what is on disk is still served.
+	#[test]
+	fn a_blocked_run_serves_the_cache_and_buys_nothing() {
+		let dir = std::env::temp_dir().join(format!("gmaps_block_spend_{}", std::process::id()));
+		let work = Work::at(&dir).block_spend(true);
+		let (hit, miss) = (serde_json::json!({"textQuery": "kept"}), serde_json::json!({"textQuery": "never asked"}));
+		let dst = work.post_path(crate::poi::SEARCH_TEXT, &serde_json::to_string(&hit).unwrap()).unwrap();
+		fs::write(&dst, r#"{"places":[]}"#).unwrap();
+
+		assert_eq!(work.cached_post(crate::poi::SEARCH_TEXT, &hit, &[]).unwrap().0, serde_json::json!({"places": []}));
+		let e = work.cached_post(crate::poi::SEARCH_TEXT, &miss, &[]).unwrap_err();
+		assert!(e.downcast_ref::<Blocked>().is_some(), "{e:#}");
+		assert_eq!(work.billed(), 0);
+		fs::remove_dir_all(&dir).unwrap();
 	}
 }
