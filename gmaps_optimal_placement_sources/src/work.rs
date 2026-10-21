@@ -309,8 +309,19 @@ impl Work {
 			bail!("POST {url} -> {status}\n{}", text.trim());
 		}
 		self.billed.set(self.billed.get() + 1);
-		let json: serde_json::Value = serde_json::from_str(&text).wrap_err_with(|| format!("POST {url} returned non-JSON: {}", &text[..text.len().min(400)]))?;
-		fs::write(&dst, &text)?;
+		let json: serde_json::Value = match serde_json::from_str(&text) {
+			Ok(j) => j,
+			Err(e) => {
+				// billed already: kept beside the cache rather than in it, where it would answer for the request forever
+				let kept = dst.with_extension("rejected");
+				fs::write(&kept, &text)?;
+				bail!("POST {url} returned non-JSON ({e}); the paid response is kept at {}", kept.display());
+			}
+		};
+		// renamed into place, so an interrupted write never leaves a truncated answer for the next read to choke on
+		let part = dst.with_extension("part");
+		fs::write(&part, &text)?;
+		fs::rename(&part, &dst)?;
 		Ok((json, SystemTime::now()))
 	}
 

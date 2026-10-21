@@ -16,6 +16,9 @@ const FIELDS: &str = "places.id,places.displayName,places.formattedAddress,place
 /// Three pages of twenty is all one text search will hand back, so a tile that comes back at this
 /// has more in it than it said.
 const CAP: usize = 60;
+/// Tiles a side the frame starts as. The whole frame saturates for any dense trade, so asking it
+/// buys a chain of calls to learn that; answers from before the recursion are keyed on this grid.
+const ROOT: u32 = 3;
 /// How far a saturated tile may be quartered. Over a city frame the floor is a couple of
 /// kilometres, and a query still at the cap down there is reported rather than passed off as the
 /// whole inventory.
@@ -173,8 +176,20 @@ fn sweep(cfg: &PoiConfig, bbox: Bbox, key: Option<&str>, work: &Work) -> Result<
 		// every answer that arrived is already on disk and the recursion is deterministic, so whatever
 		// stopped this — a daily quota above all — a rerun picks up where it stopped and pays only for
 		// what is still missing
-		descend(work, key, q, cfg.included_type.as_deref(), bbox, 0, &mut found)
-			.wrap_err_with(|| format!("sweeping {q:?}: a rerun resumes from here, and re-asks nothing already answered"))?;
+		let (dlat, dlon) = ((bbox.lat[1] - bbox.lat[0]) / f64::from(ROOT), (bbox.lon[1] - bbox.lon[0]) / f64::from(ROOT));
+		for i in 0..ROOT {
+			for j in 0..ROOT {
+				// the cache key is the body verbatim, so these expressions may not be re-associated
+				let (lat0, lon0) = (bbox.lat[0] + f64::from(i) * dlat, bbox.lon[0] + f64::from(j) * dlon);
+				let (lat1, lon1) = (bbox.lat[0] + f64::from(i + 1) * dlat, bbox.lon[0] + f64::from(j + 1) * dlon);
+				let tile = Bbox {
+					lat: [lat0, lat1],
+					lon: [lon0, lon1],
+				};
+				descend(work, key, q, cfg.included_type.as_deref(), tile, 0, &mut found)
+					.wrap_err_with(|| format!("sweeping {q:?}: a rerun resumes from here, and re-asks nothing already answered"))?;
+			}
+		}
 		// new, not returned: the queries overlap by design, and what the eighth one adds over the seven
 		// before it is what says whether it earns its calls
 		eprintln!(
@@ -238,7 +253,13 @@ fn sweep(cfg: &PoiConfig, bbox: Bbox, key: Option<&str>, work: &Work) -> Result<
 		});
 	}
 	out.sort_by(|a, b| b.n_rev.total_cmp(&a.n_rev));
-	eprintln!("places: {} raw over {} searches ({} billed), {} kept", raw.len(), obs.len(), work.billed(), out.len());
+	eprintln!(
+		"places: {} raw over {} searches ({} billed, {missing} not in the work dir), {} kept",
+		raw.len(),
+		obs.len(),
+		work.billed(),
+		out.len()
+	);
 	let (total, interior) = calls.iter().fold((0, 0), |(t, i), (c, q)| (t + c, i + q));
 	eprintln!("places: {total} calls, {interior} on tiles that quartered and were re-covered by their four children:");
 	for (d, (c, q)) in calls.iter().enumerate().filter(|(_, (c, _))| *c > 0) {
