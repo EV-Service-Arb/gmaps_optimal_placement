@@ -36,10 +36,6 @@ pub struct Trade {
 	/// The demand expression itself — the map has no other honest caption for it.
 	pub demand_note: String,
 	pub demand: Vec<f64>,
-	/// Days since the oldest competitor answer this map was painted from was written. `None` when
-	/// every one of them was bought on this run. Provenance, like `imputed`: nothing is evicted, so
-	/// without it a map drawn from two-year-old competitors looks like one drawn this morning.
-	pub inventory_age_d: Option<f64>,
 	pub tiers: Vec<TierOut>,
 	/// The study's queries and what each is worth. `w` is already scored against them; the what-if
 	/// needs them because the business it scores does not exist yet.
@@ -105,6 +101,9 @@ pub struct Poi {
 	pub web: String,
 	pub tel: String,
 	pub tier: String,
+	/// Unix seconds the freshest answer naming it was written. Provenance, like `imputed`: nothing is
+	/// evicted, so without it a map drawn from two-year-old competitors looks like one drawn this morning.
+	pub fetched_s: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, JsonSchema, Serialize)]

@@ -37,6 +37,7 @@ fn pois() -> Vec<Poi> {
 			web: String::new(),
 			tel: String::new(),
 			tier: "t".to_owned(),
+			fetched_s: 0,
 		})
 		.collect()
 }

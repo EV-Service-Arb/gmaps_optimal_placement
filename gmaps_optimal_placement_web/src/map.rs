@@ -256,8 +256,8 @@ pub struct Loaded {
 	pub tier_counts: Vec<usize>,
 	pub categories: Vec<Category>,
 	pub imputed: usize,
-	/// How old the competitor inventory under this map is. `None` where it was bought on this run.
-	pub age_d: Option<f64>,
+	/// Days since each competitor was last answered for, and its tier — so the chart follows the tier toggles.
+	pub ages: Vec<(f64, usize)>,
 	pub queries: Vec<(String, usize)>,
 	/// Whether this tab has a trade under it. Everything a slider moves is the trade's, so this is
 	/// what the panel greys out on.
@@ -282,6 +282,68 @@ pub struct Tip {
 	pub y: f64,
 }
 
+/// Upper edges in days, each a period a person names. The last bar holds everything older.
+const AGE_EDGES: [(f64, &str); 11] = [
+	(1., "1d"),
+	(3., "3d"),
+	(7., "1w"),
+	(14., "2w"),
+	(30., "1mo"),
+	(61., "2mo"),
+	(91., "3mo"),
+	(182., "6mo"),
+	(365., "1y"),
+	(730., "2y"),
+	(1460., "4y"),
+];
+
+/// Competitors per age bucket over a logged axis, so a month does not dwarf the day before it. A
+/// bar is as wide as the period it covers, and greys as it gets older.
+fn age_chart(ages: &[f64]) -> impl IntoView + use<> {
+	let bucket = |d: f64| AGE_EDGES.iter().position(|(e, _)| d < *e).unwrap_or(AGE_EDGES.len() - 1);
+	let mut counts = vec![0usize; bucket(ages.iter().copied().fold(0., f64::max)) + 1];
+	for &d in ages {
+		counts[bucket(d)] += 1;
+	}
+	let top = AGE_EDGES[counts.len() - 1].0;
+	let x = move |d: f64| 100. * d.ln_1p() / top.ln_1p();
+	let max = *counts.iter().max().expect("at least one bucket") as f64;
+	let bars = counts
+		.iter()
+		.enumerate()
+		.filter(|(_, n)| **n > 0)
+		.map(|(i, &n)| {
+			let (lo, hi) = (if i == 0 { 0. } else { AGE_EDGES[i - 1].0 }, AGE_EDGES[i].0);
+			let chroma = 0.16 * (1. - x((lo + hi) / 2.) / 100.);
+			let span = match i {
+				0 => "under a day".to_owned(),
+				_ if i == AGE_EDGES.len() - 1 => format!("over {}", AGE_EDGES[i - 1].1),
+				_ => format!("{}–{}", AGE_EDGES[i - 1].1, AGE_EDGES[i].1),
+			};
+			view! {
+				<div
+					title=format!("{n} competitors, {span} old")
+					style=format!(
+						"left:{:.2}%;width:calc({:.2}% - 1px);height:{:.1}%;background:oklch(0.74 {chroma:.3} 235)",
+						x(lo),
+						x(hi) - x(lo),
+						100. * n as f64 / max,
+					)
+				>
+					{n}
+				</div>
+			}
+		})
+		.collect_view();
+	let ticks = AGE_EDGES[..counts.len()]
+		.iter()
+		.enumerate()
+		.filter(|(i, _)| [0, 2, 4, 8].contains(i) || *i == counts.len() - 1)
+		.map(|(_, (e, label))| view! { <span style=format!("left:{:.2}%", x(*e))>{*label}</span> })
+		.collect_view();
+	view! { <div class="ages">{bars}{ticks}</div> }
+}
+
 #[island]
 pub fn MapView() -> impl IntoView {
 	let s = State::new();
@@ -290,6 +352,8 @@ pub fn MapView() -> impl IntoView {
 	// and an inventory, and neither is on the page
 	let traded = move || s.loaded.get().is_some_and(|l| l.traded);
 	let show_queries = RwSignal::new(false);
+	let show_categories = RwSignal::new(true);
+	let show_ages = RwSignal::new(false);
 
 	view! {
 		<crate::tabs::TabBar state=s />
@@ -445,13 +509,38 @@ pub fn MapView() -> impl IntoView {
 							})
 					})
 					.collect();
+				let open = show_categories.get();
 				(!rows.is_empty())
 					.then(|| {
 						view! {
-							<h4>"Google categories"</h4>
-							{rows}
+							<h4 class="fold" on:click=move |_| show_categories.update(|v| *v = !*v)>
+								{if open { "▾ " } else { "▸ " }}
+								"Google categories"
+							</h4>
+							{open.then_some(rows)}
 						}
 					})
+			}}
+
+			{move || {
+				let (loaded, tiers) = (s.loaded.get()?, s.tiers.get());
+				let ages: Vec<f64> = loaded
+					.ages
+					.into_iter()
+					.filter(|(_, t)| tiers.get(*t).is_some_and(|t| t.show))
+					.map(|(d, _)| d)
+					.collect();
+				let oldest = ages.iter().copied().reduce(f64::max)?;
+				let open = show_ages.get();
+				Some(
+					view! {
+						<h4 class="fold" on:click=move |_| show_ages.update(|v| *v = !*v)>
+							{if open { "▾ " } else { "▸ " }}
+							{format!("Data age · oldest {oldest:.0} d")}
+						</h4>
+						{open.then(move || age_chart(&ages))}
+					},
+				)
 			}}
 
 			<div class="row">
@@ -465,13 +554,6 @@ pub fn MapView() -> impl IntoView {
 					"Hide imputed cells (" {move || s.loaded.get().map(|l| l.imputed.to_string())} ")"
 				</label>
 			</div>
-
-			{move || {
-				s.loaded
-					.get()
-					.and_then(|l| l.age_d)
-					.map(|d| view! { <p class="note">{format!("Competitors as of {d:.0} days ago")}</p> })
-			}}
 
 			<button
 				class="sec"
@@ -931,7 +1013,20 @@ mod imp {
 				.collect(),
 			categories: m.payload.trade.iter().flat_map(categories).collect(),
 			imputed: m.payload.imputed.iter().filter(|&&i| i == 1).count(),
-			age_d: m.payload.trade.as_ref().and_then(|t| t.inventory_age_d),
+			ages: {
+				let now = js_sys::Date::now() / 1000.;
+				m.payload
+					.trade
+					.iter()
+					.flat_map(|t| {
+						t.pois.iter().map(move |p| {
+							let tier = t.tiers.iter().position(|x| x.name == p.poi.tier).expect("the model rejected a payload whose tiers disagree");
+							// an answer dated ahead of this clock is a clock that moved, and the answer is still not old
+							(((now - p.poi.fetched_s as f64) / 86_400.).max(0.), tier)
+						})
+					})
+					.collect()
+			},
 			queries: m.payload.trade.iter().flat_map(|t| t.queries.iter().map(|q| (q.text.clone(), q.hits))).collect(),
 			traded: m.traded().is_some(),
 			notice: m.payload.notice.clone(),

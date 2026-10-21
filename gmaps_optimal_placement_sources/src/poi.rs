@@ -1,4 +1,6 @@
 //! Competitor inventory: whoever is already selling the service in the area.
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use eyre::{Result, WrapErr, bail, ensure};
 use gmaps_optimal_placement_core::{grid::Bbox, payload::Poi};
 use indexmap::IndexMap;
@@ -118,7 +120,7 @@ pub struct Inventory {
 /// No key is the read-only mode: pages come out of the work dir and the first miss ends the search.
 /// A caller holding no key cannot buy, which is what lets the fit replay a sweep rather than pay
 /// for one.
-pub fn search_text(work: &Work, key: Option<&str>, body: &serde_json::Value, mask: &str, pages: usize, kind: Kind) -> Result<Vec<(String, serde_json::Value)>> {
+pub fn search_text(work: &Work, key: Option<&str>, body: &serde_json::Value, mask: &str, pages: usize, kind: Kind) -> Result<Vec<(String, serde_json::Value, SystemTime)>> {
 	let mut out = Vec::new();
 	let mut token: Option<String> = None;
 	for _ in 0..pages {
@@ -139,7 +141,7 @@ pub fn search_text(work: &Work, key: Option<&str>, body: &serde_json::Value, mas
 		}
 		for p in res["places"].as_array().into_iter().flatten() {
 			let id = p["id"].as_str().ok_or_else(|| eyre::eyre!("Places returned a result without an id: {p}"))?;
-			out.push((id.to_owned(), p.clone()));
+			out.push((id.to_owned(), p.clone(), at));
 		}
 		match res["nextPageToken"].as_str() {
 			Some(t) => token = Some(t.to_owned()),
@@ -218,7 +220,7 @@ fn sweep(cfg: &PoiConfig, bbox: Bbox, key: Option<&str>, work: &Work) -> Result<
 	}
 
 	let mut out = Vec::new();
-	for (id, p) in &raw {
+	for (id, (p, at)) in &raw {
 		match p["businessStatus"].as_str() {
 			None | Some("OPERATIONAL") => {}
 			Some(_) => continue,
@@ -250,6 +252,7 @@ fn sweep(cfg: &PoiConfig, bbox: Bbox, key: Option<&str>, work: &Work) -> Result<
 			web: p["websiteUri"].as_str().unwrap_or_default().to_owned(),
 			tel: p["nationalPhoneNumber"].as_str().unwrap_or_default().to_owned(),
 			tier: tier.name.clone(),
+			fetched_s: at.duration_since(UNIX_EPOCH).wrap_err("a cached answer is dated before 1970")?.as_secs(),
 		});
 	}
 	out.sort_by(|a, b| b.n_rev.total_cmp(&a.n_rev));
@@ -305,12 +308,14 @@ fn descend(work: &Work, key: Option<&str>, query: &str, typed: Option<&str>, til
 	found.obs.push(Ranking {
 		from: Region::Tile(tile),
 		term: query.to_owned(),
-		ids: page.iter().map(|(id, _)| id.clone()).collect(),
+		ids: page.iter().map(|(id, ..)| id.clone()).collect(),
 	});
-	for (id, p) in page.iter() {
-		found.raw.entry(id.clone()).or_insert_with(|| p.clone());
+	let full = page.len() >= CAP;
+	// the freshest answer naming a place is what it is known as of
+	for (id, p, at) in page {
+		found.raw.entry(id).and_modify(|e| e.1 = e.1.max(at)).or_insert((p, at));
 	}
-	if page.len() < CAP {
+	if !full {
 		return Ok(());
 	}
 	if depth == DEPTH {
@@ -330,7 +335,7 @@ fn descend(work: &Work, key: Option<&str>, query: &str, typed: Option<&str>, til
 /// What the recursion accumulates, before the tiering rules turn it into an `Inventory`.
 #[derive(Default)]
 struct Found {
-	raw: IndexMap<String, serde_json::Value>,
+	raw: IndexMap<String, (serde_json::Value, SystemTime)>,
 	obs: Vec<Ranking>,
 	/// Query and tile still at the cap at the depth floor: the inventory under them is partial.
 	censored: Vec<(String, Bbox)>,

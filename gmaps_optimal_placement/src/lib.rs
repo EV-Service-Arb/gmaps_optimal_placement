@@ -295,7 +295,6 @@ impl Study {
 			lambda_m: model_cfg.lambda_m,
 			demand_note: model_cfg.demand.clone(),
 			demand: round(self.demand(cells)?.to_vec(), 3),
-			inventory_age_d: work.age(sources::work::Kind::Inventory).map(|a| round1(a.oldest.as_secs_f64() / 86_400., 1)),
 			tiers: poi_cfg
 				.tiers
 				.iter()
