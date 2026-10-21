@@ -170,6 +170,28 @@ pub fn search_text(work: &Work, key: Option<&str>, body: &serde_json::Value, mas
 	Ok(out)
 }
 
+/// The one place a search for `q` names, biased to `bbox` so a bare street address resolves in the
+/// frame it was typed over: `[lat, lon]` and Google's address for it. Cached like every Places
+/// answer, so `--block-spend` serves an address already looked up and refuses a new one.
+pub fn find(work: &Work, bbox: Bbox, q: &str) -> Result<Option<([f64; 2], String)>> {
+	let key = std::env::var("GOOGLE_MAPS_KEY").wrap_err("GOOGLE_MAPS_KEY is not set")?;
+	let rect = serde_json::json!({
+		"low":  {"latitude": bbox.lat[0], "longitude": bbox.lon[0]},
+		"high": {"latitude": bbox.lat[1], "longitude": bbox.lon[1]},
+	});
+	let body = serde_json::json!({"textQuery": q, "pageSize": 1, "locationBias": {"rectangle": rect}});
+	let (res, _) = work.cached_post(SEARCH_TEXT, &body, &[("X-Goog-Api-Key", &key), ("X-Goog-FieldMask", "places.location,places.formattedAddress")])?;
+	if let Some(e) = res.get("error") {
+		bail!("Places text search {q:?}: {e}");
+	}
+	let Some(p) = res["places"].as_array().and_then(|v| v.first()) else { return Ok(None) };
+	let (lat, lon) = (p["location"]["latitude"].as_f64(), p["location"]["longitude"].as_f64());
+	let (Some(lat), Some(lon), Some(addr)) = (lat, lon, p["formattedAddress"].as_str()) else {
+		bail!("Places answered {q:?} with a place missing its location or address: {p}");
+	};
+	Ok(Some(([lat, lon], addr.to_owned())))
+}
+
 pub fn load(cfg: &PoiConfig, bbox: Bbox, what: &str, work: &Work) -> Result<Inventory> {
 	let key = std::env::var("GOOGLE_MAPS_KEY").wrap_err("GOOGLE_MAPS_KEY is not set")?;
 	// the free walk first, so what this is about to buy is on screen before it buys it. It reads the

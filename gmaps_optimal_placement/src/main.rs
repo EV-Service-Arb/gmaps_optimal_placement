@@ -155,11 +155,18 @@ fn main() -> Result<()> {
 			// along: it belongs to the run that asked for it, and a tab switch is not one. `--block-spend` does,
 			// because it is about the server and not about a run
 			let (dir, age, tiling) = (work.path().to_owned(), (&cfg.age).into(), (&cfg.sweep).into());
-			let build = std::sync::Arc::new(move |trade: Option<&std::path::Path>, location: &std::path::Path| {
-				let payload = gmaps_optimal_placement::load(trade, location)?.build(&Work::at(dir.clone()).policy(age, tiling).block_spend(block_spend))?;
-				Ok(serde_json::to_string(&payload)?)
+			let build = std::sync::Arc::new({
+				let dir = dir.clone();
+				move |trade: Option<&std::path::Path>, location: &std::path::Path| {
+					let payload = gmaps_optimal_placement::load(trade, location)?.build(&Work::at(dir.clone()).policy(age, tiling).block_spend(block_spend))?;
+					Ok(serde_json::to_string(&payload)?)
+				}
 			});
-			gmaps_optimal_placement_web::serve::serve(trades, locations, prebuilt, build, SocketAddr::from(([127, 0, 0, 1], port)), open)
+			let find = std::sync::Arc::new(move |location: &std::path::Path, q: &str| {
+				let frame = gmaps_optimal_placement::load(None, location)?.area.bbox;
+				gmaps_optimal_placement_sources::poi::find(&Work::at(dir.clone()).policy(age, tiling).block_spend(block_spend), frame, q)
+			});
+			gmaps_optimal_placement_web::serve::serve(trades, locations, prebuilt, build, find, SocketAddr::from(([127, 0, 0, 1], port)), open)
 		}
 		Cmd::Probe { at, dry_run, refresh: _ } => {
 			let (trade, location) = (gmaps_optimal_placement::pick(&at.trades)?, gmaps_optimal_placement::pick(&at.locations)?);

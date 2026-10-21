@@ -9,13 +9,22 @@
 //! `.nix` file is, nor that a trade is a function of a location.
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 
-use axum::{Router, extract::Path as UrlPath, http::StatusCode, routing::get};
+use axum::{
+	Router,
+	extract::{Path as UrlPath, Query},
+	http::StatusCode,
+	routing::get,
+};
 use eyre::{Result, WrapErr};
 use leptos::prelude::*;
 
 /// A trade and a location, to the serialised `Payload` of pairing them. No trade is a location on
 /// its own, which is the half of the product that costs nothing to build.
 pub type Build = Arc<dyn Fn(Option<&std::path::Path>, &std::path::Path) -> Result<String> + Send + Sync>;
+
+/// A location and a search, to the one place it names there: `[lat, lon]` and Google's address. The
+/// CLI's for the same reason `Build` is, and because what it may spend is the CLI's to say.
+pub type Find = Arc<dyn Fn(&std::path::Path, &str) -> Result<Option<([f64; 2], String)>> + Send + Sync>;
 
 /// One cell per pairing, so two tabs asking at once read the 87 MB archive once between them. Keyed
 /// by the two stems rather than by the study's name: what a pairing is called is the CLI's to say,
@@ -24,7 +33,7 @@ type Key = (Option<String>, String);
 type Pool = Arc<HashMap<Key, (Option<PathBuf>, PathBuf, Arc<tokio::sync::OnceCell<axum::body::Bytes>>)>>;
 
 /// `prebuilt` is `(trade stem, location stem, payload)` — whatever the CLI already paid for.
-pub fn serve(trades: Vec<PathBuf>, locations: Vec<PathBuf>, prebuilt: Vec<(Option<String>, String, String)>, build: Build, addr: SocketAddr, open: bool) -> Result<()> {
+pub fn serve(trades: Vec<PathBuf>, locations: Vec<PathBuf>, prebuilt: Vec<(Option<String>, String, String)>, build: Build, find: Find, addr: SocketAddr, open: bool) -> Result<()> {
 	// leptos spawns the SSR stream through `any_spawner`, which has no executor until it is told
 	any_spawner::Executor::init_tokio().map_err(|e| eyre::eyre!("{e}"))?;
 	let key = std::env::var("GOOGLE_MAPS_KEY").wrap_err("GOOGLE_MAPS_KEY is not set")?;
@@ -85,6 +94,7 @@ pub fn serve(trades: Vec<PathBuf>, locations: Vec<PathBuf>, prebuilt: Vec<(Optio
 
 	let studies = serde_json::json!({ "trades": trade_stems, "locations": location_stems, "open": opened }).to_string();
 	let bare = (pool.clone(), build.clone());
+	let places = pool.clone();
 	let mut app = Router::new()
 		.route("/studies.json", get(move || std::future::ready(json(studies.clone()))))
 		.route(
@@ -92,6 +102,10 @@ pub fn serve(trades: Vec<PathBuf>, locations: Vec<PathBuf>, prebuilt: Vec<(Optio
 			get(move |UrlPath((t, l)): UrlPath<(String, String)>| payload(pool.clone(), build.clone(), (Some(t), l))),
 		)
 		.route("/place/{location}", get(move |UrlPath(l): UrlPath<String>| payload(bare.0.clone(), bare.1.clone(), (None, l))))
+		.route(
+			"/find/{location}",
+			get(move |UrlPath(l): UrlPath<String>, Query(q): Query<Search>| self::find(places.clone(), find.clone(), l, q.q)),
+		)
 		.nest_service("/pkg", tower_http::services::ServeDir::new(pkg));
 	for (path, method) in leptos::server_fn::axum::server_fn_paths() {
 		app = app.route(
@@ -149,6 +163,25 @@ async fn payload(pool: Pool, build: Build, at: Key) -> Result<([(axum::http::Hea
 		.await
 		.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 	Ok(json(built.clone()))
+}
+
+#[derive(serde::Deserialize)]
+struct Search {
+	q: String,
+}
+
+/// `null` when Google names nothing. A refusal — `--block-spend` above all — is the eyre chain, which
+/// the place field shows.
+async fn find(pool: Pool, find: Find, location: String, q: String) -> Result<([(axum::http::HeaderName, &'static str); 1], String), (StatusCode, String)> {
+	let Some((_, path, _)) = pool.get(&(None, location.clone())) else {
+		return Err((StatusCode::NOT_FOUND, format!("{location:?} is not a location served here")));
+	};
+	let path = path.clone();
+	let found = tokio::task::spawn_blocking(move || find(&path, &q))
+		.await
+		.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("finding a place: {e}")))?
+		.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+	Ok(json(serde_json::json!(found.map(|(at, address)| serde_json::json!({"at": at, "address": address}))).to_string()))
 }
 
 fn json<T>(body: T) -> ([(axum::http::HeaderName, &'static str); 1], T) {

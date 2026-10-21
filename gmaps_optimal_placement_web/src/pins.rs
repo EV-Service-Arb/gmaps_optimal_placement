@@ -149,6 +149,9 @@ pub struct Pin {
 	pub at: [f64; 2],
 	/// Yellow only: the sweep's rank, or nothing for a free click.
 	pub label: Option<String>,
+	/// Yellow only: Google's address for a pin a place search put down. Not `name`, which is the
+	/// trading name the what-if is scored under.
+	pub address: Option<String>,
 	pub green: bool,
 	/// Named by the study file, rather than promoted here. Only these need confirming before a `✕`.
 	pub from_study: bool,
@@ -159,6 +162,7 @@ fn green(c: &Candidate, from_study: bool) -> Pin {
 		name: c.name.clone(),
 		at: c.at,
 		label: None,
+		address: None,
 		green: true,
 		from_study,
 	}
@@ -211,13 +215,15 @@ mod imp {
 		});
 	}
 
-	/// Yellow to green. The default name is whatever the grid calls the cell it landed in — the one
-	/// label the map already has for the place.
+	/// Yellow to green. The default name is the address a search found it at, or else whatever the
+	/// grid calls the cell it landed in — the one label the map already has for the place.
 	pub fn keep(state: State, pin: Pin) {
-		let default = state.heavy.with_value(|h| {
-			let m = h.model.as_ref()?;
-			let (mx, my) = m.to_local(pin.at[0], pin.at[1]);
-			Some(m.payload.place[m.nearest_cell(mx, my)].clone())
+		let default = pin.address.clone().or_else(|| {
+			state.heavy.with_value(|h| {
+				let m = h.model.as_ref()?;
+				let (mx, my) = m.to_local(pin.at[0], pin.at[1]);
+				Some(m.payload.place[m.nearest_cell(mx, my)].clone())
+			})
 		});
 		let Ok(Some(name)) = window().prompt_with_message_and_default("Name this candidate", &default.unwrap_or_default()) else {
 			return;
@@ -236,6 +242,7 @@ mod imp {
 				name,
 				at: pin.at,
 				label: None,
+				address: None,
 				green: true,
 				from_study: false,
 			})

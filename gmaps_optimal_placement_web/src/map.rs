@@ -6,7 +6,7 @@ use gmaps_optimal_placement_core::{
 	Model,
 	model::{Report, TierState, fmt, ramp},
 };
-pub use imp::{activate, close, open, persist_keys, scroll_pick};
+pub use imp::{activate, close, find, open, persist_keys, scroll_pick};
 use leptos::prelude::*;
 
 use crate::{
@@ -93,6 +93,9 @@ pub struct State {
 	pub next_id: StoredValue<u32>,
 	/// The `⧉` glyph, flipped for a beat by a copy that landed or one that did not.
 	pub copied: RwSignal<Option<bool>>,
+	/// Why the last place search put no pin down. Under the field rather than in the banner, so the
+	/// next keystroke takes it away.
+	pub missed: RwSignal<Option<String>>,
 }
 impl State {
 	fn new() -> Self {
@@ -124,6 +127,7 @@ impl State {
 			mounted: RwSignal::new(false),
 			next_id: StoredValue::new(0),
 			copied: RwSignal::new(None),
+			missed: RwSignal::new(None),
 		}
 	}
 
@@ -162,7 +166,8 @@ impl State {
 			.iter()
 			.position(|p| p.id == pin.id)
 			.map(|i| format!("{} · {}", letter(i), pin.name))
-			.or_else(|| pin.label.clone());
+			.or_else(|| pin.label.clone())
+			.or_else(|| pin.address.clone());
 		self.heavy.with_value(|h| {
 			let Some(m) = &h.model else { return };
 			self.report.set(Some(match m.traded() {
@@ -199,6 +204,7 @@ impl State {
 					name: String::new(),
 					at: [r.lat, r.lng],
 					label: Some((k + 1).to_string()),
+					address: None,
 					green: false,
 					from_study: false,
 				})
@@ -676,6 +682,7 @@ mod imp {
 	pub fn close(_: State, _: usize) {}
 	pub fn persist_keys(_: State) {}
 	pub fn scroll_pick(_: usize) {}
+	pub fn find(_: State, _: String) {}
 }
 
 #[cfg(feature = "hydrate")]
@@ -800,6 +807,8 @@ mod imp {
 		fn show_tiers_js(el: &web_sys::HtmlElement, flags: &[u8]);
 		#[wasm_bindgen(js_name = pins)]
 		fn pins_js(el: &web_sys::HtmlElement, json: &str);
+		#[wasm_bindgen(js_name = pan)]
+		fn pan_js(el: &web_sys::HtmlElement, lat: f64, lng: f64);
 	}
 
 	fn host() -> Option<web_sys::HtmlElement> {
@@ -877,7 +886,7 @@ mod imp {
 				s.temp
 					.get()
 					.iter()
-					.map(|p| serde_json::json!({"id": p.id, "lat": p.at[0], "lng": p.at[1], "color": YELLOW, "label": p.label, "title": p.label})),
+					.map(|p| serde_json::json!({"id": p.id, "lat": p.at[0], "lng": p.at[1], "color": YELLOW, "label": p.label, "title": p.label.as_ref().or(p.address.as_ref())})),
 			);
 			if let Some(el) = host().filter(|_| s.mounted.get()) {
 				pins_js(&el, &serde_json::to_string(&out).expect("a Vec<Value> serialises"));
@@ -1119,6 +1128,56 @@ mod imp {
 		}
 	}
 
+	#[derive(serde::Deserialize)]
+	struct Found {
+		at: [f64; 2],
+		address: String,
+	}
+
+	/// Asked of the server, because what a search may spend is `--block-spend`'s to say. Searched in
+	/// the open tab's frame, which is also what keeps the answer's cache key the same next time.
+	pub fn find(s: State, q: String) {
+		let Some(location) = s.tabs.with_untracked(|t| t.get(s.active.get_untracked()).map(|t| t.at.1.clone())) else {
+			return s.missed.set(Some("open a location to search in first".to_owned()));
+		};
+		let url = format!("/find/{location}?q={}", js_sys::encode_uri_component(&q));
+		leptos::task::spawn_local(async move {
+			match get::<Option<Found>>(&url).await {
+				Err(e) => s.missed.set(Some(e)),
+				Ok(None) => s.missed.set(Some(format!("no place found for {q:?}"))),
+				Ok(Some(f)) => {
+					s.missed.set(None);
+					if let Some(el) = host().filter(|_| s.mounted.get_untracked()) {
+						pan_js(&el, f.at[0], f.at[1]);
+					}
+					click(s, f.at, Some(f.address));
+				}
+			}
+		});
+	}
+
+	/// A yellow pin and its card. `address` is Google's, when a search rather than a click put it there.
+	fn click(s: State, at: [f64; 2], address: Option<String>) {
+		let id = s.fresh_id();
+		s.temp.update(|v| {
+			v.push(Pin {
+				id: id.clone(),
+				name: String::new(),
+				at,
+				label: None,
+				address,
+				green: false,
+				from_study: false,
+			})
+		});
+		s.open(&id);
+	}
+
+	fn focus_find() {
+		let el: web_sys::HtmlElement = document().get_element_by_id("find").expect("the tab bar renders it").unchecked_into();
+		el.focus().expect("the place field takes focus");
+	}
+
 	pub fn persist_keys(s: State) {
 		let keys = s.keys.get_untracked();
 		leptos::task::spawn_local(async move {
@@ -1131,10 +1190,14 @@ mod imp {
 	/// Digits jump by position; everything else is looked up in the keymap. A modifier or a text
 	/// input means the key was not meant for the map.
 	fn key(s: State, ev: &web_sys::KeyboardEvent) {
+		let k = ev.key();
+		if ev.ctrl_key() && !ev.meta_key() && !ev.alt_key() && k == "k" && s.picker.get_untracked().is_none() && !s.settings.get_untracked() {
+			ev.prevent_default();
+			return focus_find();
+		}
 		if ev.ctrl_key() || ev.meta_key() || ev.alt_key() {
 			return;
 		}
-		let k = ev.key();
 		if k == "Escape" {
 			s.arming.set(None);
 			s.picker.set(None);
@@ -1189,6 +1252,10 @@ mod imp {
 				s.picker.set(Some(Pool::Open));
 				true
 			}
+			_ if k == m.place || k == "/" => {
+				focus_find();
+				true
+			}
 			_ if n == 0 => false,
 			_ if k == m.prev => {
 				activate(s, (at + n - 1) % n);
@@ -1204,8 +1271,8 @@ mod imp {
 			}
 			_ => false,
 		};
-		// the picker focuses its field as it opens, so without this the key that opened it is the
-		// field's first character
+		// a field focused by a keydown receives that key's character, so without this the key that
+		// opened it is the field's first character
 		if ours {
 			ev.prevent_default();
 		}
@@ -1248,20 +1315,7 @@ mod imp {
 			s.banner.set(Some("⚠ the map host element is missing".to_owned()));
 			return false;
 		};
-		let on_click = leak(Closure::<dyn Fn(f64, f64)>::new(move |lat: f64, lng: f64| {
-			let id = s.fresh_id();
-			s.temp.update(|v| {
-				v.push(Pin {
-					id: id.clone(),
-					name: String::new(),
-					at: [lat, lng],
-					label: None,
-					green: false,
-					from_study: false,
-				})
-			});
-			s.open(&id);
-		}));
+		let on_click = leak(Closure::<dyn Fn(f64, f64)>::new(move |lat: f64, lng: f64| click(s, [lat, lng], None)));
 		let on_move = leak(Closure::<dyn Fn(f64, f64, f64, f64)>::new(move |lat: f64, lng: f64, x: f64, y: f64| {
 			let text = s.heavy.with_value(|h| {
 				let m = h.model.as_ref()?;

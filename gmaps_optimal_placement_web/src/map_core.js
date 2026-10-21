@@ -66,6 +66,13 @@ export function recenter(el, lat, lng, zoom) {
 	s.map.setZoom(zoom);
 }
 
+/// Where a found place is, at the zoom already chosen.
+export function pan(el, lat, lng) {
+	const s = S.get(el);
+	if (!s) return;
+	s.map.panTo({ lat, lng });
+}
+
 export function opacity(el, v) {
 	const s = S.get(el);
 	if (!s) return;

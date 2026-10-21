@@ -12,6 +12,8 @@
 //!   │  Picker                      ↑ also where a served product starts
 //!   │                              the trade field ends in NO_TRADE — the city, unpriced
 //!   └───────── f ─→ Pool::Open     filter the open tabs, switch to one
+//!
+//!   s / `/` / Ctrl+K ─→ #find      a place, by name or address; a hit lands as a click there
 //! ```
 //!
 //! One box per axis rather than one list of every pairing: a study is a point on a product, and an
@@ -27,7 +29,8 @@
 //! study and choosing the fourth should not be two different motions.
 //!
 //! Chrome consumes `Ctrl+T`, `Ctrl+W` and `Ctrl+1..9` before a page sees them, so the defaults are
-//! bare keys. The map affords it: it has no text input outside the picker.
+//! bare keys. The map affords it: its only text inputs are the picker and the place field, and the
+//! keymap stands aside while either has the caret.
 #[cfg(feature = "ssr")]
 use std::path::PathBuf;
 
@@ -69,12 +72,14 @@ impl Pool {
 /// The bare keys, one per action. Digits jump to a tab by position and are not rebindable — there is
 /// nothing to rebind them to.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default)] // a binding added since the file was written was never rebound
 pub struct Keymap {
 	pub prev: String,
 	pub next: String,
 	pub close: String,
 	pub open: String,
 	pub find: String,
+	pub place: String,
 }
 impl Default for Keymap {
 	fn default() -> Self {
@@ -84,18 +89,20 @@ impl Default for Keymap {
 			close: "w".to_owned(),
 			open: "t".to_owned(),
 			find: "f".to_owned(),
+			place: "s".to_owned(),
 		}
 	}
 }
 impl Keymap {
 	/// In the order the settings panel lists them.
-	fn rows(&self) -> [(&'static str, &str); 5] {
+	fn rows(&self) -> [(&'static str, &str); 6] {
 		[
 			("previous tab", &self.prev),
 			("next tab", &self.next),
 			("close the tab", &self.close),
 			("open a study", &self.open),
 			("find an open tab", &self.find),
+			("find a place", &self.place),
 		]
 	}
 
@@ -106,6 +113,7 @@ impl Keymap {
 			"close the tab" => &mut self.close,
 			"open a study" => &mut self.open,
 			"find an open tab" => &mut self.find,
+			"find a place" => &mut self.place,
 			other => unreachable!("the panel only lists rows(): {other:?}"),
 		};
 		*slot = key;
@@ -176,6 +184,33 @@ pub fn TabBar(state: State) -> impl IntoView {
 			>
 				"+"
 			</span>
+			<input
+				id="find"
+				type="text"
+				placeholder="find a place"
+				title="s, / or Ctrl+K"
+				on:focus=move |ev| { event_target::<leptos::web_sys::HtmlInputElement>(&ev).select() }
+				on:input=move |_| state.missed.set(None)
+				on:keydown=move |ev| {
+					let field = event_target::<leptos::web_sys::HtmlInputElement>(&ev);
+					match ev.key().as_str() {
+						"Enter" if !field.value().trim().is_empty() => {
+							crate::map::find(state, field.value());
+							field.blur().expect("the place field gives up focus");
+						}
+						"Escape" => {
+							state.missed.set(None);
+							field.blur().expect("the place field gives up focus");
+						}
+						_ => {}
+					}
+				}
+			/>
+			<div
+				id="missed"
+				hidden=move || state.missed.with(Option::is_none)
+				prop:textContent=move || state.missed.get().map(|m| format!("⚠ {m}"))
+			></div>
 			<span
 				id="gear"
 				title="key bindings"
@@ -361,7 +396,7 @@ pub fn Settings(state: State) -> impl IntoView {
 					.collect_view()
 			}}
 			<div class="note">
-				"1–9 jump to a tab, 0 to the last. Click a key, then press the new one."
+				"1–9 jump to a tab, 0 to the last; / and Ctrl+K also find a place. Click a key, then press the new one."
 			</div>
 			<button on:click=move |_| {
 				state.arming.set(None);

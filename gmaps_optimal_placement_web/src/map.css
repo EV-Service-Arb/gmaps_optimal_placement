@@ -10,7 +10,12 @@ html,body{margin:0;height:100%;font:13px/1.45 system-ui,sans-serif;background:#1
 .tab:hover .x{opacity:1}
 .tab .x:hover{color:#ff7b7b}
 .tab.add{padding:0 12px;color:#8892a0}
-#gear{margin-left:auto;padding:0 12px;display:flex;align-items:center;cursor:pointer;color:#8892a0}
+#find{margin:4px 0 4px auto;width:240px;box-sizing:border-box;background:#1b1e23;color:#e8e8ea;
+      border:1px solid #2a2f38;border-radius:4px;padding:0 8px;font:inherit}
+#find:focus{outline:0;border-color:#2f6df6}
+#missed{position:absolute;top:32px;right:40px;max-width:400px;padding:4px 8px;border-radius:4px;
+        background:#4a1d1de6;color:#ffb4b4;border:1px solid #7a2b2b;white-space:pre-wrap}
+#gear{padding:0 12px;display:flex;align-items:center;cursor:pointer;color:#8892a0}
 #gear:hover{color:#e8e8ea}
 #picker,#settings{z-index:9;top:50px;left:50%;transform:translateX(-50%);width:340px}
 #picker{display:flex;gap:10px}
