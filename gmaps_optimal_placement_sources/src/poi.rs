@@ -18,13 +18,32 @@ const FIELDS: &str = "places.id,places.displayName,places.formattedAddress,place
 /// Three pages of twenty is all one text search will hand back, so a tile that comes back at this
 /// has more in it than it said.
 const CAP: usize = 60;
-/// Tiles a side the frame starts as. The whole frame saturates for any dense trade, so asking it
-/// buys a chain of calls to learn that; answers from before the recursion are keyed on this grid.
-const ROOT: u32 = 3;
-/// How far a saturated tile may be quartered. Over a city frame the floor is a couple of
-/// kilometres, and a query still at the cap down there is reported rather than passed off as the
-/// whole inventory.
-const DEPTH: u32 = 3;
+
+/// How the inventory sweep cuts a frame. Every answer is cached under the exact tile it was asked
+/// for, so a different tiling is a different set of questions and re-asks whatever it covers.
+#[derive(Clone, Copy, Debug)]
+pub struct Tiling {
+	/// Tiles a side the frame starts as, before any query is asked.
+	pub root: u32,
+	/// How many times a tile at the cap may be quartered. A query still at the cap there is reported
+	/// rather than passed off as the whole inventory.
+	pub depth: u32,
+}
+impl Tiling {
+	/// Over a city frame the floor is then a couple of kilometres.
+	pub const DEPTH: u32 = 3;
+	/// The whole frame saturates for any dense trade, so asking it buys a chain of calls to learn
+	/// that; answers from before the recursion are keyed on this grid.
+	pub const ROOT: u32 = 3;
+}
+impl Default for Tiling {
+	fn default() -> Self {
+		Self {
+			root: Self::ROOT,
+			depth: Self::DEPTH,
+		}
+	}
+}
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub enum PoiSource {
 	#[serde(rename = "google_places")]
@@ -172,15 +191,20 @@ fn sweep(cfg: &PoiConfig, bbox: Bbox, key: Option<&str>, work: &Work) -> Result<
 	let tiers: Vec<(&Tier, Matcher)> = cfg.tiers.iter().map(|t| Ok((t, t.spec.compile()?))).collect::<Result<_>>()?;
 	ensure!(!tiers.is_empty(), "at least one [[poi.tier]] is needed to say what a competitor is");
 
-	let mut found = Found::default();
+	let Tiling { root, depth } = work.tiling();
+	ensure!(root > 0, "the sweep's tiling needs at least one root tile a side");
+	let mut found = Found {
+		calls: vec![(0, 0); depth as usize + 1],
+		..Found::default()
+	};
 	for q in &cfg.queries {
 		let (before, spent) = (found.raw.len(), work.calls(Kind::Inventory));
 		// every answer that arrived is already on disk and the recursion is deterministic, so whatever
 		// stopped this — a daily quota above all — a rerun picks up where it stopped and pays only for
 		// what is still missing
-		let (dlat, dlon) = ((bbox.lat[1] - bbox.lat[0]) / f64::from(ROOT), (bbox.lon[1] - bbox.lon[0]) / f64::from(ROOT));
-		for i in 0..ROOT {
-			for j in 0..ROOT {
+		let (dlat, dlon) = ((bbox.lat[1] - bbox.lat[0]) / f64::from(root), (bbox.lon[1] - bbox.lon[0]) / f64::from(root));
+		for i in 0..root {
+			for j in 0..root {
 				// the cache key is the body verbatim, so these expressions may not be re-associated
 				let (lat0, lon0) = (bbox.lat[0] + f64::from(i) * dlat, bbox.lon[0] + f64::from(j) * dlon);
 				let (lat1, lon1) = (bbox.lat[0] + f64::from(i + 1) * dlat, bbox.lon[0] + f64::from(j + 1) * dlon);
@@ -211,7 +235,7 @@ fn sweep(cfg: &PoiConfig, bbox: Bbox, key: Option<&str>, work: &Work) -> Result<
 	}
 	if !censored.is_empty() {
 		eprintln!(
-			"places: {} tiles are still at the {CAP}-result cap at depth {DEPTH}, so the inventory under them is partial:",
+			"places: {} tiles are still at the {CAP}-result cap at depth {depth}, so the inventory under them is partial:",
 			censored.len()
 		);
 		for (q, t) in &censored {
@@ -318,7 +342,7 @@ fn descend(work: &Work, key: Option<&str>, query: &str, typed: Option<&str>, til
 	if !full {
 		return Ok(());
 	}
-	if depth == DEPTH {
+	if depth == work.tiling().depth {
 		found.censored.push((query.to_owned(), tile));
 		return Ok(());
 	}
@@ -341,7 +365,7 @@ struct Found {
 	censored: Vec<(String, Bbox)>,
 	missing: usize,
 	/// Per depth: calls made, and how many of those were on a tile that then quartered.
-	calls: [(usize, usize); DEPTH as usize + 1],
+	calls: Vec<(usize, usize)>,
 }
 
 struct Matcher {

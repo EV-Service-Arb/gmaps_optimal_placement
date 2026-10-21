@@ -112,8 +112,8 @@ app, so every entry point in `map_core.js` returns a banner string instead.
   about and what each is worth.
 - **A trade may not name a city, and a location may not name a trade.** They are the two axes of a
   product, and a quantity that needs both is a quantity neither document can state honestly: it
-  belongs in Rust, derived. The POI sweep's tiling and the probe's bias radius are there for exactly
-  this reason. The alternative is the same knob written out per pairing, drifting apart silently.
+  belongs in Rust, derived, or in the tool's own settings. The probe's bias radius and the POI
+  sweep's tiling (`sweep.root`, `sweep.depth`) are there for exactly this reason. The alternative is the same knob written out per pairing, drifting apart silently.
 - **Demand is a trade's word.** `model.demand` is what a trade says the grid means to it. Without
   one there is no demand surface, and nothing stands in for it: the layer is absent and the controls
   that read λ, a tier weight or a demand value are disabled. Population is not demand.

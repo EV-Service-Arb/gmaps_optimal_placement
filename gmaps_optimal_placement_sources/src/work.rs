@@ -130,6 +130,7 @@ pub struct Work {
 	/// read, and a Google error body is the only thing that says which quota ran out.
 	agent: ureq::Agent,
 	age: Age,
+	tiling: crate::poi::Tiling,
 	/// Re-ask every billed request and overwrite what it answered. The only thing that spends on a
 	/// question already answered; age alone never does.
 	refresh: bool,
@@ -150,6 +151,7 @@ impl Work {
 			billed: Cell::new(0),
 			agent: ureq::Agent::config_builder().http_status_as_error(false).build().new_agent(),
 			age: Age::default(),
+			tiling: crate::poi::Tiling::default(),
 			refresh: false,
 			served: RefCell::default(),
 		}
@@ -157,9 +159,15 @@ impl Work {
 
 	/// The policy the CLI resolved out of its config. Plain values rather than the config type, so
 	/// `_sources` stands alone and the wasm side never sees the settings crate.
-	pub fn policy(mut self, age: Age) -> Self {
+	pub fn policy(mut self, age: Age, tiling: crate::poi::Tiling) -> Self {
 		self.age = age;
+		self.tiling = tiling;
 		self
+	}
+
+	/// Which tiles the inventory sweep asks for, which is which answers in this dir are the ones asked for.
+	pub(crate) fn tiling(&self) -> crate::poi::Tiling {
+		self.tiling
 	}
 
 	pub fn refresh(mut self, yes: bool) -> Self {

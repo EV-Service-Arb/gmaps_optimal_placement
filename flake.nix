@@ -85,7 +85,7 @@
             XDG_DATA_HOME="$(mktemp -d)"
             export XDG_DATA_HOME
             cargo build -p gmaps_optimal_placement # a cold compile outlasts any wait for the port
-            cargo run -p gmaps_optimal_placement -- serve --port ${toString port} &
+            cargo run -p gmaps_optimal_placement -- --sweep-root 1 serve --port ${toString port} & # the numbers smoke.js asserts were swept from the whole frame
             server=$!
             trap 'kill $server 2>/dev/null || true; rm -rf "$XDG_DATA_HOME"' EXIT
             up=

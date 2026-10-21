@@ -120,7 +120,7 @@ fn main() -> Result<()> {
 	}
 	let cfg = AppConfig::try_build(cli.settings)?;
 	let refresh = matches!(cli.cmd, Cmd::Serve { refresh, .. } | Cmd::Probe { refresh, .. } if refresh);
-	let work = Work::from_env().policy((&cfg.age).into()).refresh(refresh);
+	let work = Work::from_env().policy((&cfg.age).into(), (&cfg.sweep).into()).refresh(refresh);
 	match cli.cmd {
 		Cmd::Config { .. } => unreachable!("handled above, and `handle_settings_command` exits"),
 		Cmd::Schema => {
@@ -147,9 +147,9 @@ fn main() -> Result<()> {
 			// the work dir rather than `work` itself: `Work` holds a `Cell`, and the server calls this
 			// from whichever blocking thread a tab's first request landed on. `--refresh` does not come
 			// along: it belongs to the run that asked for it, and a tab switch is not one
-			let (dir, age) = (work.path().to_owned(), (&cfg.age).into());
+			let (dir, age, tiling) = (work.path().to_owned(), (&cfg.age).into(), (&cfg.sweep).into());
 			let build = std::sync::Arc::new(move |trade: Option<&std::path::Path>, location: &std::path::Path| {
-				let payload = gmaps_optimal_placement::load(trade, location)?.build(&Work::at(dir.clone()).policy(age))?;
+				let payload = gmaps_optimal_placement::load(trade, location)?.build(&Work::at(dir.clone()).policy(age, tiling))?;
 				Ok(serde_json::to_string(&payload)?)
 			});
 			gmaps_optimal_placement_web::serve::serve(trades, locations, prebuilt, build, SocketAddr::from(([127, 0, 0, 1], port)), open)

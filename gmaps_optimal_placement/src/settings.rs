@@ -1,7 +1,7 @@
 //! What the tool does, rather than what a study is about. A study document is the two axes of the
 //! product and nothing else; anything that would be the same for every study — how old an answer may
-//! get before the map says so — lives here.
-use gmaps_optimal_placement_sources::work::Age as Ages;
+//! get before the map says so, how a frame is tiled — lives here.
+use gmaps_optimal_placement_sources::{poi::Tiling, work::Age as Ages};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smart_default::SmartDefault;
@@ -14,6 +14,27 @@ use v_utils::{
 pub struct AppConfig {
 	#[settings(flatten)]
 	pub age: Age,
+	#[settings(flatten)]
+	pub sweep: Sweep,
+}
+
+/// How the competitor sweep tiles a study's frame. Every answer is cached under the exact tile it
+/// was asked for, so changing either re-asks whatever the new tiles cover — a billed day or more.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, SettingsNested, SmartDefault)]
+#[serde(default)]
+pub struct Sweep {
+	/// Tiles a side the frame starts as, before any query is asked.
+	#[default(Tiling::ROOT)]
+	pub root: u32,
+	/// How many times a tile that came back at Google's 60-result cap may be quartered.
+	#[default(Tiling::DEPTH)]
+	pub depth: u32,
+}
+
+impl From<&Sweep> for Tiling {
+	fn from(s: &Sweep) -> Self {
+		Self { root: s.root, depth: s.depth }
+	}
 }
 
 /// How old an answer may get before the map says so. Nothing is evicted and nothing is refetched:
