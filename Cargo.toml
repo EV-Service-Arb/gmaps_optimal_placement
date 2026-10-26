@@ -24,6 +24,9 @@ len_zero = "allow"
 [workspace.lints.rust]
 unused_features = "allow"
 
+[workspace.lints.cargo]
+non_kebab_case_bins = "allow"
+
 [workspace.dependencies]
 gmaps_optimal_placement_core = { path = "gmaps_optimal_placement_core", version = "0.1.0" }
 gmaps_optimal_placement_misc = { path = "gmaps_optimal_placement_misc", version = "0.1.0" }
