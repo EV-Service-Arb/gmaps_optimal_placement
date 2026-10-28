@@ -544,7 +544,15 @@ pub fn MapView() -> impl IntoView {
 							{if open { "▾ " } else { "▸ " }}
 							{format!("Data age · oldest {oldest:.0} d")}
 						</h4>
-						{open.then(move || age_chart(&ages))}
+						{open
+							.then(move || {
+								view! {
+									{age_chart(&ages)}
+									<button class="sec" on:click=move |_| imp::reload(s)>
+										"Re-ask Google"
+									</button>
+								}
+							})}
 					},
 				)
 			}}
@@ -683,6 +691,7 @@ mod imp {
 	pub fn persist_keys(_: State) {}
 	pub fn scroll_pick(_: usize) {}
 	pub fn find(_: State, _: String) {}
+	pub fn reload(_: State) {}
 }
 
 #[cfg(feature = "hydrate")]
@@ -928,19 +937,49 @@ mod imp {
 
 	/// Fetch a study, build its `Model`, and give it a tab. Mounts the map on the first one.
 	async fn add(s: State, at: (Option<String>, String)) -> Option<usize> {
+		let tab = fetch(s, at, false).await?;
+		let model = tab.model.clone().expect("fetched with its model");
+		s.tabs.update(|v| v.push(tab));
+		if !s.mounted.get_untracked() && !mount(s, &model).await {
+			return None;
+		}
+		Some(s.tabs.with_untracked(Vec::len) - 1)
+	}
+
+	/// The active tab's pairing, every answer under it asked of Google again. A refresh the day's quota
+	/// stopped leaves the tab on what it had, and says so.
+	pub fn reload(s: State) {
+		wasm_bindgen_futures::spawn_local(async move {
+			let i = s.active.get_untracked();
+			let Some(at) = s.tabs.with_untracked(|v| v.get(i).map(|t| t.at.clone())) else { return };
+			let Some(tab) = fetch(s, at, true).await else { return };
+			if let Some(n) = tab.model.as_ref().and_then(|m| m.payload.notice.clone()) {
+				return s.banner.set(Some(format!("⚠ nothing was replaced — {n}")));
+			}
+			s.tabs.update(|v| v[i] = tab);
+			s.active.set(usize::MAX); // `adopt` is unconditional; `activate` would see `i` as current
+			adopt(s, i);
+		});
+	}
+
+	/// A study, as a tab that is not open yet.
+	async fn fetch(s: State, at: (Option<String>, String), refresh: bool) -> Option<Tab> {
 		// a pairing the server has not built yet reads the grid archive and every POI page, which is
 		// tens of seconds of nothing to look at
 		let shown = match &at.0 {
 			Some(t) => format!("{t} in {}", at.1),
 			None => at.1.clone(),
 		};
-		s.banner.set(Some(format!("building {shown} …")));
+		s.banner.set(Some(format!("{} {shown} …", if refresh { "re-asking Google for" } else { "building" })));
 		let location = js_sys::encode_uri_component(&at.1);
-		let url = match &at.0 {
-			Some(t) => format!("/payload/{}/{location}", js_sys::encode_uri_component(t)),
-			None => format!("/place/{location}"),
+		let req = match &at.0 {
+			Some(t) => {
+				let url = format!("/payload/{}/{location}", js_sys::encode_uri_component(t));
+				if refresh { gloo_net::http::Request::post(&url) } else { gloo_net::http::Request::get(&url) }
+			}
+			None => gloo_net::http::Request::get(&format!("/place/{location}")),
 		};
-		let payload = match get::<gmaps_optimal_placement_core::Payload>(&url).await {
+		let payload = match send::<gmaps_optimal_placement_core::Payload>(req).await {
 			Ok(p) => p,
 			Err(e) => {
 				s.banner.set(Some(format!("⚠ {shown} — {e}")));
@@ -959,7 +998,7 @@ mod imp {
 			s.banner.set(Some(format!("⚠ pins — {e}")));
 			Vec::new()
 		});
-		let tab = Tab {
+		Some(Tab {
 			at,
 			label: model.payload.name.clone(),
 			// inert without a trade: the slider is disabled and nothing reads the number
@@ -971,13 +1010,8 @@ mod imp {
 			core,
 			temp: Vec::new(),
 			selected: None,
-			model: Some(model.clone()),
-		};
-		s.tabs.update(|v| v.push(tab));
-		if !s.mounted.get_untracked() && !mount(s, &model).await {
-			return None;
-		}
-		Some(s.tabs.with_untracked(Vec::len) - 1)
+			model: Some(model),
+		})
 	}
 
 	/// The live signals, back into the tab they belong to.
@@ -1279,7 +1313,11 @@ mod imp {
 	}
 
 	async fn get<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
-		match gloo_net::http::Request::get(url).send().await {
+		send(gloo_net::http::Request::get(url)).await
+	}
+
+	async fn send<T: serde::de::DeserializeOwned>(req: gloo_net::http::RequestBuilder) -> Result<T, String> {
+		match req.send().await {
 			Err(e) => Err(e.to_string()),
 			Ok(r) if !r.ok() => Err(r.text().await.unwrap_or_else(|_| r.status_text())),
 			Ok(r) => r.json::<T>().await.map_err(|e| format!("it did not parse — {e}")),

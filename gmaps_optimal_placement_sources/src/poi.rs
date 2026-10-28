@@ -8,7 +8,7 @@ use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::work::{Kind, Need, Work};
+use crate::work::{Age, Kind, Need, Work};
 
 pub const SEARCH_TEXT: &str = "https://places.googleapis.com/v1/places:searchText";
 /// Enterprise SKU: `rating`, `websiteUri` and `nationalPhoneNumber` each pull the mask up a tier.
@@ -20,7 +20,7 @@ const FIELDS: &str = "places.id,places.displayName,places.formattedAddress,place
 const CAP: usize = 60;
 
 /// How the inventory sweep cuts a frame. Every answer is cached under the exact tile it was asked
-/// for, so a different tiling is a different set of questions and re-asks whatever it covers.
+/// for, so a query already swept keeps the root it was swept from until `--refresh`.
 #[derive(Clone, Copy, Debug)]
 pub struct Tiling {
 	/// Tiles a side the frame starts as, before any query is asked.
@@ -224,19 +224,13 @@ fn sweep(cfg: &PoiConfig, bbox: Bbox, key: Option<&str>, work: &Work) -> Result<
 		// every answer that arrived is already on disk and the recursion is deterministic, so whatever
 		// stopped this — a daily quota above all — a rerun picks up where it stopped and pays only for
 		// what is still missing
-		let (dlat, dlon) = ((bbox.lat[1] - bbox.lat[0]) / f64::from(root), (bbox.lon[1] - bbox.lon[0]) / f64::from(root));
-		for i in 0..root {
-			for j in 0..root {
-				// the cache key is the body verbatim, so these expressions may not be re-associated
-				let (lat0, lon0) = (bbox.lat[0] + f64::from(i) * dlat, bbox.lon[0] + f64::from(j) * dlon);
-				let (lat1, lon1) = (bbox.lat[0] + f64::from(i + 1) * dlat, bbox.lon[0] + f64::from(j + 1) * dlon);
-				let tile = Bbox {
-					lat: [lat0, lat1],
-					lon: [lon0, lon1],
-				};
-				descend(work, key, q, cfg.included_type.as_deref(), tile, 0, &mut found)
-					.wrap_err_with(|| format!("sweeping {q:?}: a rerun resumes from here, and re-asks nothing already answered"))?;
-			}
+		let typed = cfg.included_type.as_deref();
+		let swept = swept(work, q, typed, bbox, root)?;
+		if swept != root {
+			eprintln!("  {q:?}: on disk from {swept} root tiles a side rather than the configured {root}, and served from there until `--refresh`");
+		}
+		for tile in tiles(bbox, swept) {
+			descend(work, key, q, typed, tile, 0, &mut found).wrap_err_with(|| format!("sweeping {q:?}: a rerun resumes from here, and re-asks nothing already answered"))?;
 		}
 		// new, not returned: the queries overlap by design, and what the eighth one adds over the seven
 		// before it is what says whether it earns its calls
@@ -317,13 +311,57 @@ fn sweep(cfg: &PoiConfig, bbox: Bbox, key: Option<&str>, work: &Work) -> Result<
 	Ok(Inventory { pois: out, obs, missing })
 }
 
-/// One query over one tile, quartered wherever the answer came back at the cap. Splitting is per
-/// query and not once for the whole sweep: "lavage auto" saturates downtown where "covering
-/// carrosserie" does not, and the quadrants of a tile nobody filled are not worth asking.
-///
-/// Not a study's to state: the cap bites on competitor density, which is a fact about the trade and
-/// the ground together, and which no document knows before it asks.
-fn descend(work: &Work, key: Option<&str>, query: &str, typed: Option<&str>, tile: Bbox, depth: u32, found: &mut Found) -> Result<()> {
+/// The root tiles a side `query`'s answers on disk are keyed on: one whose sweep is complete there,
+/// else one begun there for a rerun to finish, else the configured one — which is also the only one
+/// under `--refresh`.
+fn swept(work: &Work, query: &str, typed: Option<&str>, bbox: Bbox, root: u32) -> Result<u32> {
+	if work.refreshing() {
+		return Ok(root);
+	}
+	// a `Work` of its own, so what this reads to choose is not counted as what the map was served
+	let scratch = Work::at(work.path()).policy(Age::default(), work.tiling());
+	let mut begun = None;
+	for r in std::iter::once(root).chain(1..=ROOTS) {
+		let mut found = Found {
+			calls: vec![(0, 0); work.tiling().depth as usize + 1],
+			..Found::default()
+		};
+		for tile in tiles(bbox, r) {
+			descend(&scratch, None, query, typed, tile, 0, &mut found)?;
+		}
+		match (found.calls[0].0, found.missing) {
+			(0, _) => {}
+			(_, 0) => return Ok(r),
+			_ => {
+				begun.get_or_insert(r);
+			}
+		}
+	}
+	Ok(begun.unwrap_or(root))
+}
+
+/// shortcut: a frame swept from more root tiles a side than this is not recognised on disk, raise it if a setting goes past
+const ROOTS: u32 = 8;
+
+fn tiles(bbox: Bbox, root: u32) -> Vec<Bbox> {
+	let (dlat, dlon) = ((bbox.lat[1] - bbox.lat[0]) / f64::from(root), (bbox.lon[1] - bbox.lon[0]) / f64::from(root));
+	(0..root)
+		.flat_map(|i| {
+			(0..root).map(move |j| {
+				// the cache key is the body verbatim, so these expressions may not be re-associated
+				let (lat0, lon0) = (bbox.lat[0] + f64::from(i) * dlat, bbox.lon[0] + f64::from(j) * dlon);
+				let (lat1, lon1) = (bbox.lat[0] + f64::from(i + 1) * dlat, bbox.lon[0] + f64::from(j + 1) * dlon);
+				Bbox {
+					lat: [lat0, lat1],
+					lon: [lon0, lon1],
+				}
+			})
+		})
+		.collect()
+}
+
+/// The first page of `query` over `tile`, which is also its cache key.
+fn ask(query: &str, typed: Option<&str>, tile: Bbox) -> serde_json::Value {
 	// the cache key is the body verbatim, so a tile's corners may not be re-associated
 	let rect = serde_json::json!({
 		"low":  {"latitude": tile.lat[0], "longitude": tile.lon[0]},
@@ -337,6 +375,17 @@ fn descend(work: &Work, key: Option<&str>, query: &str, typed: Option<&str>, til
 		body["includedType"] = serde_json::Value::String(t.to_owned());
 		body["strictTypeFiltering"] = serde_json::Value::Bool(true);
 	}
+	body
+}
+
+/// One query over one tile, quartered wherever the answer came back at the cap. Splitting is per
+/// query and not once for the whole sweep: "lavage auto" saturates downtown where "covering
+/// carrosserie" does not, and the quadrants of a tile nobody filled are not worth asking.
+///
+/// Not a study's to state: the cap bites on competitor density, which is a fact about the trade and
+/// the ground together, and which no document knows before it asks.
+fn descend(work: &Work, key: Option<&str>, query: &str, typed: Option<&str>, tile: Bbox, depth: u32, found: &mut Found) -> Result<()> {
+	let body = ask(query, typed, tile);
 	// asked here rather than inferred from an empty page: a tile nobody harvested and one Google
 	// returned nothing for read the same out of `search_text`, and only the first would cost anything
 	if work.refreshing() || work.cached(SEARCH_TEXT, &body)?.is_none() {

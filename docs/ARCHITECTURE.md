@@ -132,8 +132,9 @@ app, so every entry point in `map_core.js` returns a banner string instead.
   INSEE archive is ~87 MB and Places calls are billed.
 - **Nothing in that cache expires.** An answer older than its kind's configured age is served anyway,
   and its age rides onto the map beside the imputed flag. Google's daily search quota is the scarce
-  side, and refetching spends a day of it to learn what is mostly the same thing; `--refresh` is the
-  only thing that re-asks. Age is a caption, never a trigger.
+  side, and refetching spends a day of it to learn what is mostly the same thing; `--refresh`, or the
+  map's re-ask, is the only thing that re-asks. Age is a caption and a changed tiling is a setting;
+  neither is a trigger.
 - **A cache key covers everything its answer depends on**, so a changed input is a different file
   rather than a stale one and nothing needs invalidating. A derived answer is cached only where it is
   reproducible from what is kept: the grid extract keeps the archive's own rows and re-parses them,

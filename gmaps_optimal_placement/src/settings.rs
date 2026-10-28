@@ -19,7 +19,8 @@ pub struct AppConfig {
 }
 
 /// How the competitor sweep tiles a study's frame. Every answer is cached under the exact tile it
-/// was asked for, so changing either re-asks whatever the new tiles cover — a billed day or more.
+/// was asked for. A query already on disk keeps the root it was swept from until `--refresh`; a
+/// deeper `depth` asks the finer tiles under whatever came back at the cap.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, SettingsNested, SmartDefault)]
 #[serde(default)]
 pub struct Sweep {

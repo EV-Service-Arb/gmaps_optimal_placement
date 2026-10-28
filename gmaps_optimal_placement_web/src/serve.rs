@@ -18,19 +18,20 @@ use axum::{
 use eyre::{Result, WrapErr};
 use leptos::prelude::*;
 
-/// A trade and a location, to the serialised `Payload` of pairing them. No trade is a location on
-/// its own, which is the half of the product that costs nothing to build.
-pub type Build = Arc<dyn Fn(Option<&std::path::Path>, &std::path::Path) -> Result<String> + Send + Sync>;
+/// A trade and a location, to the serialised `Payload` of pairing them, re-asking every answer it is
+/// built from when told to. No trade is a location on its own, which is the half of the product that
+/// costs nothing to build.
+pub type Build = Arc<dyn Fn(Option<&std::path::Path>, &std::path::Path, bool) -> Result<String> + Send + Sync>;
 
 /// A location and a search, to the one place it names there: `[lat, lon]` and Google's address. The
 /// CLI's for the same reason `Build` is, and because what it may spend is the CLI's to say.
 pub type Find = Arc<dyn Fn(&std::path::Path, &str) -> Result<Option<([f64; 2], String)>> + Send + Sync>;
 
-/// One cell per pairing, so two tabs asking at once read the 87 MB archive once between them. Keyed
+/// One slot per pairing, so two tabs asking at once read the 87 MB archive once between them. Keyed
 /// by the two stems rather than by the study's name: what a pairing is called is the CLI's to say,
 /// and a second spelling of it here is a second thing to keep in step with the pin file.
 type Key = (Option<String>, String);
-type Pool = Arc<HashMap<Key, (Option<PathBuf>, PathBuf, Arc<tokio::sync::OnceCell<axum::body::Bytes>>)>>;
+type Pool = Arc<HashMap<Key, (Option<PathBuf>, PathBuf, Arc<tokio::sync::Mutex<Option<axum::body::Bytes>>>)>>;
 
 /// `prebuilt` is `(trade stem, location stem, payload)` — whatever the CLI already paid for.
 pub fn serve(trades: Vec<PathBuf>, locations: Vec<PathBuf>, prebuilt: Vec<(Option<String>, String, String)>, build: Build, find: Find, addr: SocketAddr, open: bool) -> Result<()> {
@@ -65,21 +66,22 @@ pub fn serve(trades: Vec<PathBuf>, locations: Vec<PathBuf>, prebuilt: Vec<(Optio
 		.iter()
 		.zip(&location_stems)
 		.flat_map(|(l, ls)| {
-			let bare = std::iter::once(((None, ls.clone()), (None, l.clone(), Arc::new(tokio::sync::OnceCell::new()))));
+			let bare = std::iter::once(((None, ls.clone()), (None, l.clone(), Arc::new(tokio::sync::Mutex::new(None)))));
 			bare.chain(
 				trades
 					.iter()
 					.zip(&trade_stems)
-					.map(move |(t, ts)| ((Some(ts.clone()), ls.clone()), (Some(t.clone()), l.clone(), Arc::new(tokio::sync::OnceCell::new())))),
+					.map(move |(t, ts)| ((Some(ts.clone()), ls.clone()), (Some(t.clone()), l.clone(), Arc::new(tokio::sync::Mutex::new(None))))),
 			)
 		})
 		.collect();
 	let opened: Vec<Key> = prebuilt.iter().map(|(t, l, _)| (t.clone(), l.clone())).collect();
 	for (t, l, json) in prebuilt {
-		let (_, _, cell) = pool
+		let (_, _, slot) = pool
 			.get_mut(&(t.clone(), l.clone()))
 			.ok_or_else(|| eyre::eyre!("{t:?} x {l:?} was built but is not in the product"))?;
-		cell.set(json.into()).expect("each study is prebuilt at most once");
+		let slot = Arc::get_mut(slot).expect("nothing has seen the pool yet").get_mut();
+		assert!(slot.replace(axum::body::Bytes::from(json)).is_none(), "each study is prebuilt at most once");
 	}
 	let pool: Pool = Arc::new(pool);
 
@@ -93,15 +95,19 @@ pub fn serve(trades: Vec<PathBuf>, locations: Vec<PathBuf>, prebuilt: Vec<(Optio
 	};
 
 	let studies = serde_json::json!({ "trades": trade_stems, "locations": location_stems, "open": opened }).to_string();
-	let bare = (pool.clone(), build.clone());
+	let (bare, again) = ((pool.clone(), build.clone()), (pool.clone(), build.clone()));
 	let places = pool.clone();
 	let mut app = Router::new()
 		.route("/studies.json", get(move || std::future::ready(json(studies.clone()))))
 		.route(
 			"/payload/{trade}/{location}",
-			get(move |UrlPath((t, l)): UrlPath<(String, String)>| payload(pool.clone(), build.clone(), (Some(t), l))),
+			get(move |UrlPath((t, l)): UrlPath<(String, String)>| payload(pool.clone(), build.clone(), (Some(t), l), false))
+				.post(move |UrlPath((t, l)): UrlPath<(String, String)>| payload(again.0.clone(), again.1.clone(), (Some(t), l), true)),
 		)
-		.route("/place/{location}", get(move |UrlPath(l): UrlPath<String>| payload(bare.0.clone(), bare.1.clone(), (None, l))))
+		.route(
+			"/place/{location}",
+			get(move |UrlPath(l): UrlPath<String>| payload(bare.0.clone(), bare.1.clone(), (None, l), false)),
+		)
 		.route(
 			"/find/{location}",
 			get(move |UrlPath(l): UrlPath<String>, Query(q): Query<Search>| self::find(places.clone(), find.clone(), l, q.q)),
@@ -136,33 +142,40 @@ pub fn serve(trades: Vec<PathBuf>, locations: Vec<PathBuf>, prebuilt: Vec<(Optio
 	})
 }
 
-/// Built on the first tab that asks for it. A failure is the eyre chain, which the page banners.
-async fn payload(pool: Pool, build: Build, at: Key) -> Result<([(axum::http::HeaderName, &'static str); 1], axum::body::Bytes), (StatusCode, String)> {
-	let Some((trade, location, cell)) = pool.get(&at) else {
+/// Built on the first tab that asks for it, and kept until one asks for it again, which re-asks Google
+/// everything it is built from. That answer goes to the asking tab alone: a refresh stopped part-way
+/// by the day's quota is a map with no competitors on it, while the work dir under it now holds
+/// every answer either sweep paid for, so the next tab to ask builds from that. A failure is the eyre
+/// chain, which the page banners.
+async fn payload(pool: Pool, build: Build, at: Key, refresh: bool) -> Result<([(axum::http::HeaderName, &'static str); 1], axum::body::Bytes), (StatusCode, String)> {
+	let Some((trade, location, slot)) = pool.get(&at) else {
 		return Err((StatusCode::NOT_FOUND, format!("{:?} is not a trade over {:?}", at.0, at.1)));
 	};
-	let built = cell
-		.get_or_try_init(|| {
-			let (trade, location, build) = (trade.clone(), location.clone(), build.clone());
-			async move {
-				let shown = match &trade {
-					Some(t) => format!("{} x {}", t.display(), location.display()),
-					None => location.display().to_string(),
-				};
-				tokio::task::spawn_blocking(move || build(trade.as_deref(), &location).map(axum::body::Bytes::from))
-					.await
-					.map_err(|e| format!("building {shown}: {e}"))?
-					// the chain and not `{e:?}`: the backtrace belongs in this terminal, and a page that hands
-					// one to whoever opened a city has stopped being a map
-					.map_err(|e| {
-						eprintln!("building {shown}: {e:?}");
-						format!("{e:#}")
-					})
-			}
-		})
+	let mut slot = slot.lock().await;
+	if refresh {
+		*slot = None;
+	}
+	if let Some(built) = &*slot {
+		return Ok(json(built.clone()));
+	}
+	let (trade, location) = (trade.clone(), location.clone());
+	let shown = match &trade {
+		Some(t) => format!("{} x {}", t.display(), location.display()),
+		None => location.display().to_string(),
+	};
+	let built = tokio::task::spawn_blocking(move || build(trade.as_deref(), &location, refresh).map(axum::body::Bytes::from))
 		.await
-		.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-	Ok(json(built.clone()))
+		.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("building {shown}: {e}")))?
+		// the chain and not `{e:?}`: the backtrace belongs in this terminal, and a page that hands
+		// one to whoever opened a city has stopped being a map
+		.map_err(|e| {
+			eprintln!("building {shown}: {e:?}");
+			(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
+		})?;
+	if !refresh {
+		*slot = Some(built.clone());
+	}
+	Ok(json(built))
 }
 
 #[derive(serde::Deserialize)]

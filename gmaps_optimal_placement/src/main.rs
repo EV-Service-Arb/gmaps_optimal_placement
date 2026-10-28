@@ -152,13 +152,14 @@ fn main() -> Result<()> {
 			};
 			// the work dir rather than `work` itself: `Work` holds a `Cell`, and the server calls this
 			// from whichever blocking thread a tab's first request landed on. `--refresh` does not come
-			// along: it belongs to the run that asked for it, and a tab switch is not one. `--block-spend` does,
-			// because it is about the server and not about a run
+			// along: it belongs to the run that asked for it, and a tab switch is not one — the page's own
+			// reload is. `--block-spend` does, because it is about the server and not about a run
 			let (dir, age, tiling) = (work.path().to_owned(), (&cfg.age).into(), (&cfg.sweep).into());
 			let build = std::sync::Arc::new({
 				let dir = dir.clone();
-				move |trade: Option<&std::path::Path>, location: &std::path::Path| {
-					let payload = gmaps_optimal_placement::load(trade, location)?.build(&Work::at(dir.clone()).policy(age, tiling).block_spend(block_spend))?;
+				move |trade: Option<&std::path::Path>, location: &std::path::Path, refresh: bool| {
+					eyre::ensure!(!(refresh && block_spend), "`--block-spend` buys nothing, so it re-asks nothing either");
+					let payload = gmaps_optimal_placement::load(trade, location)?.build(&Work::at(dir.clone()).policy(age, tiling).refresh(refresh).block_spend(block_spend))?;
 					Ok(serde_json::to_string(&payload)?)
 				}
 			});
