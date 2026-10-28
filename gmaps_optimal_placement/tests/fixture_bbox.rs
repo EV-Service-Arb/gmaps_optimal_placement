@@ -1,7 +1,7 @@
 //! A few hundred cells of the real INSEE archive, through the real study's expressions. Snapshots
 //! the numbers a model change would move, so it moves them visibly.
 //!
-//! Reads the bulk archive out of the workspace work dir, downloading it once if absent. No POI call
+//! Reads the bulk archive out of the work dir, downloading it once if absent. No POI call
 //! is made: [`Study::cells`] stops before the billed half.
 use std::path::{Path, PathBuf};
 
@@ -30,9 +30,7 @@ fn narrowed(trade: Option<PathBuf>) -> Study {
 fn clermont_centre() {
 	let study = narrowed(Some(root().join("examples/trades/car_detailing.nix")));
 	assert_eq!(study.name, "car_detailing_-_Clermont-Ferrand", "the pairing names itself off the two stems");
-	let root = root();
-
-	let c = study.cells(&Work::at(root.join("tmp/geo"))).unwrap();
+	let c = study.cells(&Work::at(v_utils::xdg_cache_dir!(""))).unwrap();
 	let sum = |v: &[f64]| v.iter().sum::<f64>();
 	let mut lines = vec![
 		format!("cells           {}", c.grid.len()),
@@ -63,7 +61,7 @@ fn a_location_alone_builds_off_the_archive() {
 	let study = narrowed(None);
 	assert_eq!(study.name, "Clermont-Ferrand", "with no trade to apply, a study is named after the city");
 
-	let p = study.build(&Work::at(root().join("tmp/geo"))).unwrap();
+	let p = study.build(&Work::at(v_utils::xdg_cache_dir!(""))).unwrap();
 	assert!(p.trade.is_none(), "a location carries no demand surface and no competitors");
 	let m = gmaps_optimal_placement_core::Model::try_new(p).unwrap();
 	assert!(m.traded().is_none(), "and so no view onto anything a slider moves");

@@ -11,6 +11,7 @@
       let
         pkgs = import v_flakes.default_nixpkgs { inherit system; config.allowUnfree = true; };
         rust = v_flakes.rs.default_nightly system;
+        build_rust = v_flakes.rs.build_nightly system;
         pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; stripClaudeSignature = true; });
         pname = (pkgs.lib.importTOML ./gmaps_optimal_placement/Cargo.toml).package.name;
         # inherited from the workspace, so it is not in the member's own `[package]`
@@ -116,7 +117,7 @@
           runtimeInputs = with pkgs; [ rust git pkg-config openssl mold python3 psmisc xdg-utils nix fzf ];
           text = ''
             cd "$(git rev-parse --show-toplevel)"
-            out="''${GMAPS_OPTIMAL_PLACEMENT_WORK:-tmp/geo}/out"
+            out="''${XDG_CACHE_HOME:-$HOME/.cache}/gmaps_optimal_placement/out"
             cargo run -p gmaps_optimal_placement -- searches "$@" --out "$out/searches.html"
             fuser -k ${toString port}/tcp 2>/dev/null || true
             xdg-open "http://localhost:${toString port}/searches.html" &
@@ -132,7 +133,7 @@
           text = ''
             [ $# -ge 2 ] || { echo "usage: nix run .#misc <country> <tally> [--per <column>] [--floor <n>]" >&2; exit 1; }
             cd "$(git rev-parse --show-toplevel)"
-            out="''${GMAPS_OPTIMAL_PLACEMENT_WORK:-tmp/geo}/out/misc-$1-$2.html"
+            out="''${XDG_CACHE_HOME:-$HOME/.cache}/gmaps_optimal_placement/out/misc-$1-$2.html"
             cargo run -p gmaps_optimal_placement -- misc "$@" --out "$out"
             xdg-open "$out"
           '';
@@ -153,7 +154,7 @@
                                             pool | building | parcel per --per column, --floor to skip hamlets
             nix run .#study                 serve the Clermont map and assert it in headless Chromium
             nix run .#help                  this
-            cached archives and API responses live under $GMAPS_OPTIMAL_PLACEMENT_WORK (default tmp/geo);
+            cached archives and API responses live under $XDG_CACHE_HOME/gmaps_optimal_placement;
             promoted candidates live under $XDG_DATA_HOME/gmaps_optimal_placement
             a study is a trade applied to a location. examples/trades/<t>.nix is a function of the
             location's attrset; examples/locations/<l>.nix carries area, candidate and searches.place.
@@ -173,7 +174,7 @@
         };
 
         packages.default =
-          (pkgs.makeRustPlatform { rustc = rust; cargo = rust; inherit stdenv; }).buildRustPackage {
+          (pkgs.makeRustPlatform { rustc = build_rust; cargo = build_rust; inherit stdenv; }).buildRustPackage {
             inherit pname;
             inherit version;
             buildInputs = with pkgs; [ openssl.dev ];

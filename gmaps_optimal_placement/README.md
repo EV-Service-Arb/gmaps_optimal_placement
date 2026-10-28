@@ -38,4 +38,4 @@ pressure, underserved demand, capture scores and the top-N sweep are `gmaps_opti
 recomputed in the page because they move with the sliders.
 
 `GOOGLE_MAPS_KEY` is read from the environment by the server and never written to disk.
-`GMAPS_OPTIMAL_PLACEMENT_WORK` (default `./tmp/geo`) is where archives and API responses cache.
+Archives and API responses cache under `$XDG_CACHE_HOME/gmaps_optimal_placement`.

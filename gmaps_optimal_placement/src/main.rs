@@ -126,7 +126,10 @@ fn main() -> Result<()> {
 	let refresh = matches!(cli.cmd, Cmd::Serve { refresh, .. } | Cmd::Probe { refresh, .. } if refresh);
 	eyre::ensure!(!(refresh && cli.block_spend), "`--refresh` buys every answer again, and `--block-spend` buys none");
 	let block_spend = cli.block_spend;
-	let work = Work::from_env().policy((&cfg.age).into(), (&cfg.sweep).into()).refresh(refresh).block_spend(block_spend);
+	let work = Work::at(v_utils::xdg_cache_dir!(""))
+		.policy((&cfg.age).into(), (&cfg.sweep).into())
+		.refresh(refresh)
+		.block_spend(block_spend);
 	match cli.cmd {
 		Cmd::Config { .. } => unreachable!("handled above, and `handle_settings_command` exits"),
 		Cmd::Schema => {

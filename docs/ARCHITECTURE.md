@@ -128,7 +128,7 @@ app, so every entry point in `map_core.js` returns a banner string instead.
   map are a diff beside it, under `XDG_DATA_HOME` — data, not cache, because a promoted candidate is
   a decision and cache is what cleaners delete.
 - **`GOOGLE_MAPS_KEY` lives in the server's environment, never in an artifact.** Bulk archives and
-  API responses cache under `GMAPS_OPTIMAL_PLACEMENT_WORK` (default `./tmp/geo`) so a rerun costs nothing — the
+  API responses cache under `$XDG_CACHE_HOME/gmaps_optimal_placement` so a rerun costs nothing — the
   INSEE archive is ~87 MB and Places calls are billed.
 - **Nothing in that cache expires.** An answer older than its kind's configured age is served anyway,
   and its age rides onto the map beside the imputed flag. Google's daily search quota is the scarce

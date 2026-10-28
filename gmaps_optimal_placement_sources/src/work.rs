@@ -1,4 +1,4 @@
-//! The untracked work dir: bulk archives and API responses, so a rerun costs nothing.
+//! The work dir: bulk archives and API responses, so a rerun costs nothing.
 //!
 //! Nothing here expires. An answer past the age its kind allows is still served and its age is
 //! reported, because the alternative — refetching — spends a day of quota to learn the same thing,
@@ -152,12 +152,6 @@ pub struct Work {
 }
 
 impl Work {
-	/// `GMAPS_OPTIMAL_PLACEMENT_WORK`, else `./tmp/geo` — gitignored, and where the prototype already put its
-	/// downloads.
-	pub fn from_env() -> Self {
-		Self::at(std::env::var_os("GMAPS_OPTIMAL_PLACEMENT_WORK").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("tmp/geo")))
-	}
-
 	pub fn at(dir: impl Into<PathBuf>) -> Self {
 		Self {
 			dir: dir.into(),
