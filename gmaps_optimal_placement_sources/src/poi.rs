@@ -131,6 +131,8 @@ pub struct Inventory {
 	/// (query, tile) pairs this walk found no answer for. A lower bound on what a keyed sweep would
 	/// spend, because a tile that comes back at the cap opens four more. Zero once one has paid.
 	pub missing: usize,
+	/// Pages this walk was answered with: what a refresh asks again, if every tile fills as it did.
+	pub calls: usize,
 }
 
 /// One text search, paged, in rank order. The body and the field mask are the caller's, because
@@ -308,7 +310,12 @@ fn sweep(cfg: &PoiConfig, bbox: Bbox, key: Option<&str>, work: &Work) -> Result<
 	for (d, (c, q)) in calls.iter().enumerate().filter(|(_, (c, _))| *c > 0) {
 		eprintln!("  depth {d}: {c} calls, {q} of them interior");
 	}
-	Ok(Inventory { pois: out, obs, missing })
+	Ok(Inventory {
+		pois: out,
+		obs,
+		missing,
+		calls: total,
+	})
 }
 
 /// The root tiles a side `query`'s answers on disk are keyed on: one whose sweep is complete there,

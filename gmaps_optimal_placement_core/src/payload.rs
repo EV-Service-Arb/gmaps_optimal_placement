@@ -46,6 +46,8 @@ pub struct Trade {
 	/// probed, which is what decides whether the map offers an observed coverage layer at all.
 	pub nodes: Vec<[f64; 2]>,
 	pub pois: Vec<PoiOut>,
+	/// Places searches the inventory sweep was answered with — what re-asking it buys again.
+	pub searches: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

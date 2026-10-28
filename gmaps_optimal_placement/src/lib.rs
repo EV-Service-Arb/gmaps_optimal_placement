@@ -311,6 +311,7 @@ impl Study {
 			queries,
 			nodes,
 			pois,
+			searches: inv.calls,
 		})
 	}
 

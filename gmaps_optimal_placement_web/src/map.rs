@@ -265,6 +265,8 @@ pub struct Loaded {
 	/// Days since each competitor was last answered for, and its tier — so the chart follows the tier toggles.
 	pub ages: Vec<(f64, usize)>,
 	pub queries: Vec<(String, usize)>,
+	/// What re-asking Google for this tab costs, in Places searches. `None` without a trade.
+	pub searches: Option<usize>,
 	/// Whether this tab has a trade under it. Everything a slider moves is the trade's, so this is
 	/// what the panel greys out on.
 	pub traded: bool,
@@ -537,6 +539,9 @@ pub fn MapView() -> impl IntoView {
 					.map(|(d, _)| d)
 					.collect();
 				let oldest = ages.iter().copied().reduce(f64::max)?;
+				let searches = loaded
+					.searches
+					.expect("competitors to date come with the trade that swept them");
 				let open = show_ages.get();
 				Some(
 					view! {
@@ -550,10 +555,12 @@ pub fn MapView() -> impl IntoView {
 									{age_chart(&ages)}
 									<button
 										class="sec"
-										title="re-asks Google for every cell — spends a lot of Maps API quota"
+										title=format!(
+											"re-asks Google the {searches} Places searches this map was built from, more where a tile has filled since",
+										)
 										on:click=move |_| imp::reload(s)
 									>
-										"⚠ Pull latest"
+										{format!("⚠ Pull latest · {searches} searches")}
 									</button>
 								}
 							})}
@@ -1059,6 +1066,7 @@ mod imp {
 				.collect(),
 			categories: m.payload.trade.iter().flat_map(categories).collect(),
 			imputed: m.payload.imputed.iter().filter(|&&i| i == 1).count(),
+			searches: m.payload.trade.as_ref().map(|t| t.searches),
 			ages: {
 				let now = js_sys::Date::now() / 1000.;
 				m.payload
