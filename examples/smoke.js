@@ -73,12 +73,17 @@ async function main() {
     for (let i = 0; i < 20; i++) { got = await markers(); if (got === n) return; await sleep(500); }
     assert.equal(got, n, msg);
   };
-  const col = n => `document.querySelectorAll('#picker .col')[${n}]`;
-  const rows = n => evaluate(`[...${col(n)}.querySelectorAll('li')].map(l => l.textContent)`);
-  const pick = (n, name) => evaluate(`[...${col(n)}.querySelectorAll('li')].find(l => l.textContent === ${JSON.stringify(name)}).click()`);
-  const take = () => evaluate("document.querySelector('#picker button.go').click()");
-  const picked = n => evaluate(`${col(n)}.querySelector('li.on')?.textContent ?? null`);
-  const loadable = () => evaluate("!document.querySelector('#picker button.go').disabled");
+  // one uikit `Command` per axis; a row's place on screen is its CSS `order`, which is how it is ranked
+  const col = n => `document.querySelectorAll('#picker [data-slot=command]')[${n}]`;
+  const items = n => `[...${col(n)}.querySelectorAll('[data-slot=command-item]')]`;
+  const rows = n => evaluate(`${items(n)}.sort((a, b) => a.style.order - b.style.order).map(i => i.textContent)`);
+  const pick = (n, name) => evaluate(`${items(n)}.find(i => i.textContent === ${JSON.stringify(name)}).click()`);
+  const take = () => evaluate("document.querySelector('#picker [data-slot=button]').click()");
+  const picked = n => evaluate(`${col(n)}.querySelector('[data-slot=command-item]:has([aria-label=picked])')?.textContent ?? null`);
+  const invalid = n => evaluate(`${col(n)}.querySelector('[data-slot=command-input]').getAttribute('aria-invalid')`);
+  const focused = () => evaluate(`(() => { const a = document.activeElement;
+    return a.dataset.slot === 'button' ? 'load' : [...document.querySelectorAll('#picker [data-slot=command-input]')].indexOf(a); })()`);
+  const pickerUp = () => evaluate("!!document.querySelector('#picker')");
   const settled = () =>
     evaluate("document.querySelectorAll('#ctl select option').length > 0 && !!document.querySelector('canvas')").catch(() => false);
   // the panel is server-rendered empty and filled by the island, so its contents are the only
@@ -87,11 +92,11 @@ async function main() {
   const load = async () => {
     await send("Page.navigate", { url: URL_ });
     for (let i = 0; ; i++) {
-      if (await evaluate("!!document.querySelector('#picker .col input')").catch(() => false)) break;
+      if (await evaluate("!!document.querySelector('#picker [data-slot=command-input]')").catch(() => false)) break;
       if (i === 60) throw new Error("the picker never rendered");
       await sleep(500);
     }
-    // a click picks its own box and no more, so the loading is asked for on its own
+    // a click picks its own field and no more, so the loading is asked for on its own
     await pick(0, "car_detailing");
     await pick(1, "Clermont-Ferrand");
     await take();
@@ -107,10 +112,11 @@ async function main() {
     await send("Input.dispatchKeyEvent", { type: "keyUp", key });
     await sleep(700);
   };
-  // a named key carries no text, or the field it is aimed at takes the name as characters
-  const stroke = async (key, code, modifiers = 0) => {
-    const p = { key, code: key, windowsVirtualKeyCode: code, nativeVirtualKeyCode: code, modifiers };
-    await send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...p });
+  // a named key carries no text, or the field it is aimed at takes the name as characters — save
+  // Enter, whose "\r" is what activates a focused button
+  const stroke = async (key, code) => {
+    const p = { key, code: key, windowsVirtualKeyCode: code, nativeVirtualKeyCode: code };
+    await send("Input.dispatchKeyEvent", key === "Enter" ? { type: "keyDown", text: "\r", ...p } : { type: "rawKeyDown", ...p });
     await send("Input.dispatchKeyEvent", { type: "keyUp", ...p });
     await sleep(700);
   };
@@ -243,8 +249,9 @@ async function main() {
   // field buys. Everything a slider moves is a trade's, so the panel has to say so
   log("step: a location with no trade");
   await press("t");
-  await pick(0, "(no trade · grid only)");
+  // the other order from `load`'s: a coordinate is known in either
   await pick(1, "Clermont-Ferrand");
+  await pick(0, "(no trade · grid only)");
   await take();
   for (let i = 0; i < 240; i++) {
     if ((await tabs()).length === 2) break;
@@ -259,35 +266,53 @@ async function main() {
   await press("w");
   assert.deepEqual(await tabs(), ["car_detailing_-_Clermont-Ferrand"], "`w` leaves the trade study behind it");
 
+  log("step: escape");
+  await press("t");
+  await stroke("Escape", 27);
+  assert(!(await pickerUp()), "Escape in a field closes the picker rather than being eaten by it");
+
+  log("step: the picker by keyboard");
   await press("t");
   assert.deepEqual(
     await rows(0),
     ["car_detailing", "cleaning", "plumbing", "(no trade · grid only)"],
     "one field per axis, and this one is the trades — with the city-on-its-own row last",
   );
-  assert.deepEqual(await rows(1), ["Clermont-Ferrand", "Lyon"], "the locations are up at the same time, not after");
+  assert.deepEqual(await rows(1), ["Angers", "Clermont-Ferrand", "Lyon"], "the locations are up at the same time, not after");
 
   // the two fields narrow independently — which is the whole of what a step sequence could not do
   await press("c");
   await press("l");
   await press("e");
-  assert.deepEqual(await rows(0), ["cleaning"], "the caret starts in the trade box");
-  assert.deepEqual(await rows(1), ["Clermont-Ferrand", "Lyon"], "and narrowing the trade leaves the locations alone");
+  assert.deepEqual(await rows(0), ["cleaning"], "the caret starts in the trade field");
+  assert.deepEqual(await rows(1), ["Angers", "Clermont-Ferrand", "Lyon"], "and narrowing the trade leaves the locations alone");
   await stroke("Enter", 13);
-  assert.equal(await picked(0), "cleaning", "Enter picks the box it is in");
-  assert(!(await loadable()), "and one box of two is not something to load");
+  assert.equal(await picked(0), "cleaning", "Enter picks the top row of the field it is in");
+  assert(await pickerUp(), "and loads nothing");
+
+  // half a pairing opens nothing, and the half that is missing says so
+  await take();
+  assert(await pickerUp(), "Load with no location leaves the picker up");
+  assert.equal(await invalid(1), "true", "and marks the location field");
+  assert.equal(await invalid(0), null, "and only that one");
+  assert.deepEqual(await tabs(), ["car_detailing_-_Clermont-Ferrand"], "nothing was opened");
+
   // the pick is a value and not a row, so the query it was found through is free to move after
   await stroke("Backspace", 8);
-  assert.deepEqual(await rows(0), ["car_detailing", "cleaning"], "widening the query brings the other trades back");
+  assert.deepEqual((await rows(0)).sort(), ["car_detailing", "cleaning"], "widening the query brings the other trades back");
   assert.equal(await picked(0), "cleaning", "and leaves the pick where it was made");
   await stroke("Tab", 9);
+  assert.equal(await focused(), 1, "native Tab order crosses to the location field");
   await press("C");
-  assert.deepEqual(await rows(1), ["Clermont-Ferrand"], "Tab crosses to the location box");
-  assert.deepEqual(await picked(1), null, "which has picked nothing yet");
+  assert.deepEqual(await rows(1), ["Clermont-Ferrand"], "which narrows on its own");
+  assert.deepEqual(await picked(1), null, "and has picked nothing yet");
   await stroke("Enter", 13);
-  assert(await evaluate("!!document.querySelector('#picker')"), "Enter alone leaves the picker up");
-  assert(await loadable(), "with both boxes picked, and so something to load");
-  await stroke("Enter", 13, 2);
+  assert.equal(await picked(1), "Clermont-Ferrand", "Enter picks there too");
+  assert.equal(await invalid(1), null, "and a pick clears the mark");
+  assert(await pickerUp(), "a second pick still loads nothing");
+  await stroke("Tab", 9);
+  assert.equal(await focused(), "load", "and Tab carries on to Load");
+  await stroke("Enter", 13);
   // the second pairing is evaluated on this request, which reads the grid archive again
   for (let i = 0; i < 240; i++) {
     if ((await tabs()).length === 2) break;
@@ -304,6 +329,14 @@ async function main() {
   assert.equal(await layers(), 10, "`[` goes back to the detailing study");
   await press("]");
   assert.equal(await layers(), 12, "`]` comes forward again");
+
+  log("step: find an open tab");
+  await press("[");
+  await press("f");
+  assert.deepEqual(await rows(0), ["car_detailing_-_Clermont-Ferrand", "cleaning_-_Clermont-Ferrand"], "`f` lists the open tabs");
+  await pick(0, "cleaning_-_Clermont-Ferrand");
+  assert(!(await pickerUp()), "a pick there is the whole motion");
+  assert.equal(await layers(), 12, "and switches to the tab picked");
 
   await press("w");
   assert.deepEqual(await tabs(), ["car_detailing_-_Clermont-Ferrand"], "`w` closes the active tab");

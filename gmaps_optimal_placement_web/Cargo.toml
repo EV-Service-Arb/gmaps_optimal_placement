@@ -49,10 +49,14 @@ ssr = [
     "leptos/ssr",
 ]
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ev_lib = { workspace = true, features = ["uikit_leptos", "wasm"] }
+
 [dependencies]
 any_spawner = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 console_error_panic_hook = { workspace = true, optional = true }
+ev_lib = { workspace = true, features = ["uikit_leptos"] }
 eyre.workspace = true
 gloo-net = { workspace = true, optional = true }
 gmaps_optimal_placement_core.workspace = true
@@ -67,6 +71,9 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true }
 xdg = { workspace = true, optional = true }
+
+[build-dependencies]
+ev_lib_classes.workspace = true
 
 [lints]
 workspace = true

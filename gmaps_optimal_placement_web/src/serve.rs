@@ -91,7 +91,7 @@ pub fn serve(trades: Vec<PathBuf>, locations: Vec<PathBuf>, prebuilt: Vec<(Optio
 	};
 	let shell = {
 		let (options, title, key) = (options.clone(), title.clone(), key);
-		move || crate::shell(options.clone(), title.clone(), key.clone())
+		move || shell(options.clone(), title.clone(), key.clone())
 	};
 
 	let studies = serde_json::json!({ "trades": trade_stems, "locations": location_stems, "open": opened }).to_string();
@@ -204,4 +204,29 @@ fn json<T>(body: T) -> ([(axum::http::HeaderName, &'static str); 1], T) {
 /// Where `wasm-bindgen` put the client. The nix wrapper sets it; a dev shell gets `cargo`'s own.
 fn site_root() -> PathBuf {
 	std::env::var_os("LEPTOS_SITE_ROOT").map_or_else(|| PathBuf::from("target/site"), PathBuf::from)
+}
+
+/// `map_core.js` awaits `__mapsReady` before it touches `google.maps`, so the callback the Maps
+/// bootstrap fires is a promise resolver rather than an entry point — nothing races the wasm.
+fn shell(options: LeptosOptions, study: String, key: String) -> impl IntoView {
+	let maps = format!("https://maps.googleapis.com/maps/api/js?key={key}&callback=__gmapsCb&loading=async");
+	view! {
+		<!DOCTYPE html>
+		<html lang="en">
+			<head>
+				<meta charset="utf-8" />
+				<meta name="viewport" content="width=device-width, initial-scale=1" />
+				<title>{study}</title>
+				{leptos::html::style().inner_html(include_str!(concat!(env!("OUT_DIR"), "/style.css")))}
+				{leptos::html::script()
+					.inner_html("window.__mapsReady = new Promise(r => { window.__gmapsCb = r; });")}
+				{leptos::html::script().attr("async", "").attr("src", maps)}
+				<AutoReload options=options.clone() />
+				<HydrationScripts options islands=true />
+			</head>
+			<body>
+				<crate::map::MapView />
+			</body>
+		</html>
+	}
 }

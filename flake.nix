@@ -77,7 +77,7 @@
         # itself one of the things under test.
         study = pkgs.writeShellApplication {
           name = "study";
-          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold nodejs chromium psmisc nix curl wasm-bindgen-cli ];
+          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold nodejs chromium psmisc nix curl wasm-bindgen-cli tailwindcss_4 ];
           text = ''
             cd "$(git rev-parse --show-toplevel)"
             ${client}
@@ -103,7 +103,7 @@
         # Paths are read from the repository root, which is where the defaults live.
         open = pkgs.writeShellApplication {
           name = "open-map";
-          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold psmisc xdg-utils nix wasm-bindgen-cli ];
+          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold psmisc xdg-utils nix wasm-bindgen-cli tailwindcss_4 ];
           text = ''
             cd "$(git rev-parse --show-toplevel)"
             ${client}
@@ -178,7 +178,7 @@
             inherit pname;
             inherit version;
             buildInputs = with pkgs; [ openssl.dev ];
-            nativeBuildInputs = with pkgs; [ pkg-config wasm-bindgen-cli binaryen ];
+            nativeBuildInputs = with pkgs; [ pkg-config wasm-bindgen-cli binaryen tailwindcss_4 ]; # tailwind: the web crate's build.rs
             cargoLock.lockFile = ./Cargo.lock;
             src = pkgs.lib.cleanSource ./.;
 
@@ -245,6 +245,7 @@
               (v_flakes.qlty system)
               rust
               study
+              tailwindcss_4
               wasm-bindgen-cli
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 

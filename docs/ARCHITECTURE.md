@@ -47,7 +47,8 @@ documents, never to the code.
 ```
 
 `serve` holds the two axes rather than a study, and the page picks a point on their product — one
-field per axis, both live at once, because a coordinate is known in either order. The server builds
+field per axis, both live at once, because a coordinate is known in either order; neither loads on its
+own, a separate Load spends the pair. The server builds
 a pairing the first time a tab asks for it, and the page keeps several open over one map instance.
 Naming both axes as files builds one before the listener binds, which is what keeps a scripted run
 off the picker.

@@ -3,9 +3,9 @@
 export GOOGLE_MAPS_KEY=...
 
 # Serve the map. A study is a trade applied to a location, and the two directories are all this
-# takes — the page picks the pairing, with a field per axis: type in either, Enter crosses, and
-# Ctrl+Enter opens it as a tab over one map. Press `t` for one more. Both flags default to what is
-# shown here. Bulk archives and API responses cache in $XDG_CACHE_HOME/gmaps_optimal_placement;
+# takes — the page picks the pairing, with a field per axis: type in either, Enter picks its top
+# row, and Load opens the pair as a tab over one map. Press `t` for one more. Both flags default to
+# what is shown here. Bulk archives and API responses cache in $XDG_CACHE_HOME/gmaps_optimal_placement;
 # candidates you promote from the map land in $XDG_DATA_HOME/gmaps_optimal_placement.
 gmaps_optimal_placement serve --trades examples/trades --locations examples/locations --open
 

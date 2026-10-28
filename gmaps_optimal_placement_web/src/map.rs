@@ -6,7 +6,7 @@ use gmaps_optimal_placement_core::{
 	Model,
 	model::{Report, TierState, fmt, ramp},
 };
-pub use imp::{activate, close, find, open, persist_keys, scroll_pick};
+pub use imp::{activate, close, find, open, persist_keys};
 use leptos::prelude::*;
 
 use crate::{
@@ -693,7 +693,6 @@ mod imp {
 	pub fn activate(_: State, _: usize) {}
 	pub fn close(_: State, _: usize) {}
 	pub fn persist_keys(_: State) {}
-	pub fn scroll_pick(_: usize) {}
 	pub fn find(_: State, _: String) {}
 	pub fn reload(_: State) {}
 }
@@ -1147,22 +1146,6 @@ mod imp {
 		if let Some(el) = host().filter(|_| s.mounted.get_untracked()) {
 			cells_js(&el, &[], &[], &[], &[]);
 			competitors_js(&el, "[]");
-		}
-	}
-
-	/// The picker's cursor, kept inside its own scroll box. Rows are one line each — see `#picker li`
-	/// — so the cursor's offset is its index times a row.
-	pub fn scroll_pick(row: usize) {
-		let Some(li) = document().query_selector("#picker .col.on li.cur").ok().flatten() else {
-			return;
-		};
-		let Some(ul) = li.parent_element() else { return };
-		let (h, seen) = (li.client_height(), ul.client_height());
-		let (top, bottom) = (row as i32 * h, (row as i32 + 1) * h);
-		if top < ul.scroll_top() {
-			ul.set_scroll_top(top);
-		} else if bottom > ul.scroll_top() + seen {
-			ul.set_scroll_top(bottom - seen);
 		}
 	}
 

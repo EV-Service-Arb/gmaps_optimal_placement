@@ -8,7 +8,7 @@
 //!   GET /studies.json   trades, locations: the two axes the CLI was given
 //!                       open:              the pairing it was named, if it was named one
 //!        │
-//!   ┌────┴──── t ─→ Pool::Study    two boxes, what and where; Enter picks, Ctrl-Enter loads
+//!   ┌────┴──── t ─→ Pool::Study    a field per axis, what and where; Load spends the pair
 //!   │  Picker                      ↑ also where a served product starts
 //!   │                              the trade field ends in NO_TRADE — the city, unpriced
 //!   └───────── f ─→ Pool::Open     filter the open tabs, switch to one
@@ -16,14 +16,15 @@
 //!   s / `/` / Ctrl+K ─→ #find      a place, by name or address; a hit lands as a click there
 //! ```
 //!
-//! One box per axis rather than one list of every pairing: a study is a point on a product, and an
+//! One field per axis rather than one list of every pairing: a study is a point on a product, and an
 //! agglomeration times a trade list is a long list to read when what you know is one coordinate.
-//! Both boxes are live at once, so a pairing is two choices in either order — which is what a step
+//! Both fields are live at once, so a pairing is two choices in either order — which is what a step
 //! sequence could not do, having already spent the first choice by the time the second is on
-//! screen. Neither box loads anything on its own; the `↵` button spends the pair.
+//! screen. Neither field loads anything on its own; Load spends the pair, and marks whichever
+//! field is still empty.
 //!
-//! [`NO_TRADE`] sits at the end of the trade box rather than at its head: a city on its own is the
-//! cheap question, not the usual one, and the cursor opens on whatever a box's first row is.
+//! [`NO_TRADE`] sits at the end of the trade field rather than at its head: a city on its own is the
+//! cheap question, not the usual one, and the highlight opens on whatever a field's first row is.
 //!
 //! This is the only picker: `serve` does not run `fzf` over a directory, because choosing the first
 //! study and choosing the fourth should not be two different motions.
@@ -34,6 +35,7 @@
 #[cfg(feature = "ssr")]
 use std::path::PathBuf;
 
+use ev_lib::uikit_leptos::{Button, Command, CommandEmpty, CommandInput, CommandItem, CommandList};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -43,32 +45,14 @@ use crate::map::State;
 /// every layer a trade did not add and not one billed call.
 pub const NO_TRADE: &str = "(no trade · grid only)";
 
-/// Which set the picker is filtering, and so how many boxes it puts up.
+/// Which set the picker is filtering, and so how many fields it puts up.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Pool {
-	/// The product served, as one box per axis. Loading the pair opens the tab.
+	/// The product served, as one field per axis. Loading the pair opens the tab.
 	Study,
 	/// The open tabs; loading one switches to it.
 	Open,
 }
-impl Pool {
-	/// How many boxes it puts up: one per axis being crossed.
-	fn cols(self) -> usize {
-		match self {
-			Self::Study => 2,
-			Self::Open => 1,
-		}
-	}
-
-	fn prompt(self, col: usize) -> &'static str {
-		match (self, col) {
-			(Self::Study, 0) => "what is being sold",
-			(Self::Study, _) => "and where",
-			(Self::Open, _) => "find an open tab",
-		}
-	}
-}
-
 /// The bare keys, one per action. Digits jump to a tab by position and are not rebindable — there is
 /// nothing to rebind them to.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -225,147 +209,171 @@ pub fn TabBar(state: State) -> impl IntoView {
 	}
 }
 
-/// One selection box per axis: a query narrows its list, `Enter` or a click picks the row, and the
-/// pick stays put — it is a value, not a row number, so editing the query after does not move it.
-/// `Ctrl-Enter` and the `↵` button load what the boxes hold, and nothing else does; `Escape` closes.
-///
-/// ↑/↓ (and `Ctrl-P`/`Ctrl-N`) clamp at both ends rather than wrap and `Tab` crosses boxes. The
-/// cursor is only where the keyboard is looking: it opens on the first hit and returns there on
-/// every edit, while the pick below it does not move.
+/// The picker's frame. Tailwind over the kit's tokens, like the `Command`s inside it; `map.css` does
+/// not reach in.
+const PICKER: &str = "absolute top-12 left-1/2 z-9 flex -translate-x-1/2 items-start gap-2 rounded-lg border border-border bg-background p-2 text-ink shadow-lg";
+
+/// `Pool::Study` is one uikit `Command` per axis and a Load: each field filters and picks on its own,
+/// and only Load spends the pair. `Pool::Open` is one `Command` whose pick is the switch. `Escape`
+/// is `map::key`'s, which the field lets through.
 #[component]
 pub fn Picker(state: State, pool: Pool) -> impl IntoView {
-	let cols = pool.cols();
-	// one query, one cursor and one pick per axis, and which box has the caret
-	let query = [RwSignal::new(String::new()), RwSignal::new(String::new())];
-	let sel = [RwSignal::new(0usize), RwSignal::new(0usize)];
-	let pick: [RwSignal<Option<(usize, String)>>; 2] = [RwSignal::new(None), RwSignal::new(None)];
-	let side = RwSignal::new(0usize);
-	let field = [NodeRef::<leptos::html::Input>::new(), NodeRef::<leptos::html::Input>::new()];
-
-	let hits: [Memo<Vec<(usize, String)>>; 2] = [0, 1].map(|col| {
-		Memo::new(move |_| {
-			let q = query[col].get();
-			let all: Vec<(usize, String)> = match (pool, col) {
-				(Pool::Study, 0) => state.trades.get().into_iter().chain([NO_TRADE.to_owned()]).enumerate().collect(),
-				(Pool::Study, _) => state.locations.get().into_iter().enumerate().collect(),
-				(Pool::Open, _) => state.tabs.get().into_iter().enumerate().map(|(i, t)| (i, t.label)).collect(),
-			};
-			all.into_iter().filter(|(_, s)| subsequence(&q, s)).collect()
-		})
-	});
-	// a box whose list is empty has no row under the cursor, and picking nothing is not a pick
-	let choose = move |col: usize| {
-		if let Some(hit) = hits[col].with_untracked(|h| h.get(sel[col].get_untracked()).cloned()) {
-			pick[col].set(Some(hit));
-		}
-	};
-	// half a pairing opens nothing — the button says so by being dead until both boxes hold a row
-	let ready = move || (0..cols).all(|col| pick[col].with(Option::is_some));
-	let take = move || match pool {
-		Pool::Study =>
-			if let (Some((i, trade)), Some((_, location))) = (pick[0].get_untracked(), pick[1].get_untracked()) {
-				state.picker.set(None);
-				// the row past the served trades is the one the server has no file for
-				crate::map::open(state, (i < state.trades.with_untracked(Vec::len)).then_some(trade), location);
-			},
-		Pool::Open =>
-			if let Some((i, _)) = pick[0].get_untracked() {
-				state.picker.set(None);
-				crate::map::activate(state, i);
-			},
-	};
-
-	// the overlay is modal, so the keys below are only ever the picker's
+	let root = NodeRef::<leptos::html::Div>::new();
+	// the overlay is modal, so typing goes to its first field
 	Effect::new(move |_| {
-		if let Some(el) = field[side.get()].get() {
-			el.focus().expect("the picker's field takes focus");
+		use leptos::wasm_bindgen::JsCast;
+		if let Some(el) = root.get() {
+			el.query_selector("input")
+				.expect("a valid selector")
+				.expect("every pool puts up a field")
+				.unchecked_into::<leptos::web_sys::HtmlElement>()
+				.focus()
+				.expect("the picker's field takes focus");
 		}
 	});
-	// arrowing past the visible rows would otherwise leave the cursor off screen
-	Effect::new(move |_| crate::map::scroll_pick(sel[side.get()].get()));
-
-	view! {
-		<div id="picker" class="panel" class:two=cols == 2>
-			{(0..cols)
-				.map(|col| {
-					view! {
-						<div class="col" class:on=move || side.get() == col>
-							<input
-								type="text"
-								node_ref=field[col]
-								placeholder=pool.prompt(col)
-								prop:value=move || query[col].get()
-								on:focus=move |_| side.set(col)
-								on:input=move |ev| {
-									query[col].set(event_target_value(&ev));
-									sel[col].set(0);
-								}
-								on:keydown=move |ev| {
-									let last = hits[col].with(|h| h.len()).saturating_sub(1);
-									let down = ev.key() == "ArrowDown" || (ev.ctrl_key() && ev.key() == "n");
-									let up = ev.key() == "ArrowUp" || (ev.ctrl_key() && ev.key() == "p");
-									if down || up {
-										ev.prevent_default();
-										return sel[col]
-											.set(
-												if down {
-													(sel[col].get_untracked() + 1).min(last)
-												} else {
-													sel[col].get_untracked().saturating_sub(1)
-												},
-											);
-									}
-									if ev.key() == "Enter" {
-										ev.prevent_default();
-										return match ev.ctrl_key() {
-											true => take(),
-											false => choose(col),
+	match pool {
+		Pool::Study => {
+			// the outer `None` is no pick; the inner one is NO_TRADE, the row the server has no file for
+			let trade = RwSignal::new(None::<Option<String>>);
+			let location = RwSignal::new(None::<String>);
+			let tried = RwSignal::new(false);
+			let load = move |_| match (trade.get_untracked(), location.get_untracked()) {
+				(Some(trade), Some(location)) => {
+					state.picker.set(None);
+					crate::map::open(state, trade, location);
+				}
+				_ => tried.set(true),
+			};
+			view! {
+				<div id="picker" class=PICKER node_ref=root>
+					<Command class="w-64 border border-border">
+						<CommandInput
+							placeholder="what is being sold"
+							invalid=Signal::derive(move || tried.get() && trade.with(Option::is_none))
+						/>
+						<CommandList>
+							<CommandEmpty>"no such trade"</CommandEmpty>
+							{move || {
+								state
+									.trades
+									.get()
+									.into_iter()
+									.map(Some)
+									.chain([None])
+									.map(|t| {
+										let name = match &t {
+											Some(t) => t.clone(),
+											None => NO_TRADE.to_owned(),
 										};
+										let at = t.clone();
+										view! {
+											<Pick
+												name
+												picked=Signal::derive(move || trade.with(|p| p.as_ref() == Some(&at)))
+												on_select=Callback::new(move |_| trade.set(Some(t.clone())))
+											/>
+										}
+									})
+									.collect_view()
+							}}
+						</CommandList>
+					</Command>
+					<Command class="w-64 border border-border">
+						<CommandInput
+							placeholder="and where"
+							invalid=Signal::derive(move || tried.get() && location.with(Option::is_none))
+						/>
+						<CommandList>
+							<CommandEmpty>"no such location"</CommandEmpty>
+							{move || {
+								state
+									.locations
+									.get()
+									.into_iter()
+									.map(|l| {
+										let at = l.clone();
+										view! {
+											<Pick
+												name=l.clone()
+												picked=Signal::derive(move || location.with(|p| p.as_ref() == Some(&at)))
+												on_select=Callback::new(move |_| location.set(Some(l.clone())))
+											/>
+										}
+									})
+									.collect_view()
+							}}
+						</CommandList>
+					</Command>
+					<Button on_click=Callback::new(load)>"Load"</Button>
+				</div>
+			}
+			.into_any()
+		}
+		Pool::Open => view! {
+			<div id="picker" class=PICKER node_ref=root>
+				<Command class="w-80 border border-border">
+					<CommandInput placeholder="find an open tab" />
+					<CommandList>
+						<CommandEmpty>"no such tab"</CommandEmpty>
+						{move || {
+							state
+								.tabs
+								.get()
+								.into_iter()
+								.enumerate()
+								.map(|(i, t)| {
+									let label = t.label;
+									view! {
+										<CommandItem
+											value=label.clone()
+											on_select=Callback::new(move |_| {
+												state.picker.set(None);
+												crate::map::activate(state, i);
+											})
+										>
+											<span class="truncate">{label.clone()}</span>
+										</CommandItem>
 									}
-									if ev.ctrl_key() || ev.meta_key() || ev.alt_key() {
-										return;
-									}
-									if ev.key() == "Tab" {
-										ev.prevent_default();
-										side.set((col + 1) % cols);
-									}
-								}
-							/>
-							<ul>
-								{move || {
-									hits[col]
-										.get()
-										.into_iter()
-										.enumerate()
-										.map(|(row, (id, name))| {
-											view! {
-												<li
-													class:on=move || {
-														pick[col].with(|p| p.as_ref().is_some_and(|(p, _)| *p == id))
-													}
-													class:cur=move || sel[col].get() == row
-													on:mouseenter=move |_| sel[col].set(row)
-													on:click=move |_| {
-														side.set(col);
-														sel[col].set(row);
-														choose(col);
-													}
-												>
-													{name}
-												</li>
-											}
-										})
-										.collect_view()
-								}}
-							</ul>
-						</div>
-					}
-				})
-				.collect_view()}
-			<button class="go" title="Ctrl+Enter" disabled=move || !ready() on:click=move |_| take()>
-				"↵"
-			</button>
-		</div>
+								})
+								.collect_view()
+						}}
+					</CommandList>
+				</Command>
+			</div>
+		}
+		.into_any(),
+	}
+}
+
+/// A row that stays marked once picked, whatever the query does after.
+#[component]
+fn Pick(name: String, picked: Signal<bool>, on_select: Callback<String>) -> impl IntoView {
+	view! {
+		<CommandItem value=name.clone() on_select>
+			<span class="truncate">{name.clone()}</span>
+			{move || {
+				picked
+					.get()
+					.then(|| {
+						view! {
+							<svg
+								xmlns="http://www.w3.org/2000/svg"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								class="ml-auto text-primary-ink"
+								role="img"
+								aria-label="picked"
+							>
+								<path d="M20 6 9 17l-5-5"></path>
+							</svg>
+						}
+					})
+			}}
+		</CommandItem>
 	}
 }
 
@@ -404,14 +412,4 @@ pub fn Settings(state: State) -> impl IntoView {
 			}>"Close"</button>
 		</div>
 	}
-}
-
-/// Every character of `q`, in order, somewhere in `s`. Case-insensitive over ASCII, which is what a
-/// file stem is.
-fn subsequence(q: &str, s: &str) -> bool {
-	let mut hay = s.chars().map(|c| c.to_ascii_lowercase());
-	q.chars().all(|c| {
-		let c = c.to_ascii_lowercase();
-		hay.any(|h| h == c)
-	})
 }

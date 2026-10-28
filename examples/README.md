@@ -29,7 +29,7 @@ the term weights stay flat across cities on purpose: λ is the trade's tolerance
 and the slider's *opening* position, and a term's weight is what a searcher typing it is worth.
 
 ```fish
-nix run .#open                                   # the page opens on a picker: trade, then city
+nix run .#open                                   # the page opens on a picker: trade and city, then Load
 nix run .#open examples/trades/plumbing.nix examples/locations/Clermont-Ferrand.nix  # or name one
 nix run .#searches                               # fzf twice; monthly volume per query group
 nix run .#study                                  # the detailing map, asserted in headless Chromium
