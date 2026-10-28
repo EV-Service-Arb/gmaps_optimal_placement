@@ -64,31 +64,49 @@ const YEAR: Duration = Duration::from_secs(365 * 86_400);
 /// The one quota a sweep runs out of.
 const QUOTA: &str = "SearchTextRequestPerDayPerProject";
 
-/// The day's searches, spent. The one refusal this tool expects to meet, and the only place the
-/// real number is ever visible: an API key cannot read the counter — `serviceusage` answers
-/// `API_KEY_SERVICE_BLOCKED` and `monitoring` refuses keys outright.
+/// Why a key can buy no more searches today. An API key cannot read either state ahead of time —
+/// `serviceusage` answers `API_KEY_SERVICE_BLOCKED` and `monitoring` refuses keys outright — so a
+/// refusal is the only place either is ever visible.
+#[derive(Clone, Debug)]
+pub enum Spent {
+	/// The project's `SearchTextRequestPerDayPerProject`, as the 429 spelled it.
+	Quota {
+		limit: String,
+		/// Unix seconds the window rolls over at.
+		reset: Option<u64>,
+	},
+	/// The project has no billing, which is what an ended trial looks like.
+	Billing,
+}
+impl std::fmt::Display for Spent {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Quota { limit, reset } => {
+				write!(f, "its project's {limit} searches a day are used")?;
+				if let Some(r) = reset {
+					write!(f, ", until {:02}:{:02} UTC", r % 86_400 / 3600, r % 3600 / 60)?;
+				}
+				Ok(())
+			}
+			Self::Billing => write!(f, "its project's billing is disabled"),
+		}
+	}
+}
+
+/// Every configured key, spent. The one refusal this tool expects to meet.
 ///
 /// Its own type because a caller painting a map has somewhere to go from here and a caller buying an
 /// inventory does not, and the two cannot tell a spent day from a malformed query through a string.
 #[derive(Debug)]
-pub struct Exhausted {
-	/// Searches a day the project is allowed, as the refusal spelled it.
-	pub limit: String,
-	/// Unix seconds the window rolls over at.
-	pub reset: Option<u64>,
-}
+pub struct Exhausted(pub Vec<Spent>);
 impl std::fmt::Display for Exhausted {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "the day's Google Places search quota is spent — this project is allowed {} searches a day", self.limit)?;
-		if let Some(r) = self.reset {
-			write!(
-				f,
-				". The window resets at {:02}:{:02} UTC, and nothing already answered is re-asked, so a rerun pays only for the rest",
-				r % 86_400 / 3600,
-				r % 3600 / 60
-			)?;
-		}
-		Ok(())
+		let why: Vec<String> = self.0.iter().map(ToString::to_string).collect();
+		write!(
+			f,
+			"the day's Google Places searches are spent on every configured key ({}). Nothing already answered is re-asked, so a rerun pays only for the rest",
+			why.join("; ")
+		)
 	}
 }
 impl std::error::Error for Exhausted {}
@@ -149,6 +167,11 @@ pub struct Work {
 	block_spend: bool,
 	/// Age of every cached answer this run served, by kind.
 	served: RefCell<Vec<(Kind, Duration)>>,
+	/// Google Maps keys in the order they are spent, each its own project's quota and billing.
+	keys: Vec<String>,
+	/// Why each of the first `len` keys can buy no more. Per `Work`, so the next run starts over on
+	/// the most preferred key: a 429 is not billed, and quota comes back the next day.
+	spent: RefCell<Vec<Spent>>,
 }
 
 impl Work {
@@ -162,7 +185,18 @@ impl Work {
 			refresh: false,
 			block_spend: false,
 			served: RefCell::default(),
+			keys: Vec::new(),
+			spent: RefCell::default(),
 		}
+	}
+
+	pub fn keys(mut self, keys: Vec<String>) -> Self {
+		assert!(
+			keys.iter().enumerate().all(|(i, k)| !keys[..i].contains(k)),
+			"a key listed twice is one project's quota counted twice"
+		);
+		self.keys = keys;
+		self
 	}
 
 	/// The policy the CLI resolved out of its config. Plain values rather than the config type, so
@@ -315,22 +349,41 @@ impl Work {
 		}
 		let canonical = serde_json::to_string(body)?;
 		let dst = self.post_path(url, &canonical)?;
-		let mut req = self.agent.post(url).header("Content-Type", "application/json");
-		for (k, v) in headers {
-			req = req.header(*k, *v);
-		}
-		let mut res = req.send(canonical.as_bytes()).wrap_err_with(|| format!("POST {url}"))?;
-		let status = res.status();
-		let mut text = String::new();
-		res.body_mut().as_reader().read_to_string(&mut text)?;
-		// the body of a refusal says which quota or which field, and it is never written to the cache:
-		// one cached 429 would answer for that request forever
-		if !status.is_success() {
-			if url == crate::poi::SEARCH_TEXT
-				&& let Some(spent) = Self::exhausted(&text)
-			{
-				return Err(spent.into());
+		let places = url == crate::poi::SEARCH_TEXT;
+		let (status, text) = loop {
+			let mut req = self.agent.post(url).header("Content-Type", "application/json");
+			for (k, v) in headers {
+				req = req.header(*k, *v);
 			}
+			if places {
+				let at = self.spent.borrow().len();
+				eyre::ensure!(!self.keys.is_empty(), "a Places search the work dir has no answer for needs a key in the config's `google_maps`");
+				let Some(key) = self.keys.get(at) else {
+					return Err(Exhausted(self.spent.borrow().clone()).into());
+				};
+				req = req.header("X-Goog-Api-Key", key);
+			}
+			let mut res = req.send(canonical.as_bytes()).wrap_err_with(|| format!("POST {url}"))?;
+			let status = res.status();
+			let mut text = String::new();
+			res.body_mut().as_reader().read_to_string(&mut text)?;
+			// the body of a refusal says which quota or which field, and it is never written to the cache:
+			// one cached 429 would answer for that request forever
+			if !status.is_success()
+				&& places && let Some(why) = Self::spent(&text)
+			{
+				let mut spent = self.spent.borrow_mut();
+				let tail = |k: &str| format!("…{}", &k[k.len().saturating_sub(4)..]);
+				match self.keys.get(spent.len() + 1) {
+					Some(next) => eprintln!("key {} spent: {why}; moving to {}", tail(&self.keys[spent.len()]), tail(next)),
+					None => eprintln!("key {} spent: {why}; no key left", tail(&self.keys[spent.len()])),
+				}
+				spent.push(why);
+				continue;
+			}
+			break (status, text);
+		};
+		if !status.is_success() {
 			bail!("POST {url} -> {status}\n{}", text.trim());
 		}
 		self.billed.set(self.billed.get() + 1);
@@ -378,17 +431,17 @@ impl Work {
 		Ok((json, SystemTime::now()))
 	}
 
-	/// What a refusal says about the day, if it is about the day at all. Anything else — a malformed
-	/// query, a key with the wrong referrer — is `None` and travels as the body it arrived as.
-	fn exhausted(body: &str) -> Option<Exhausted> {
+	/// What a refusal says about the key, if it says the key is done for the day. Anything else — a
+	/// malformed query, a key with the wrong referrer, a per-minute limit — is `None` and travels as
+	/// the body it arrived as.
+	fn spent(body: &str) -> Option<Spent> {
 		let v = serde_json::from_str::<serde_json::Value>(body).ok()?;
-		let m = v["error"]["details"]
-			.as_array()
-			.into_iter()
-			.flatten()
-			.map(|d| &d["metadata"])
-			.find(|m| m["quota_limit"].as_str() == Some(QUOTA))?;
-		Some(Exhausted {
+		let details = v["error"]["details"].as_array()?;
+		if details.iter().any(|d| d["reason"].as_str() == Some("BILLING_DISABLED")) {
+			return Some(Spent::Billing);
+		}
+		let m = details.iter().map(|d| &d["metadata"]).find(|m| m["quota_limit"].as_str() == Some(QUOTA))?;
+		Some(Spent::Quota {
 			limit: m["quota_limit_value"].as_str().unwrap_or("?").to_owned(),
 			reset: m["window_start_time"].as_str().and_then(|s| s.parse::<u64>().ok()).map(|start| start + 86_400),
 		})
@@ -418,22 +471,33 @@ mod tests {
 			"quota_metric":"places.googleapis.com/SearchTextRequest",
 			"quota_limit":"SearchTextRequestPerDayPerProject"}}]}}"#;
 
-	/// A malformed refusal must not take the process down on the way to reporting the real error.
+	/// What an ended trial returns.
+	const NO_BILLING: &str = r#"{"error":{"code":403,"status":"PERMISSION_DENIED","details":[
+		{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"BILLING_DISABLED","domain":"googleapis.com",
+			"metadata":{"consumer":"projects/1","service":"places.googleapis.com"}}]}}"#;
+
+	/// A refusal moves to the next key only when it says this key is done for the day: rotating on a
+	/// bad key or a bad query would spend the next project's quota on the same mistake. A malformed
+	/// refusal must not take the process down on the way to reporting the real error.
 	#[test]
 	fn a_refusal_is_read_for_what_it_says() {
-		let spent = Work::exhausted(REFUSAL).expect("the refusal names the daily search quota");
-		assert_eq!(spent.limit, "100");
-		assert_eq!(spent.reset, Some(1789369200 + 86_400));
-		assert!(Work::exhausted("not json at all").is_none());
-		assert!(Work::exhausted(r#"{"error":{}}"#).is_none());
-		assert!(Work::exhausted(r#"{"error":{"details":[{"metadata":{"quota_limit":"PlacesPerMinute"}}]}}"#).is_none());
+		let Some(Spent::Quota { limit, reset }) = Work::spent(REFUSAL) else {
+			panic!("the refusal names the daily search quota")
+		};
+		assert_eq!(limit, "100");
+		assert_eq!(reset, Some(1789369200 + 86_400));
+		assert!(matches!(Work::spent(NO_BILLING), Some(Spent::Billing)));
+		assert!(Work::spent(r#"{"error":{"code":400,"status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}"#).is_none());
+		assert!(Work::spent("not json at all").is_none());
+		assert!(Work::spent(r#"{"error":{}}"#).is_none());
+		assert!(Work::spent(r#"{"error":{"details":[{"metadata":{"quota_limit":"PlacesPerMinute"}}]}}"#).is_none());
 	}
 
 	/// A sweep wraps the refusal in a query and a tile on the way up, and a map falls back to the
 	/// grid on exactly this downcast: lose it and the page errors out instead.
 	#[test]
 	fn a_spent_day_is_still_itself_under_the_context_a_sweep_adds() {
-		let e = Err::<(), _>(eyre::Report::from(Work::exhausted(REFUSAL).unwrap()))
+		let e = Err::<(), _>(eyre::Report::from(Exhausted(vec![Work::spent(REFUSAL).unwrap(), Spent::Billing])))
 			.wrap_err("sweeping \"plombier\"")
 			.wrap_err("plumbing in Lyon")
 			.unwrap_err();

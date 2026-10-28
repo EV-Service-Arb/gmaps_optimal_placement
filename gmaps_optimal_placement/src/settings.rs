@@ -16,6 +16,27 @@ pub struct AppConfig {
 	pub age: Age,
 	#[settings(flatten)]
 	pub sweep: Sweep,
+	/// Keys the Places searches are bought with, free ones first. Each is its own project's daily
+	/// quota and billing; the browser map loads with the most preferred one.
+	#[serde(default)]
+	#[settings(skip)]
+	pub google_maps: Vec<MapsKey>,
+}
+
+#[derive(Clone, ConfigJsonSchema, Debug, MyConfigPrimitives)]
+pub struct MapsKey {
+	/// `{ env = "..." }`, so the key stays in the environment.
+	pub key: String,
+	/// The project spends trial credit rather than money. Set by hand: a key cannot read its project's billing.
+	pub free: bool,
+}
+
+impl From<&AppConfig> for Vec<String> {
+	fn from(cfg: &AppConfig) -> Self {
+		let mut keys = cfg.google_maps.clone();
+		keys.sort_by_key(|k| !k.free); // stable, so config order breaks ties
+		keys.into_iter().map(|k| k.key).collect()
+	}
 }
 
 /// How the competitor sweep tiles a study's frame. Every answer is cached under the exact tile it

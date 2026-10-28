@@ -6,7 +6,7 @@
 //!
 //! The mask is `places.id,nextPageToken`: both are Text Search Essentials (IDs only), which the
 //! free monthly allowance covers. Every attribute joins by id from the inventory already fetched.
-use eyre::{Result, WrapErr};
+use eyre::Result;
 
 use crate::{
 	poi::{self, Ranking, Region},
@@ -45,11 +45,10 @@ pub fn plan(nodes: &[[f64; 2]], terms: &[String], radius_m: f64) -> Vec<(Ranking
 
 /// Calls at most `PAGES` per plan entry. Cached, so a rerun is free.
 pub fn run(work: &Work, what: &str, plan: Vec<(Ranking, serde_json::Value)>) -> Result<Vec<Ranking>> {
-	let key = std::env::var("GOOGLE_MAPS_KEY").wrap_err("GOOGLE_MAPS_KEY is not set")?;
 	work.announce(what, Need::Exact(unanswered(work, &plan)?));
 	plan.into_iter()
 		.map(|(mut r, body)| {
-			r.ids = poi::search_text(work, Some(&key), &body, MASK, PAGES, Kind::Ordering)?.into_iter().map(|(id, ..)| id).collect();
+			r.ids = poi::search_text(work, true, &body, MASK, PAGES, Kind::Ordering)?.into_iter().map(|(id, ..)| id).collect();
 			Ok(r)
 		})
 		.collect()
@@ -74,7 +73,7 @@ pub fn unanswered(work: &Work, plan: &[(Ranking, serde_json::Value)]) -> Result<
 pub fn cached(work: &Work, plan: &[(Ranking, serde_json::Value)]) -> Result<Vec<Ranking>> {
 	let mut out = Vec::new();
 	for (r, body) in plan {
-		let ids: Vec<String> = poi::search_text(work, None, body, MASK, PAGES, Kind::Ordering)?.into_iter().map(|(id, ..)| id).collect();
+		let ids: Vec<String> = poi::search_text(work, false, body, MASK, PAGES, Kind::Ordering)?.into_iter().map(|(id, ..)| id).collect();
 		if !ids.is_empty() {
 			out.push(Ranking { ids, ..r.clone() });
 		}

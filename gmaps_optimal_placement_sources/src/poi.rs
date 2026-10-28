@@ -128,7 +128,7 @@ pub enum Region {
 pub struct Inventory {
 	pub pois: Vec<Poi>,
 	pub obs: Vec<Ranking>,
-	/// (query, tile) pairs this walk found no answer for. A lower bound on what a keyed sweep would
+	/// (query, tile) pairs this walk found no answer for. A lower bound on what a buying sweep would
 	/// spend, because a tile that comes back at the cap opens four more. Zero once one has paid.
 	pub missing: usize,
 	/// Pages this walk was answered with: what a refresh asks again, if every tile fills as it did.
@@ -138,10 +138,9 @@ pub struct Inventory {
 /// One text search, paged, in rank order. The body and the field mask are the caller's, because
 /// they are what decides the SKU.
 ///
-/// No key is the read-only mode: pages come out of the work dir and the first miss ends the search.
-/// A caller holding no key cannot buy, which is what lets the fit replay a sweep rather than pay
-/// for one.
-pub fn search_text(work: &Work, key: Option<&str>, body: &serde_json::Value, mask: &str, pages: usize, kind: Kind) -> Result<Vec<(String, serde_json::Value, SystemTime)>> {
+/// Not buying is the read-only mode: pages come out of the work dir and the first miss ends the
+/// search, which is what lets the fit replay a sweep rather than pay for one.
+pub fn search_text(work: &Work, buy: bool, body: &serde_json::Value, mask: &str, pages: usize, kind: Kind) -> Result<Vec<(String, serde_json::Value, SystemTime)>> {
 	let mut out = Vec::new();
 	let mut token: Option<String> = None;
 	for _ in 0..pages {
@@ -149,9 +148,9 @@ pub fn search_text(work: &Work, key: Option<&str>, body: &serde_json::Value, mas
 		if let Some(t) = &token {
 			body["pageToken"] = serde_json::Value::String(t.clone());
 		}
-		let (res, at) = match key {
-			Some(k) => work.cached_post(SEARCH_TEXT, &body, &[("X-Goog-Api-Key", k), ("X-Goog-FieldMask", mask)])?,
-			None => match work.cached(SEARCH_TEXT, &body)? {
+		let (res, at) = match buy {
+			true => work.cached_post(SEARCH_TEXT, &body, &[("X-Goog-FieldMask", mask)])?,
+			false => match work.cached(SEARCH_TEXT, &body)? {
 				Some(hit) => hit,
 				None => break,
 			},
@@ -176,13 +175,12 @@ pub fn search_text(work: &Work, key: Option<&str>, body: &serde_json::Value, mas
 /// frame it was typed over: `[lat, lon]` and Google's address for it. Cached like every Places
 /// answer, so `--block-spend` serves an address already looked up and refuses a new one.
 pub fn find(work: &Work, bbox: Bbox, q: &str) -> Result<Option<([f64; 2], String)>> {
-	let key = std::env::var("GOOGLE_MAPS_KEY").wrap_err("GOOGLE_MAPS_KEY is not set")?;
 	let rect = serde_json::json!({
 		"low":  {"latitude": bbox.lat[0], "longitude": bbox.lon[0]},
 		"high": {"latitude": bbox.lat[1], "longitude": bbox.lon[1]},
 	});
 	let body = serde_json::json!({"textQuery": q, "pageSize": 1, "locationBias": {"rectangle": rect}});
-	let (res, _) = work.cached_post(SEARCH_TEXT, &body, &[("X-Goog-Api-Key", &key), ("X-Goog-FieldMask", "places.location,places.formattedAddress")])?;
+	let (res, _) = work.cached_post(SEARCH_TEXT, &body, &[("X-Goog-FieldMask", "places.location,places.formattedAddress")])?;
 	if let Some(e) = res.get("error") {
 		bail!("Places text search {q:?}: {e}");
 	}
@@ -195,21 +193,20 @@ pub fn find(work: &Work, bbox: Bbox, q: &str) -> Result<Option<([f64; 2], String
 }
 
 pub fn load(cfg: &PoiConfig, bbox: Bbox, what: &str, work: &Work) -> Result<Inventory> {
-	let key = std::env::var("GOOGLE_MAPS_KEY").wrap_err("GOOGLE_MAPS_KEY is not set")?;
 	// the free walk first, so what this is about to buy is on screen before it buys it. It reads the
 	// cache and nothing else, and a sweep is a tenth of a second against the grid scan behind it
-	work.announce(what, Need::AtLeast(sweep(cfg, bbox, None, work)?.missing));
+	work.announce(what, Need::AtLeast(sweep(cfg, bbox, false, work)?.missing));
 	work.forget(Kind::Inventory);
-	sweep(cfg, bbox, Some(&key), work)
+	sweep(cfg, bbox, true, work)
 }
 
 /// The same sweep, restricted to what the work dir already holds. A pairing nobody ever harvested
 /// yields nothing, which is how a refit reads evidence without turning into a purchase.
 pub fn cached(cfg: &PoiConfig, bbox: Bbox, work: &Work) -> Result<Inventory> {
-	sweep(cfg, bbox, None, work)
+	sweep(cfg, bbox, false, work)
 }
 
-fn sweep(cfg: &PoiConfig, bbox: Bbox, key: Option<&str>, work: &Work) -> Result<Inventory> {
+fn sweep(cfg: &PoiConfig, bbox: Bbox, buy: bool, work: &Work) -> Result<Inventory> {
 	let PoiSource::GooglePlaces = cfg.source;
 	let drop = cfg.drop.as_ref().map(MatchSpec::compile).transpose()?;
 	let tiers: Vec<(&Tier, Matcher)> = cfg.tiers.iter().map(|t| Ok((t, t.spec.compile()?))).collect::<Result<_>>()?;
@@ -232,7 +229,7 @@ fn sweep(cfg: &PoiConfig, bbox: Bbox, key: Option<&str>, work: &Work) -> Result<
 			eprintln!("  {q:?}: on disk from {swept} root tiles a side rather than the configured {root}, and served from there until `--refresh`");
 		}
 		for tile in tiles(bbox, swept) {
-			descend(work, key, q, typed, tile, 0, &mut found).wrap_err_with(|| format!("sweeping {q:?}: a rerun resumes from here, and re-asks nothing already answered"))?;
+			descend(work, buy, q, typed, tile, 0, &mut found).wrap_err_with(|| format!("sweeping {q:?}: a rerun resumes from here, and re-asks nothing already answered"))?;
 		}
 		// new, not returned: the queries overlap by design, and what the eighth one adds over the seven
 		// before it is what says whether it earns its calls
@@ -334,7 +331,7 @@ fn swept(work: &Work, query: &str, typed: Option<&str>, bbox: Bbox, root: u32) -
 			..Found::default()
 		};
 		for tile in tiles(bbox, r) {
-			descend(&scratch, None, query, typed, tile, 0, &mut found)?;
+			descend(&scratch, false, query, typed, tile, 0, &mut found)?;
 		}
 		match (found.calls[0].0, found.missing) {
 			(0, _) => {}
@@ -391,7 +388,7 @@ fn ask(query: &str, typed: Option<&str>, tile: Bbox) -> serde_json::Value {
 ///
 /// Not a study's to state: the cap bites on competitor density, which is a fact about the trade and
 /// the ground together, and which no document knows before it asks.
-fn descend(work: &Work, key: Option<&str>, query: &str, typed: Option<&str>, tile: Bbox, depth: u32, found: &mut Found) -> Result<()> {
+fn descend(work: &Work, buy: bool, query: &str, typed: Option<&str>, tile: Bbox, depth: u32, found: &mut Found) -> Result<()> {
 	let body = ask(query, typed, tile);
 	// asked here rather than inferred from an empty page: a tile nobody harvested and one Google
 	// returned nothing for read the same out of `search_text`, and only the first would cost anything
@@ -399,10 +396,10 @@ fn descend(work: &Work, key: Option<&str>, query: &str, typed: Option<&str>, til
 		found.missing += 1;
 	}
 	let spent = work.calls(Kind::Inventory);
-	let page = search_text(work, key, &body, FIELDS, 3, Kind::Inventory)?;
+	let page = search_text(work, buy, &body, FIELDS, 3, Kind::Inventory)?;
 	let paged = work.calls(Kind::Inventory) - spent;
 	found.calls[depth as usize].0 += paged;
-	// an ordering of nothing identifies nothing, and under a read-only key it is also what a tile
+	// an ordering of nothing identifies nothing, and in a walk that does not buy it is also what a tile
 	// that was never harvested looks like
 	if page.is_empty() {
 		return Ok(());
@@ -428,7 +425,7 @@ fn descend(work: &Work, key: Option<&str>, query: &str, typed: Option<&str>, til
 	let (mid_lat, mid_lon) = ((tile.lat[0] + tile.lat[1]) / 2., (tile.lon[0] + tile.lon[1]) / 2.);
 	for lat in [[tile.lat[0], mid_lat], [mid_lat, tile.lat[1]]] {
 		for lon in [[tile.lon[0], mid_lon], [mid_lon, tile.lon[1]]] {
-			descend(work, key, query, typed, Bbox { lat, lon }, depth + 1, found)?;
+			descend(work, buy, query, typed, Bbox { lat, lon }, depth + 1, found)?;
 		}
 	}
 	Ok(())

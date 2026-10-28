@@ -126,8 +126,10 @@ fn main() -> Result<()> {
 	let refresh = matches!(cli.cmd, Cmd::Serve { refresh, .. } | Cmd::Probe { refresh, .. } if refresh);
 	eyre::ensure!(!(refresh && cli.block_spend), "`--refresh` buys every answer again, and `--block-spend` buys none");
 	let block_spend = cli.block_spend;
+	let keys: Vec<String> = (&cfg).into();
 	let work = Work::at(v_utils::xdg_cache_dir!(""))
 		.policy((&cfg.age).into(), (&cfg.sweep).into())
+		.keys(keys.clone())
 		.refresh(refresh)
 		.block_spend(block_spend);
 	match cli.cmd {
@@ -158,19 +160,24 @@ fn main() -> Result<()> {
 			// along: it belongs to the run that asked for it, and a tab switch is not one — the page's own
 			// reload is. `--block-spend` does, because it is about the server and not about a run
 			let (dir, age, tiling) = (work.path().to_owned(), (&cfg.age).into(), (&cfg.sweep).into());
+			let browser = keys
+				.first()
+				.ok_or_else(|| eyre::eyre!("the map loads Google's script with a key, and the config's `google_maps` lists none"))?
+				.clone();
 			let build = std::sync::Arc::new({
-				let dir = dir.clone();
+				let (dir, keys) = (dir.clone(), keys.clone());
 				move |trade: Option<&std::path::Path>, location: &std::path::Path, refresh: bool| {
 					eyre::ensure!(!(refresh && block_spend), "`--block-spend` buys nothing, so it re-asks nothing either");
-					let payload = gmaps_optimal_placement::load(trade, location)?.build(&Work::at(dir.clone()).policy(age, tiling).refresh(refresh).block_spend(block_spend))?;
+					let work = Work::at(dir.clone()).policy(age, tiling).keys(keys.clone()).refresh(refresh).block_spend(block_spend);
+					let payload = gmaps_optimal_placement::load(trade, location)?.build(&work)?;
 					Ok(serde_json::to_string(&payload)?)
 				}
 			});
 			let find = std::sync::Arc::new(move |location: &std::path::Path, q: &str| {
 				let frame = gmaps_optimal_placement::load(None, location)?.area.bbox;
-				gmaps_optimal_placement_sources::poi::find(&Work::at(dir.clone()).policy(age, tiling).block_spend(block_spend), frame, q)
+				gmaps_optimal_placement_sources::poi::find(&Work::at(dir.clone()).policy(age, tiling).keys(keys.clone()).block_spend(block_spend), frame, q)
 			});
-			gmaps_optimal_placement_web::serve::serve(trades, locations, prebuilt, build, find, SocketAddr::from(([127, 0, 0, 1], port)), open)
+			gmaps_optimal_placement_web::serve::serve(trades, locations, prebuilt, build, find, browser, SocketAddr::from(([127, 0, 0, 1], port)), open)
 		}
 		Cmd::Probe { at, dry_run, refresh: _ } => {
 			let (trade, location) = (gmaps_optimal_placement::pick(&at.trades)?, gmaps_optimal_placement::pick(&at.locations)?);

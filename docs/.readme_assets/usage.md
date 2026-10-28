@@ -1,6 +1,9 @@
 ```sh
-# Set your Google Maps API key. The server reads it; it never lands in a file.
-export GOOGLE_MAPS_KEY=...
+# Name your Google Maps API keys in ~/.config/gmaps_optimal_placement.nix, each read from the
+# environment so it never lands in a file. Searches are bought on the free (trial-credit) projects
+# first, moving on as each one's day is spent; the map loads with the first:
+#   google_maps = [ { key = { env = "GOOGLE_MAPS_KEY_TRIAL"; }; free = true; } { key = { env = "GOOGLE_MAPS_KEY"; }; free = false; } ];
+export GOOGLE_MAPS_KEY_TRIAL=... GOOGLE_MAPS_KEY=...
 
 # Serve the map. A study is a trade applied to a location, and the two directories are all this
 # takes — the page picks the pairing, with a field per axis: type in either, Enter picks its top

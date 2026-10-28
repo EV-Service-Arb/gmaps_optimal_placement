@@ -33,11 +33,20 @@ pub type Find = Arc<dyn Fn(&std::path::Path, &str) -> Result<Option<([f64; 2], S
 type Key = (Option<String>, String);
 type Pool = Arc<HashMap<Key, (Option<PathBuf>, PathBuf, Arc<tokio::sync::Mutex<Option<axum::body::Bytes>>>)>>;
 
-/// `prebuilt` is `(trade stem, location stem, payload)` — whatever the CLI already paid for.
-pub fn serve(trades: Vec<PathBuf>, locations: Vec<PathBuf>, prebuilt: Vec<(Option<String>, String, String)>, build: Build, find: Find, addr: SocketAddr, open: bool) -> Result<()> {
+/// `prebuilt` is `(trade stem, location stem, payload)` — whatever the CLI already paid for. `key` is
+/// the one the browser loads Google's script with.
+pub fn serve(
+	trades: Vec<PathBuf>,
+	locations: Vec<PathBuf>,
+	prebuilt: Vec<(Option<String>, String, String)>,
+	build: Build,
+	find: Find,
+	key: String,
+	addr: SocketAddr,
+	open: bool,
+) -> Result<()> {
 	// leptos spawns the SSR stream through `any_spawner`, which has no executor until it is told
 	any_spawner::Executor::init_tokio().map_err(|e| eyre::eyre!("{e}"))?;
-	let key = std::env::var("GOOGLE_MAPS_KEY").wrap_err("GOOGLE_MAPS_KEY is not set")?;
 	let root = site_root();
 	let pkg = root.join("pkg");
 	eyre::ensure!(

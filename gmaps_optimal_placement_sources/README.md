@@ -20,4 +20,4 @@ Search-volume providers are the exception and are a trait — see `docs/ARCHITEC
   nothing here refuses: [`Work::age`] reports how old an answer is, a sweep states what it is about
   to buy before buying it, and `--refresh` is the only thing that re-asks.
 
-`GOOGLE_MAPS_KEY` must be in the environment for [`poi::load`].
+[`poi::load`] buys with the keys given to [`Work::keys`], in that order.

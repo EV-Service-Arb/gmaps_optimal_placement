@@ -128,7 +128,8 @@ app, so every entry point in `map_core.js` returns a banner string instead.
 - **The study file is a seed, never a sink.** `serve` only reads it. Pins promoted or hidden on the
   map are a diff beside it, under `XDG_DATA_HOME` — data, not cache, because a promoted candidate is
   a decision and cache is what cleaners delete.
-- **`GOOGLE_MAPS_KEY` lives in the server's environment, never in an artifact.** Bulk archives and
+- **Google Maps keys live in the server's environment, never in an artifact.** The config names each
+  by the variable holding it. Bulk archives and
   API responses cache under `$XDG_CACHE_HOME/gmaps_optimal_placement` so a rerun costs nothing — the
   INSEE archive is ~87 MB and Places calls are billed.
 - **Nothing in that cache expires.** An answer older than its kind's configured age is served anyway,
@@ -141,9 +142,10 @@ app, so every entry point in `map_core.js` returns a banner string instead.
   reproducible from what is kept: the grid extract keeps the archive's own rows and re-parses them,
   because caching the floats would need a round-trip no text format gives.
 - **What a run is about to spend is stated, never guessed at.** No API key can read what is left of
-  `SearchTextRequestPerDayPerProject`, so a local tally could only ever refuse work Google would have
-  served. What the work dir is missing is counted and announced before anything is bought; what
-  remains is Google's to say, in the 429.
+  its project's `SearchTextRequestPerDayPerProject`, so a local tally could only ever refuse work
+  Google would have served. What the work dir is missing is counted and announced before anything is
+  bought; what remains is Google's to say, in the 429 — which moves the run on to the next key, free
+  projects before paid ones, until none is left.
 
 ## Sources are an enum
 
