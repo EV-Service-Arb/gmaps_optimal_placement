@@ -548,8 +548,12 @@ pub fn MapView() -> impl IntoView {
 							.then(move || {
 								view! {
 									{age_chart(&ages)}
-									<button class="sec" on:click=move |_| imp::reload(s)>
-										"Re-ask Google"
+									<button
+										class="sec"
+										title="re-asks Google for every cell — spends a lot of Maps API quota"
+										on:click=move |_| imp::reload(s)
+									>
+										"⚠ Pull latest"
 									</button>
 								}
 							})}

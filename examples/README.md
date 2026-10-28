@@ -74,7 +74,7 @@ INSEE Filosofi 2021           Google Places API (New)
 
 ## Inputs
 
-`GOOGLE_MAPS_KEY` must be set. The INSEE archive downloads once into `tmp/geo/data/` (~87 MB) and is
+`GOOGLE_MAPS_KEY` must be set. The INSEE archive downloads once into `$XDG_CACHE_HOME/gmaps_optimal_placement/data/` (~87 MB) and is
 shared by every study over the same country; Places responses are cached per request, so editing the
 tiering rules costs nothing and a second trade only pays for its own queries.
 
