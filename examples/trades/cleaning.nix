@@ -6,11 +6,8 @@ loc:
   poi = {
     source = "google_places";
     queries = [
-      "entreprise de nettoyage"
-      "société de nettoyage"
       "femme de ménage"
       "ménage à domicile"
-      "aide à domicile"
       "nettoyage de bureaux"
       "nettoyage fin de chantier"
       "nettoyage vitres"
