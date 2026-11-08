@@ -71,7 +71,7 @@ async function main() {
   const expectMarkers = async (n, msg) => {
     let got;
     for (let i = 0; i < 20; i++) { got = await markers(); if (got === n) return; await sleep(500); }
-    assert.equal(got, n, msg);
+    assert.equal(got, n, `${msg}: got ${got}`);
   };
   // one uikit `Command` per axis; a row's place on screen is its CSS `order`, which is how it is ranked
   const col = n => `document.querySelectorAll('#picker [data-slot=command]')[${n}]`;
@@ -164,7 +164,8 @@ async function main() {
   const sum = v => v.reduce((a, b) => a + b, 0);
   assert.equal(sum(s.cats.map(c => Number(c[0].match(/\((\d+)\)$/)[1]))), sum(s.tiered), "every competitor is filed under exactly one category");
   // a marker reaches the map a frame after the panel it belongs to, so this one settles like the rest
-  await expectMarkers(131, "130 competitor markers and the study's one candidate");
+  const C = sum(s.tiered); // the inventory is whatever the work dir holds, so pins are counted on top of it
+  await expectMarkers(C + 1, "every competitor and the study's one candidate");
 
   log("step: hover a competitor");
   // the name, off the marker, in the same tooltip a cell uses — the native `title` is gone
@@ -186,7 +187,7 @@ async function main() {
   log("---- card ----\n" + (card?.text ?? "(none)"));
   assert(card, "a click opens a card");
   assert.deepEqual(card.acts, ["✓", "⧉", "✕"], "a yellow pin can be kept, copied or dropped");
-  await expectMarkers(132, "the clicked pin is on the map");
+  await expectMarkers(C + 2, "the clicked pin is on the map");
   assert(card.text.includes("Capture score"), "the card is a site report");
 
   log("step: promote");
@@ -200,9 +201,9 @@ async function main() {
   log("step: rank");
   // the green set survives both of the buttons that used to wipe it
   await evaluate(`${ctl("Rank top 10 sites")}.click()`);
-  await expectMarkers(142, "ranking adds ten yellow pins and keeps the two green ones");
+  await expectMarkers(C + 12, "ranking adds ten yellow pins and keeps the two green ones");
   await evaluate(`${ctl("Clear pins")}.click()`);
-  await expectMarkers(132, "clearing takes the yellow pins and leaves the green ones");
+  await expectMarkers(C + 2, "clearing takes the yellow pins and leaves the green ones");
 
   await evaluate(`${ctl("Compare")}.click()`);
   await sleep(800);
@@ -213,31 +214,31 @@ async function main() {
   log("step: reload");
   // it is still there after a restart of the page, because the server kept it
   await load();
-  await expectMarkers(132, "the promoted pin comes back green, the yellow ones do not");
+  await expectMarkers(C + 2, "the promoted pin comes back green, the yellow ones do not");
 
   log("step: drop");
   // ✕ on a promoted pin: nothing to confirm, it was never an argument in the study file
-  await clickThrough(`document.querySelectorAll('#map [role=button]')[131]`);
+  await clickThrough(`document.querySelectorAll('#map [role=button]')[${C + 1}]`);
   assert.equal((await evaluate(`document.querySelector('#report h4')?.textContent ?? ''`)).startsWith("B · " + PROMOTED), true, "the promoted pin opens its own card");
   await clickThrough(act("✕"));
   assert.deepEqual(dialogs, [], "dropping a pin this session promoted asks nothing");
   assert.deepEqual(pins()?.added, [], "dropping a promoted pin takes it out of the file");
-  await expectMarkers(131, "and off the map");
+  await expectMarkers(C + 1, "and off the map");
 
   log("step: hide a study candidate");
   // ✕ on one the study file names is an argument with the document, so it is confirmed
-  await clickThrough(`document.querySelectorAll('#map [role=button]')[130]`);
+  await clickThrough(`document.querySelectorAll('#map [role=button]')[${C}]`);
   assert.equal((await evaluate(`document.querySelector('#report h4')?.textContent ?? ''`)).startsWith("A · VifNet"), true, "the study's candidate opens its own card");
   await clickThrough(act("✕"), "");
   assert.deepEqual(dialogs, ["confirm"], "hiding a candidate the study names is confirmed first");
   assert.deepEqual(pins()?.hidden, ["VifNet"], "the study file is untouched; the hiding lives beside it");
   await load();
-  await expectMarkers(130, "it stays hidden across a reload");
+  await expectMarkers(C, "it stays hidden across a reload");
 
   // the study file is still the seed: delete the diff and the candidate is back
   fs.rmSync(PINS);
   await load();
-  await expectMarkers(131, "deleting the pin file restores what the study declares");
+  await expectMarkers(C + 1, "deleting the pin file restores what the study declares");
 
   // the CLI was given the two directories, so the pool is their whole product and the one open tab
   // is what the picker was pointed at; a pairing nobody asked for is built the first time a tab does
@@ -341,7 +342,7 @@ async function main() {
   await press("w");
   assert.deepEqual(await tabs(), ["car_detailing_-_Clermont-Ferrand"], "`w` closes the active tab");
   assert.equal(await layers(), 10, "and the panel is the surviving study's");
-  await expectMarkers(131, "so is the map");
+  await expectMarkers(C + 1, "so is the map");
 
   assert.deepEqual(errors, [], "no uncaught exceptions");
   log("\nOK — all assertions passed");
