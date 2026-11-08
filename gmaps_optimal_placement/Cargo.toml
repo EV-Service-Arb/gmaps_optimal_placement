@@ -25,7 +25,10 @@ smart-default.workspace = true
 v_utils.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 insta.workspace = true
+sa_auth.workspace = true
+ureq.workspace = true
 
 [lints]
 workspace = true

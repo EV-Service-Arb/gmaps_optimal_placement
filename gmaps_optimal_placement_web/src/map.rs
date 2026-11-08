@@ -1,10 +1,11 @@
-//! The map island. Rust owns every number and the whole control surface; `map_core.js` owns
-//! `google.maps` and the canvas loop, because that one needs the live projection every frame.
+//! The map island. Rust owns every number and the whole control surface. `map_core.js` owns the
+//! `google.maps` instance and the pins; what is painted over it goes through
+//! `gmaps_optimal_placement_overlay::Scene`, the same path the conductor's page paints through.
 use std::rc::Rc;
 
 use gmaps_optimal_placement_core::{
 	Model,
-	model::{Report, TierState, fmt, ramp},
+	model::{Category, HAZE, Report, TierState, fmt, haze, ramp},
 };
 pub use imp::{activate, close, find, open, persist_keys};
 use leptos::prelude::*;
@@ -13,21 +14,6 @@ use crate::{
 	pins::Pin,
 	tabs::{Keymap, Pool},
 };
-
-/// A Google category, as Google files it — not as the study's `tier` rules read it. The tiers are
-/// the study's argument about what competes; this is the evidence they were argued from, and the
-/// two disagreeing is worth being able to see.
-#[derive(Clone, PartialEq)]
-pub struct Category {
-	/// Places `primaryType`, which the colour is keyed by.
-	pub kind: String,
-	/// The Business Profile category Google displays. A place it typed as nothing is still on the
-	/// map and still says so.
-	pub label: String,
-	pub color: String,
-	/// Per tier, in the payload's order, so the panel can count only what is on screen.
-	pub counts: Vec<usize>,
-}
 
 /// One study, as the controls stood when its tab was last left. `activate` swaps this against the
 /// live signals; the map instance underneath is never rebuilt.
@@ -69,6 +55,10 @@ pub struct State {
 	pub lambda: RwSignal<f64>,
 	/// Global: how you look at a map, not a property of a study.
 	pub opacity: RwSignal<f64>,
+	/// The competitor-pressure field over the heat. Global, like the opacity.
+	pub field: RwSignal<bool>,
+	/// West, south, east, north, as the map last settled. Both scales are relative to it.
+	pub view: RwSignal<Option<[f64; 4]>>,
 	pub layer: RwSignal<usize>,
 	/// Which competitor the coverage layers are drawn about. Moved by clicking a marker; the
 	/// inventory is sorted by review count, so the opening one is the loudest name on the map.
@@ -111,6 +101,8 @@ impl State {
 			arming: RwSignal::new(None),
 			lambda: RwSignal::new(2000.),
 			opacity: RwSignal::new(0.62),
+			field: RwSignal::new(false),
+			view: RwSignal::new(None),
 			layer: RwSignal::new(0),
 			focus: RwSignal::new(0),
 			hide_imputed: RwSignal::new(false),
@@ -253,6 +245,9 @@ pub struct Heavy {
 	pub press: Vec<f64>,
 	pub unmet: Vec<f64>,
 	pub shown: Vec<u8>,
+	/// Once the map is mounted.
+	#[cfg(feature = "hydrate")]
+	pub scene: Option<gmaps_optimal_placement_overlay::Scene>,
 }
 
 /// What the control panel shows for the active study. Rebuilt on every tab switch.
@@ -276,11 +271,14 @@ pub struct Loaded {
 
 #[derive(Clone, PartialEq)]
 pub struct Legend {
+	/// Over the cells in view.
 	pub ticks: [f64; 5],
 	pub count: usize,
 	pub linear: bool,
 	/// Set on the coverage layers: whose cloud is on screen.
 	pub focus: Option<String>,
+	/// Where the field's iso-lines run, while it is on and anything in view is under pressure.
+	pub levels: Option<[f64; 3]>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -579,6 +577,16 @@ pub fn MapView() -> impl IntoView {
 					"Hide imputed cells (" {move || s.loaded.get().map(|l| l.imputed.to_string())} ")"
 				</label>
 			</div>
+			<div class="row">
+				<input
+					type="checkbox"
+					id="field"
+					prop:disabled=move || !traded()
+					prop:checked=move || s.field.get()
+					on:change=move |ev| s.field.set(event_target_checked(&ev))
+				/>
+				<label for="field">"Competitor pressure field"</label>
+			</div>
 
 			<button
 				class="sec"
@@ -657,7 +665,7 @@ pub fn MapView() -> impl IntoView {
 							<br />
 							<span class="k">
 								{format!(
-									"{} cells · colour = {}",
+									"{} cells in view · colour = {}",
 									legend.count,
 									if legend.linear { "linear" } else { "percentile" },
 								)}
@@ -666,6 +674,18 @@ pub fn MapView() -> impl IntoView {
 					)
 				}}
 			</div>
+			{move || {
+				let levels = s.legend.get()?.levels?;
+				Some(
+					view! {
+						<div id="haze" style=haze_gradient()></div>
+						<div class="note">
+							"Blue = competitor pressure, Σ weight × exp(−distance/λ), as a percentile among the cells in view. Lines at the 50th, 75th, 90th: "
+							{levels.map(fmt).join(" · ")}
+						</div>
+					},
+				)
+			}}
 		</div>
 
 		{move || s.report.get().map(|r| view! { <crate::pins::Card state=s report=r /> })}
@@ -678,6 +698,13 @@ fn letter(i: usize) -> String {
 /// The `★` is a hint in the dropdown, not part of the layer's name.
 fn plain(name: &str) -> String {
 	name.replace(" ★", "").trim().to_owned()
+}
+
+fn haze_gradient() -> String {
+	let stops: Vec<String> = (0..=4)
+		.map(|q| format!("rgba({},{},{},{:.3}) {}%", HAZE[0], HAZE[1], HAZE[2], haze(q as f64 / 4.), q * 25))
+		.collect();
+	format!("background:linear-gradient(90deg,{})", stops.join(","))
 }
 
 fn gradient() -> String {
@@ -706,47 +733,16 @@ mod imp {
 
 #[cfg(feature = "hydrate")]
 mod imp {
-	use gmaps_optimal_placement_core::{
-		model::{LayerRef, LayerSpec, TradeLayer, colorise},
-		payload::Trade,
-	};
+	use gmaps_optimal_placement_core::model::{LayerRef, LayerSpec, TradeLayer, categories};
+	use gmaps_optimal_placement_overlay::Scene;
 	use leptos::prelude::*;
 	use wasm_bindgen::{closure::WasmClosure, prelude::*};
 
-	use super::{Category, Legend, State, Tab, Tip};
+	use super::{Legend, State, Tab, Tip};
 	use crate::{pins::Pin, tabs::Pool};
 
 	const GREEN: &str = "#7cff8f";
 	const YELLOW: &str = "#ffd400";
-
-	/// Every category on the map, commonest first, each with the colour it is painted in.
-	/// Golden-angle hues: neighbours in the list land far apart on the wheel however many a city
-	/// turns out to have.
-	fn categories(trade: &Trade) -> Vec<Category> {
-		let mut out: Vec<Category> = Vec::new();
-		for p in &trade.pois {
-			let ti = trade.tiers.iter().position(|t| t.name == p.poi.tier).expect("the model rejected a payload whose tiers disagree");
-			let i = out.iter().position(|c| c.kind == p.poi.kind).unwrap_or_else(|| {
-				out.push(Category {
-					kind: p.poi.kind.clone(),
-					label: match (p.poi.kind_label.as_str(), p.poi.kind.as_str()) {
-						("", "") => "no category".to_owned(),
-						("", k) => k.to_owned(),
-						(l, _) => l.to_owned(),
-					},
-					color: String::new(),
-					counts: vec![0; trade.tiers.len()],
-				});
-				out.len() - 1
-			});
-			out[i].counts[ti] += 1;
-		}
-		out.sort_by_key(|c| std::cmp::Reverse(c.counts.iter().sum::<usize>()));
-		for (i, c) in out.iter_mut().enumerate() {
-			c.color = format!("hsl({:.0},72%,58%)", (i as f64 * 137.508) % 360.);
-		}
-		out
-	}
 
 	/// What a redraw needs, once the controls have moved. Split from the payload so the cheap effects
 	/// never pay for a pressure sweep.
@@ -765,42 +761,50 @@ mod imp {
 		s.recomputed.update(|n| *n += 1);
 	}
 
-	fn colours(s: State) -> Option<(Legend, Vec<u8>, Vec<u8>)> {
+	/// The active layer and, when it is on, the field, through the scene and against the view.
+	fn colours(s: State) -> Option<Legend> {
 		let layers: Vec<LayerSpec> = s.heavy.with_value(|h| h.model.as_ref().map(|m| m.layers()))?;
 		let spec = layers.get(s.layer.get_untracked())?;
 		let of = s.focus.get_untracked();
-		let (legend, colors, shown) = s.heavy.with_value(|h| {
-			let m = h.model.as_ref().expect("layers only exist once the model does");
-			// `layers()` only offers a trade layer where there is a trade, so the miss below is that
-			// agreement having been broken rather than a state to draw something for
-			let (v, focus) = match spec.source {
-				LayerRef::Study(i) => (std::borrow::Cow::Borrowed(m.layer(i)), None),
-				LayerRef::Trade(t) => {
-					let traded = m.traded()?;
-					(
-						traded.values(t, of, s.lambda.get_untracked(), &s.tiers.get_untracked(), &h.press, &h.unmet),
-						matches!(t, TradeLayer::Share | TradeLayer::Seen).then(|| traded.trade.pois[of].poi.name.clone()),
-					)
-				}
-			};
-			let c = colorise(&v, &m.payload.imputed, s.hide_imputed.get_untracked(), spec.linear);
-			Some((
-				Legend {
-					ticks: c.ticks,
-					count: c.count,
+		let view = s.view.get_untracked()?;
+		s.heavy
+			.try_update_value(|h| {
+				let super::Heavy { model, press, unmet, shown, scene } = h;
+				let m = model.as_ref()?;
+				let scene = scene.as_mut()?;
+				// `layers()` only offers a trade layer where there is a trade, so the miss below is that
+				// agreement having been broken rather than a state to draw something for
+				let (v, focus) = match spec.source {
+					LayerRef::Study(i) => (std::borrow::Cow::Borrowed(m.layer(i)), None),
+					LayerRef::Trade(t) => {
+						let traded = m.traded()?;
+						(
+							traded.values(t, of, s.lambda.get_untracked(), &s.tiers.get_untracked(), unmet),
+							matches!(t, TradeLayer::Share | TradeLayer::Seen).then(|| traded.trade.pois[of].poi.name.clone()),
+						)
+					}
+				};
+				scene.view(view);
+				scene.hide_imputed(s.hide_imputed.get_untracked());
+				scene.heat(Some((&[&v], spec.linear)));
+				scene.field((s.field.get_untracked() && m.traded().is_some()).then_some(&[press.as_slice()]));
+				let drawn = scene.draw().expect("a view was handed over above");
+				*shown = scene.shown().to_vec();
+				let (ticks, count) = drawn.heat.expect("a heat was handed over above");
+				Some(Legend {
+					ticks,
+					count,
 					linear: spec.linear,
 					focus,
-				},
-				c.colors,
-				c.shown,
-			))
-		})?;
-		s.heavy.update_value(|h| h.shown = shown.clone());
-		Some((legend, colors, shown))
+					levels: drawn.levels,
+				})
+			})
+			.flatten()
 	}
 
 	#[wasm_bindgen(module = "/src/map_core.js")]
 	extern "C" {
+		/// The map, or a banner string saying why there is none.
 		#[wasm_bindgen(js_name = mount)]
 		async fn mount_js(
 			el: web_sys::HtmlElement,
@@ -811,19 +815,9 @@ mod imp {
 			on_move: &js_sys::Function,
 			on_out: &js_sys::Function,
 			on_pin: &js_sys::Function,
-			on_poi: &js_sys::Function,
-			on_over: &js_sys::Function,
 		) -> JsValue;
-		#[wasm_bindgen(js_name = cells)]
-		fn cells_js(el: &web_sys::HtmlElement, ring_x: &[f64], ring_y: &[f64], colors: &[u8], shown: &[u8]);
 		#[wasm_bindgen(js_name = recenter)]
 		fn recenter_js(el: &web_sys::HtmlElement, lat: f64, lng: f64, zoom: u8);
-		#[wasm_bindgen(js_name = opacity)]
-		fn opacity_js(el: &web_sys::HtmlElement, v: f64);
-		#[wasm_bindgen(js_name = competitors)]
-		fn competitors_js(el: &web_sys::HtmlElement, json: &str);
-		#[wasm_bindgen(js_name = showTiers)]
-		fn show_tiers_js(el: &web_sys::HtmlElement, flags: &[u8]);
 		#[wasm_bindgen(js_name = pins)]
 		fn pins_js(el: &web_sys::HtmlElement, json: &str);
 		#[wasm_bindgen(js_name = pan)]
@@ -863,15 +857,14 @@ mod imp {
 			s.layer.track();
 			s.focus.track();
 			s.hide_imputed.track();
+			s.field.track();
+			s.view.track();
 			if !s.mounted.get() {
 				return;
 			}
-			let (Some((legend, colors, shown)), Some(el)) = (colours(s), host()) else { return };
-			s.legend.set(Some(legend));
-			s.heavy.with_value(|h| {
-				let m = h.model.as_ref().expect("colours only returns once the model is in");
-				cells_js(&el, &m.ring_x, &m.ring_y, &colors, &shown);
-			});
+			if let Some(legend) = colours(s) {
+				s.legend.set(Some(legend));
+			}
 		});
 
 		// the open card is a live view of λ, not a snapshot of when it was clicked
@@ -883,16 +876,14 @@ mod imp {
 
 		Effect::new(move |_| {
 			let v = s.opacity.get();
-			if let Some(el) = host().filter(|_| s.mounted.get()) {
-				opacity_js(&el, v);
-			}
+			s.mounted.track();
+			s.heavy.with_value(|h| h.scene.as_ref().map(|sc| sc.opacity(v)));
 		});
 
 		Effect::new(move |_| {
 			let flags: Vec<u8> = s.tiers.get().iter().map(|t| u8::from(t.show)).collect();
-			if let Some(el) = host().filter(|_| s.mounted.get()) {
-				show_tiers_js(&el, &flags);
-			}
+			s.mounted.track();
+			s.heavy.with_value(|h| h.scene.as_ref().map(|sc| sc.tiers(&flags)));
 		});
 
 		Effect::new(move |_| {
@@ -917,8 +908,13 @@ mod imp {
 	#[derive(serde::Deserialize)]
 	struct Studies {
 		trades: Vec<String>,
-		locations: Vec<String>,
+		locations: Vec<Location>,
 		open: Vec<(Option<String>, String)>,
+	}
+
+	#[derive(serde::Deserialize)]
+	struct Location {
+		name: String,
 	}
 
 	/// The product, the saved keys, and a tab per pairing the CLI named.
@@ -928,7 +924,7 @@ mod imp {
 			Err(e) => return s.banner.set(Some(format!("⚠ what is served never arrived — {e}"))),
 		};
 		s.trades.set(served.trades);
-		s.locations.set(served.locations);
+		s.locations.set(served.locations.into_iter().map(|l| l.name).collect());
 		match crate::tabs::load_keys().await {
 			Ok(Some(k)) => s.keys.set(k),
 			Ok(None) => {}
@@ -964,7 +960,7 @@ mod imp {
 			let Some(at) = s.tabs.with_untracked(|v| v.get(i).map(|t| t.at.clone())) else { return };
 			let Some(tab) = fetch(s, at, true).await else { return };
 			if let Some(n) = tab.model.as_ref().and_then(|m| m.payload.notice.clone()) {
-				return s.banner.set(Some(format!("⚠ nothing was replaced — {n}")));
+				return s.banner.set(Some(format!("⚠ nothing was replaced — {}", n.text)));
 			}
 			s.tabs.update(|v| v[i] = tab);
 			s.active.set(usize::MAX); // `adopt` is unconditional; `activate` would see `i` as current
@@ -1046,7 +1042,17 @@ mod imp {
 		let Some(t) = s.tabs.with_untracked(|v| v.get(i).cloned()) else { return };
 		let Some(m) = t.model else { return };
 		s.active.set(i);
-		s.heavy.update_value(|h| h.model = Some(m.clone()));
+		s.heavy.update_value(|h| {
+			h.model = Some(m.clone());
+			h.shown = vec![0; m.n()];
+			if let Some(scene) = &mut h.scene {
+				scene.show(vec![m.clone()]);
+				let cats = m.payload.trade.iter().flat_map(categories).collect::<Vec<_>>();
+				scene.dots(&gmaps_optimal_placement_overlay::dots(&[&m], |_, p, _| {
+					cats.iter().find(|c| c.kind == p.poi.kind).expect("the list was built from these same pois").color.clone()
+				}));
+			}
+		});
 		s.lambda.set(t.lambda);
 		s.layer.set(t.layer);
 		s.focus.set(t.focus);
@@ -1083,14 +1089,12 @@ mod imp {
 			},
 			queries: m.payload.trade.iter().flat_map(|t| t.queries.iter().map(|q| (q.text.clone(), q.hits))).collect(),
 			traded: m.traded().is_some(),
-			notice: m.payload.notice.clone(),
+			notice: m.payload.notice.as_ref().map(|n| n.text.clone()),
 		}));
 		// a tab carries its own, so switching away from a refusal does not leave it over the next map
-		s.banner.set(m.payload.notice.clone().map(|n| format!("⚠ {n}")));
+		s.banner.set(m.payload.notice.as_ref().map(|n| format!("⚠ {}", n.text)));
 		document().set_title(&m.payload.name);
-		// before the sweep, which is the one slow thing here and which no marker depends on
 		if let Some(el) = host().filter(|_| s.mounted.get_untracked()) {
-			competitors_js(&el, &competitors(&m));
 			recenter_js(&el, m.payload.center[0], m.payload.center[1], m.payload.zoom);
 		}
 		recompute(s);
@@ -1151,10 +1155,13 @@ mod imp {
 		s.temp.set(Vec::new());
 		s.tiers.set(Vec::new());
 		document().set_title("studies");
-		if let Some(el) = host().filter(|_| s.mounted.get_untracked()) {
-			cells_js(&el, &[], &[], &[], &[]);
-			competitors_js(&el, "[]");
-		}
+		s.heavy.update_value(|h| {
+			if let Some(scene) = &mut h.scene {
+				scene.show(Vec::new());
+				scene.dots("[]");
+				scene.draw();
+			}
+		});
 	}
 
 	#[derive(serde::Deserialize)]
@@ -1319,28 +1326,6 @@ mod imp {
 		}
 	}
 
-	/// The whole competitor inventory, as `map_core.js` wants it. Colour says Google's category, size
-	/// says the study's tier. Two questions, and reading one off the other is exactly the mistake the
-	/// category list is there to make visible.
-	fn competitors(model: &gmaps_optimal_placement_core::Model) -> String {
-		let Some(trade) = &model.payload.trade else { return "[]".to_owned() };
-		let cats = categories(trade);
-		let out: Vec<serde_json::Value> = trade
-			.pois
-			.iter()
-			.map(|p| {
-				let ti = trade.tiers.iter().position(|t| t.name == p.poi.tier).expect("the model rejected a payload whose tiers disagree");
-				let c = cats.iter().find(|c| c.kind == p.poi.kind).expect("the list was built from these same pois");
-				serde_json::json!({
-					"lat": p.poi.lat, "lng": p.poi.lng, "name": p.poi.name, "addr": p.poi.addr,
-					"kind": c.label, "tier": p.poi.tier, "rating": p.poi.rating, "n_rev": p.poi.n_rev,
-					"web": p.poi.web, "tel": p.poi.tel, "ti": ti, "big": ti == 0, "color": c.color,
-				})
-			})
-			.collect();
-		serde_json::to_string(&out).expect("a Vec<Value> serialises")
-	}
-
 	/// The one `google.maps` instance, on the first study to arrive. Its callbacks read the live
 	/// signals, so they outlive every tab switch.
 	async fn mount(s: State, model: &gmaps_optimal_placement_core::Model) -> bool {
@@ -1368,11 +1353,17 @@ mod imp {
 			s.tip.set(text.map(|text| Tip { text, x, y }));
 		}));
 
+		let on_view = leak(Closure::<dyn Fn(f64, f64, f64, f64)>::new(move |w: f64, so: f64, e: f64, n: f64| s.view.set(Some([w, so, e, n]))));
+
 		let (c, zoom) = (model.payload.center, model.payload.zoom);
-		if let Some(msg) = mount_js(el, c[0], c[1], zoom, &on_click, &on_move, &on_out, &on_pin, &on_poi, &on_over).await.as_string() {
+		let map = mount_js(el, c[0], c[1], zoom, &on_click, &on_move, &on_out, &on_pin).await;
+		if let Some(msg) = map.as_string() {
 			s.banner.set(Some(msg));
 			return false;
 		}
+		let scene = Scene::attach(&map, &on_view, Some(on_poi), Some(on_over), Some(on_out.clone()));
+		scene.opacity(s.opacity.get_untracked());
+		s.heavy.update_value(|h| h.scene = Some(scene));
 		s.mounted.set(true);
 		true
 	}

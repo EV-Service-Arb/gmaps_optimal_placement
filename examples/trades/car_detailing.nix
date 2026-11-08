@@ -1,7 +1,7 @@
 /* Car detailing and washing, over whichever city is handed in. */
 loc:
 {
-  inherit (loc) area grid candidate;
+  inherit (loc) area grid candidate country column layer;
 
   poi = {
     source = "google_places";
@@ -39,12 +39,6 @@ loc:
     };
   };
 
-  # INSEE publishes no motorisation at all at 200 m — that variable exists only at IRIS level.
-  # See docs/ARCHITECTURE.md on what this model therefore does not know.
-  column = loc.column ++ [
-    { name = "cars"; expr = "men_mais * 1.55 + men_coll * 0.85"; }
-  ];
-
   model = {
     demand = "cars * (max(nv, 4000) / 22000) ^ 1.6";
     lambda_m = 2000;
@@ -61,14 +55,6 @@ loc:
       { text = "polissage carrosserie"; weight = 0.4; }
     ];
   };
-
-  layer = loc.layer ++ [
-    {
-      name = "Estimated cars";
-      expr = "cars";
-      note = "Houses × 1.55 + flats × 0.85. Inferred, not measured.";
-    }
-  ];
 
   # `match` / `drop` are the same vocabulary as `poi.tier` / `poi.drop`: case-insensitive regex,
   # `drop` checked first. The expansion is fuzzy and drags in intent that is not demand.

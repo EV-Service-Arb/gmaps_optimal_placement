@@ -1,7 +1,7 @@
 /* Domestic and commercial cleaning, over whichever city is handed in. */
 loc:
 {
-  inherit (loc) area grid candidate;
+  inherit (loc) area grid candidate country;
 
   poi = {
     source = "google_places";

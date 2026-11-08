@@ -33,6 +33,7 @@ default = ["ssr"]
 hydrate = [
     "dep:console_error_panic_hook",
     "dep:gloo-net",
+    "dep:gmaps_optimal_placement_overlay",
     "dep:js-sys",
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
@@ -43,6 +44,7 @@ ssr = [
     "dep:any_spawner",
     "dep:axum",
     "dep:leptos_axum",
+    "dep:sa_auth",
     "dep:tokio",
     "dep:tower-http",
     "dep:xdg",
@@ -60,9 +62,11 @@ ev_lib = { workspace = true, features = ["uikit_leptos"] }
 eyre.workspace = true
 gloo-net = { workspace = true, optional = true }
 gmaps_optimal_placement_core.workspace = true
+gmaps_optimal_placement_overlay = { workspace = true, optional = true }
 js-sys = { workspace = true, optional = true }
 leptos.workspace = true
 leptos_axum = { workspace = true, optional = true }
+sa_auth = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, optional = true }

@@ -15,7 +15,8 @@ struct Cli {
 	#[clap(flatten)]
 	settings: SettingsFlags,
 	/// Spend no Google Maps credit: Places answers come out of the work dir or not at all. A map
-	/// missing any of its inventory opens on demand alone, and a probe stops at its first miss
+	/// missing any of its inventory opens on whatever of it the work dir holds and says how much is
+	/// missing, and a probe stops at its first miss
 	#[arg(long, global = true)]
 	block_spend: bool,
 	#[command(subcommand)]
@@ -53,6 +54,10 @@ enum Cmd {
 		/// spends on a question already answered — an answer past its `age` is reported, never refetched
 		#[arg(long)]
 		refresh: bool,
+		/// Serve the conductor instead of a page: every request but `/mfe/*` carries its assertion,
+		/// checked against the keys in `PANEL_ASSERTION_KEYS`, and only a POST spends
+		#[arg(long, conflicts_with_all = ["open", "refresh"])]
+		behind_conductor: bool,
 	},
 	/// How many people ask for it: monthly volume per query group, as one HTML chart
 	Searches {
@@ -125,20 +130,28 @@ fn main() -> Result<()> {
 	let cfg = AppConfig::try_build(cli.settings)?;
 	let refresh = matches!(cli.cmd, Cmd::Serve { refresh, .. } | Cmd::Probe { refresh, .. } if refresh);
 	eyre::ensure!(!(refresh && cli.block_spend), "`--refresh` buys every answer again, and `--block-spend` buys none");
+	// behind the conductor a GET never spends: "Pull latest", a POST, is the one way to buy
+	let behind = matches!(cli.cmd, Cmd::Serve { behind_conductor: true, .. });
 	let block_spend = cli.block_spend;
 	let keys: Vec<String> = (&cfg).into();
 	let work = Work::at(v_utils::xdg_cache_dir!(""))
 		.policy((&cfg.age).into(), (&cfg.sweep).into())
 		.keys(keys.clone())
 		.refresh(refresh)
-		.block_spend(block_spend);
+		.block_spend(block_spend || behind);
 	match cli.cmd {
 		Cmd::Config { .. } => unreachable!("handled above, and `handle_settings_command` exits"),
 		Cmd::Schema => {
 			println!("{}", serde_json::to_string_pretty(&schemars::schema_for!(gmaps_optimal_placement::Study))?);
 			Ok(())
 		}
-		Cmd::Serve { at, port, open, refresh: _ } => {
+		Cmd::Serve {
+			at,
+			port,
+			open,
+			refresh: _,
+			behind_conductor: _,
+		} => {
 			// the page picks out of the two directories, so `fzf` is not one of two pickers to learn. A
 			// pair named as files is built here instead: its statistics print, and a study that will not
 			// build fails before the listener binds
@@ -160,24 +173,51 @@ fn main() -> Result<()> {
 			// along: it belongs to the run that asked for it, and a tab switch is not one — the page's own
 			// reload is. `--block-spend` does, because it is about the server and not about a run
 			let (dir, age, tiling) = (work.path().to_owned(), (&cfg.age).into(), (&cfg.sweep).into());
-			let browser = keys
-				.first()
-				.ok_or_else(|| eyre::eyre!("the map loads Google's script with a key, and the config's `google_maps` lists none"))?
-				.clone();
+			let mode = match behind {
+				true => gmaps_optimal_placement_web::serve::Mode::Conductor(
+					std::env::var("PANEL_ASSERTION_KEYS")
+						.map_err(|e| eyre::eyre!("`--behind-conductor` checks every request against PANEL_ASSERTION_KEYS: {e}"))?
+						.parse()
+						.map_err(|e| eyre::eyre!("PANEL_ASSERTION_KEYS: {e}"))?,
+				),
+				false => gmaps_optimal_placement_web::serve::Mode::Page {
+					key: keys
+						.first()
+						.ok_or_else(|| eyre::eyre!("the map loads Google's script with a key, and the config's `google_maps` lists none"))?
+						.clone(),
+					open,
+				},
+			};
+			let located = locations
+				.iter()
+				.map(|l| {
+					let s = gmaps_optimal_placement::load(None, l)?;
+					let b = s.area.bbox;
+					Ok(gmaps_optimal_placement_web::serve::Location {
+						path: l.clone(),
+						bbox: [b.lon[0], b.lat[0], b.lon[1], b.lat[1]],
+						country: s.country,
+					})
+				})
+				.collect::<Result<Vec<_>>>()?;
 			let build = std::sync::Arc::new({
 				let (dir, keys) = (dir.clone(), keys.clone());
 				move |trade: Option<&std::path::Path>, location: &std::path::Path, refresh: bool| {
 					eyre::ensure!(!(refresh && block_spend), "`--block-spend` buys nothing, so it re-asks nothing either");
-					let work = Work::at(dir.clone()).policy(age, tiling).keys(keys.clone()).refresh(refresh).block_spend(block_spend);
+					let work = Work::at(dir.clone())
+						.policy(age, tiling)
+						.keys(keys.clone())
+						.refresh(refresh)
+						.block_spend(block_spend || (behind && !refresh));
 					let payload = gmaps_optimal_placement::load(trade, location)?.build(&work)?;
 					Ok(serde_json::to_string(&payload)?)
 				}
 			});
 			let find = std::sync::Arc::new(move |location: &std::path::Path, q: &str| {
 				let frame = gmaps_optimal_placement::load(None, location)?.area.bbox;
-				gmaps_optimal_placement_sources::poi::find(&Work::at(dir.clone()).policy(age, tiling).keys(keys.clone()).block_spend(block_spend), frame, q)
+				gmaps_optimal_placement_sources::poi::find(&Work::at(dir.clone()).policy(age, tiling).keys(keys.clone()).block_spend(block_spend || behind), frame, q)
 			});
-			gmaps_optimal_placement_web::serve::serve(trades, locations, prebuilt, build, find, browser, SocketAddr::from(([127, 0, 0, 1], port)), open)
+			gmaps_optimal_placement_web::serve::serve(trades, located, prebuilt, build, find, SocketAddr::from(([127, 0, 0, 1], port)), mode)
 		}
 		Cmd::Probe { at, dry_run, refresh: _ } => {
 			let (trade, location) = (gmaps_optimal_placement::pick(&at.trades)?, gmaps_optimal_placement::pick(&at.locations)?);

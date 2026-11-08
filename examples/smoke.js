@@ -153,9 +153,9 @@ async function main() {
   log("state:", s);
 
   assert.equal(s.banner, null, "no banner");
-  assert.equal(s.layers, 10, "four live layers plus the study's six");
-  assert.equal(s.tierRows, 3, "one row per tier, plus hide-imputed");
-  assert(s.note.includes("10446 cells"), `legend counts the grid: ${s.note}`);
+  assert.equal(s.layers, 9, "three live layers plus the location's six");
+  assert.equal(s.tierRows, 4, "one row per tier, plus hide-imputed and the pressure field");
+  assert(/\d+ cells in view/.test(s.note), `legend counts the cells in view: ${s.note}`);
   assert(s.painted > 100, "canvas actually painted");
   // the colours are Google's categories, not the study's tiers, so the list is longer than `tier`
   // is and no two entries share a swatch
@@ -244,7 +244,7 @@ async function main() {
   // is what the picker was pointed at; a pairing nobody asked for is built the first time a tab does
   log("step: tabs");
   assert.deepEqual(await tabs(), ["car_detailing_-_Clermont-Ferrand"], "the pairing picked at load is the one open tab");
-  assert.equal(await layers(), 10, "four live layers plus the study's six");
+  assert.equal(await layers(), 9, "three live layers plus the location's six");
 
   // the city on its own: the archive and nothing billed, which is what the last row of the trade
   // field buys. Everything a slider moves is a trade's, so the panel has to say so
@@ -259,7 +259,7 @@ async function main() {
     await sleep(1000);
   }
   assert.deepEqual(await tabs(), ["car_detailing_-_Clermont-Ferrand", "Clermont-Ferrand"], "a location on its own is named after the city");
-  assert.equal(await layers(), 5, "the location's five INSEE layers, and not one that needs a demand model");
+  assert.equal(await layers(), 6, "the location's six layers, and not one that needs a demand model");
   // the city's own candidate is still a pin — a premises is the location's, not the trade's
   await expectMarkers(1, "nothing was bought, so no competitor is on the map");
   assert(await evaluate(`${ctl("Rank top 10 sites")}.disabled`), "the sweep has no demand to sweep");
@@ -320,14 +320,14 @@ async function main() {
     await sleep(1000);
   }
   assert.deepEqual(await tabs(), ["car_detailing_-_Clermont-Ferrand", "cleaning_-_Clermont-Ferrand"], "the picked pairing is a second tab");
-  assert.equal(await layers(), 12, "the cleaning study's eight layers are what the panel now offers");
+  assert.equal(await layers(), 12, "the cleaning study's nine layers and three live ones are what the panel now offers");
   assert(
     (await evaluate("document.querySelector('#ctl div.note').innerText")).includes("10446 cells"),
     "the second study covers the same grid",
   );
 
   await press("[");
-  assert.equal(await layers(), 10, "`[` goes back to the detailing study");
+  assert.equal(await layers(), 9, "`[` goes back to the detailing study");
   await press("]");
   assert.equal(await layers(), 12, "`]` comes forward again");
 
@@ -341,7 +341,7 @@ async function main() {
 
   await press("w");
   assert.deepEqual(await tabs(), ["car_detailing_-_Clermont-Ferrand"], "`w` closes the active tab");
-  assert.equal(await layers(), 10, "and the panel is the surviving study's");
+  assert.equal(await layers(), 9, "and the panel is the surviving study's");
   await expectMarkers(C + 1, "so is the map");
 
   assert.deepEqual(errors, [], "no uncaught exceptions");

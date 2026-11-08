@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use eyre::{Result, WrapErr, bail, ensure};
 pub use gmaps_optimal_placement_core as core;
 use gmaps_optimal_placement_core::{
-	Expr, LayerOut, PoiOut, Scale, TierOut,
+	Expr, LayerOut, Notice, PoiOut, Scale, TierOut,
 	rank::{self, Biz, Feats, Rank},
 };
 pub use gmaps_optimal_placement_core::{Payload, payload};
@@ -25,6 +25,8 @@ use serde::Serialize;
 
 use crate::config::Group;
 pub use crate::config::Study;
+
+const EMPTY: &str = "No competitor is on this map, and nothing that reads one is offered.";
 
 /// One chart's worth of demand-side numbers. Members ride along with their own series, because a
 /// sum you cannot audit is a sum you cannot argue with.
@@ -198,26 +200,52 @@ impl Study {
 		let (trade, notice) = match (&self.poi, &self.model, &self.rank) {
 			(None, None, None) => (None, None),
 			// a half-written trade is not a location, and `trade()` says which block is missing
-			_ => match self.billed(&cells, &place, work) {
-				Ok(t) => (Some(t), None),
-				// the quota and `--block-spend` are the refusals that are neither this tool's fault nor a study
-				// that will not build: what the archive paid for is already here, so the map opens on it and
-				// says why the ground is empty. A partial sweep is not served — half an inventory reads as a whole one
-				Err(e) => match e
-					.downcast_ref::<sources::work::Exhausted>()
-					.map(ToString::to_string)
-					.or_else(|| e.downcast_ref::<sources::work::Blocked>().map(ToString::to_string))
-				{
-					Some(why) => (None, Some(format!("{why}. No competitor is on this map, and nothing that reads one is offered."))),
-					None => return Err(e),
-				},
-			},
+			_ => {
+				let (poi_cfg, _, _) = self.trade()?;
+				match poi::load(poi_cfg, self.area.bbox, &self.name, work) {
+					Ok(inv) => (Some(self.billed(&cells, &place, inv, work)?), None),
+					// the refusals that are neither this tool's fault nor a study that will not build: the map opens on
+					// what the work dir holds and says what it is missing
+					Err(e) => match (e.downcast_ref::<sources::work::Blocked>(), e.downcast_ref::<sources::work::Exhausted>()) {
+						(Some(blocked), _) => {
+							let held = poi::cached(poi_cfg, self.area.bbox, work)?;
+							let missing = Some(blocked.missing);
+							match held.pois.len() {
+								0 => (
+									None,
+									Some(Notice {
+										text: format!("{blocked}. {EMPTY}"),
+										missing,
+									}),
+								),
+								n => (
+									Some(self.billed(&cells, &place, held, work)?),
+									Some(Notice {
+										text: format!("{blocked}. The {n} competitors on this map are the part of the sweep it does hold."),
+										missing,
+									}),
+								),
+							}
+						}
+						(None, Some(spent)) => (
+							None,
+							Some(Notice {
+								text: format!("{spent}. {EMPTY}"),
+								missing: None,
+							}),
+						),
+						(None, None) => return Err(e),
+					},
+				}
+			}
 		};
 		let mut layers = Vec::new();
 		if let Some(n) = &notice {
-			eprintln!("{}: {n}", self.name);
+			eprintln!("{}: {}", self.name, n.text);
+		}
+		if trade.is_none() && notice.is_some() {
 			// the demand surface is the trade's expression over the archive and was evaluated before the
-			// first call, so it is the one thing a spent day does not take away. First, so the map opens
+			// first call, so it is the one thing a refusal does not take away. First, so the map opens
 			// on it rather than on whatever the location happened to list
 			let model = self.model.as_ref().expect("a study that reached the sweep declares a model");
 			layers.push(LayerOut {
@@ -242,10 +270,9 @@ impl Study {
 		})
 	}
 
-	/// The billed half. Every Places call this tool makes on a map is behind this.
-	fn billed(&self, cells: &Cells, place: &[String], work: &Work) -> Result<payload::Trade> {
+	/// The billed half, over an inventory already bought or already held.
+	fn billed(&self, cells: &Cells, place: &[String], inv: poi::Inventory, work: &Work) -> Result<payload::Trade> {
 		let (poi_cfg, model_cfg, rank_cfg) = self.trade()?;
-		let inv = poi::load(poi_cfg, self.area.bbox, &self.name, work)?;
 		let model = Rank::try_new(feats(place, &inv.pois)?, rank::COEF)?;
 		let terms: Vec<(String, f64)> = rank_cfg.terms.iter().map(|t| (t.text.clone(), t.weight)).collect();
 

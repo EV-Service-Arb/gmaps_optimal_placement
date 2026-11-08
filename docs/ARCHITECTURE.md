@@ -37,13 +37,16 @@ documents, never to the code.
    │ gmaps_optimal_placement          │   │ gmaps_optimal_placement_web   │
    │   CLI, study, settings, HTML     │──▶│   ssr: axum + server fns      │
    │   trades × locations             │   │   hydrate: the MapView island │
-   └───────┬──────────────────────────┘   │   map_core.js: google.maps    │
+   └───────┬──────────────────────────┘   │   map_core.js: map, pins      │
            │  the orderings on disk       └────────┬──────────────────────┘
-   ┌───────┴──────────────────────────┐            ▼
-   │ gmaps_optimal_placement_rank     │   a served map · one <name>-searches.html
-   │   Observed · Strategy · Strength │
-   │   Adam, k-fold, the league table │
-   └──────────────────────────────────┘
+   ┌───────┴──────────────────────────┐   ┌────────┴──────────────────────┐
+   │ gmaps_optimal_placement_rank     │   │ gmaps_optimal_placement_overlay│
+   │   Observed · Strategy · Strength │   │   Scene: heat · field · dots  │
+   │   Adam, k-fold, the league table │   │   paint.js: the canvases      │
+   └──────────────────────────────────┘   │   overlay.js: /mfe, any host  │
+                                          └────────┬──────────────────────┘
+                                                   ▼
+                          gop's own map · the conductor's map · one <name>-searches.html
 ```
 
 `serve` holds the two axes rather than a study, and the page picks a point on their product — one
@@ -92,13 +95,38 @@ Both sides are Rust. `gmaps_optimal_placement_core` is wasm-safe and holds the m
 
 ## The line between Rust and JavaScript
 
-`map_core.js` rides in as a wasm-bindgen snippet and is the only file that names `google.maps`: the
-map instance, the markers and their info windows, and the canvas fill loop — which stays there
-because it needs `fromLatLngToDivPixel` every frame. Rust hands it `ringX`/`ringY`, `colors`,
-`shown` and an opacity, and owns every one of those numbers. The pattern is `v_utils::lwc`'s.
+What is painted over a map is `gmaps_optimal_placement_overlay`'s, and there is one path for it:
+`Scene` decides every number, `paint.js` projects and fills, because filling needs
+`fromLatLngToDivPixel` every frame. gop's Leptos map and the conductor's page both draw through it;
+`map_core.js` keeps what is gop's page alone — the map instance, the pins, the pan. The pattern is
+`v_utils::lwc`'s.
 
-Nothing throws across that boundary. Under `panic=abort` a rejected promise reaching wasm kills the
-app, so every entry point in `map_core.js` returns a banner string instead.
+The conductor imports `/mfe/overlay.js` onto a `google.maps.Map` it owns: the map, its styles and
+its own markers stay the host's. The module comes from the same build as the payloads it reads, so
+`Model::try_new` checks their weights against the `rank::COEF` it was linked with.
+
+Nothing throws across either boundary for a data problem. Under `panic=abort` a rejected promise
+reaching wasm kills the app, so `map_core.js`'s `mount` returns a banner string; the overlay turns a
+payload that will not arrive, parse or build into a `notice` event.
+
+## Two visual axes
+
+The heat is one layer at a time on a warm sequential ramp. Competitor pressure is never one of
+those layers: it is a field of its own — a blue haze rising with the pressure's percentile, and
+iso-lines at its 50th, 75th and 90th — drawn over whatever heat is on, so where people are and where
+competitors already reach read at once. Blue is the field's alone; no heat ramp and no category
+colour comes near it.
+
+Both scales are relative to the cells in view. A city zoomed into is read against itself, and the
+legend's ticks move with the view.
+
+## Behind the conductor
+
+`serve --behind-conductor` serves no page. Every request but `/mfe/*` carries the conductor's
+assertion for exactly its method and path, checked against `PANEL_ASSERTION_KEYS`; reading needs
+`sa:placement:study:read`, anything else `sa:placement:study:spend`. A GET never spends: a pairing
+whose searches are not in the work dir opens on what the work dir holds, and its notice says how many
+are missing. "Pull latest", the POST, is the one thing that buys.
 
 ## Invariants
 
@@ -180,8 +208,9 @@ decision, and they are the difference between a map that informs one and a map t
 guess into authority. The worked examples are in `examples/`.
 
 - **Motorisation is estimated, not measured.** No 200 m source publishes households-with-a-car;
-  INSEE has it only at IRIS level. The detailing trade infers it from the house/flat split
-  (`men_mais × 1.55 + men_coll × 0.85`). Directionally right, not a measurement.
+  INSEE has it only at IRIS level. `_France.nix` infers it from the house/flat split
+  (`men_mais × 1.55 + men_coll × 0.85`) as a location layer, and the detailing trade's demand reads
+  it. Directionally right, not a measurement.
 - **Most fine-grained cells are modelled.** ~80 % of INSEE 200 m cells have fewer than 11 fiscal
   households, so their values are imputed. The flag is carried through to the map and the "hide
   imputed cells" control exists for it. Trust dense cells, distrust isolated rural ones.

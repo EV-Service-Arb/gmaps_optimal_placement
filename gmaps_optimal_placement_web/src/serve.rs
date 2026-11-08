@@ -7,12 +7,17 @@
 //!
 //! Building a study is the CLI's job, so it arrives as a closure: the web crate never learns what a
 //! `.nix` file is, nor that a trade is a function of a location.
+//!
+//! Behind the conductor there is no page: the conductor's own map imports `/mfe/overlay.js`, which is
+//! open, and every other request carries the conductor's assertion for exactly itself.
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{
 	Router,
-	extract::{Path as UrlPath, Query},
-	http::StatusCode,
+	extract::{Path as UrlPath, Query, Request, State},
+	http::{Method, StatusCode},
+	middleware::Next,
+	response::{IntoResponse, Response},
 	routing::get,
 };
 use eyre::{Result, WrapErr};
@@ -33,33 +38,31 @@ pub type Find = Arc<dyn Fn(&std::path::Path, &str) -> Result<Option<([f64; 2], S
 type Key = (Option<String>, String);
 type Pool = Arc<HashMap<Key, (Option<PathBuf>, PathBuf, Arc<tokio::sync::Mutex<Option<axum::body::Bytes>>>)>>;
 
-/// `prebuilt` is `(trade stem, location stem, payload)` — whatever the CLI already paid for. `key` is
-/// the one the browser loads Google's script with.
-pub fn serve(
-	trades: Vec<PathBuf>,
-	locations: Vec<PathBuf>,
-	prebuilt: Vec<(Option<String>, String, String)>,
-	build: Build,
-	find: Find,
-	key: String,
-	addr: SocketAddr,
-	open: bool,
-) -> Result<()> {
-	// leptos spawns the SSR stream through `any_spawner`, which has no executor until it is told
-	any_spawner::Executor::init_tokio().map_err(|e| eyre::eyre!("{e}"))?;
-	let root = site_root();
-	let pkg = root.join("pkg");
-	eyre::ensure!(
-		pkg.join("gmaps_optimal_placement_web.js").exists(),
-		"no client build under {} — run `cargo leptos build` or nix's own",
-		pkg.display()
-	);
+/// One served location: its file, and what the conductor places it on a map by.
+pub struct Location {
+	pub path: PathBuf,
+	/// West, south, east, north.
+	pub bbox: [f64; 4],
+	/// ISO 3166-1 alpha-2.
+	pub country: String,
+}
 
-	let options = LeptosOptions::builder()
-		.output_name("gmaps_optimal_placement_web")
-		.site_root(root.to_string_lossy().into_owned())
-		.site_addr(addr)
-		.build();
+pub enum Mode {
+	/// gop's own page. `key` is the one the browser loads Google's script with.
+	Page { key: String, open: bool },
+	/// Behind the conductor, which signs every request it forwards with one of these.
+	Conductor(sa_auth::Keys),
+}
+
+/// `prebuilt` is `(trade stem, location stem, payload)` — whatever the CLI already paid for.
+pub fn serve(trades: Vec<PathBuf>, locations: Vec<Location>, prebuilt: Vec<(Option<String>, String, String)>, build: Build, find: Find, addr: SocketAddr, mode: Mode) -> Result<()> {
+	let root = site_root();
+	let (pkg, mfe) = (root.join("pkg"), root.join("mfe"));
+	let built = match &mode {
+		Mode::Page { .. } => pkg.join("gmaps_optimal_placement_web.js"),
+		Mode::Conductor(_) => mfe.join("overlay.js"),
+	};
+	eyre::ensure!(built.exists(), "no client build at {} — nix's `open`/`conductor` apps build it", built.display());
 
 	eyre::ensure!(
 		!trades.is_empty() && !locations.is_empty(),
@@ -67,20 +70,21 @@ pub fn serve(
 		trades.len(),
 		locations.len()
 	);
-	let stems = |v: &[PathBuf]| -> Vec<String> { v.iter().map(|p| p.file_stem().expect("a *.nix path has a stem").to_string_lossy().into_owned()).collect() };
-	let (trade_stems, location_stems) = (stems(&trades), stems(&locations));
+	let stem = |p: &PathBuf| -> String { p.file_stem().expect("a *.nix path has a stem").to_string_lossy().into_owned() };
+	let trade_stems: Vec<String> = trades.iter().map(stem).collect();
+	let location_stems: Vec<String> = locations.iter().map(|l| stem(&l.path)).collect();
 
 	// every location twice over: crossed with each trade, and on its own
 	let mut pool: HashMap<Key, _> = locations
 		.iter()
 		.zip(&location_stems)
 		.flat_map(|(l, ls)| {
-			let bare = std::iter::once(((None, ls.clone()), (None, l.clone(), Arc::new(tokio::sync::Mutex::new(None)))));
+			let bare = std::iter::once(((None, ls.clone()), (None, l.path.clone(), Arc::new(tokio::sync::Mutex::new(None)))));
 			bare.chain(
 				trades
 					.iter()
 					.zip(&trade_stems)
-					.map(move |(t, ts)| ((Some(ts.clone()), ls.clone()), (Some(t.clone()), l.clone(), Arc::new(tokio::sync::Mutex::new(None))))),
+					.map(move |(t, ts)| ((Some(ts.clone()), ls.clone()), (Some(t.clone()), l.path.clone(), Arc::new(tokio::sync::Mutex::new(None))))),
 			)
 		})
 		.collect();
@@ -98,15 +102,16 @@ pub fn serve(
 		([t], [l]) => format!("{t} in {l}"),
 		(t, l) => format!("{} trades over {} locations", t.len(), l.len()),
 	};
-	let shell = {
-		let (options, title, key) = (options.clone(), title.clone(), key);
-		move || shell(options.clone(), title.clone(), key.clone())
-	};
 
-	let studies = serde_json::json!({ "trades": trade_stems, "locations": location_stems, "open": opened }).to_string();
+	let served: Vec<serde_json::Value> = locations
+		.iter()
+		.zip(&location_stems)
+		.map(|(l, name)| serde_json::json!({"name": name, "bbox": l.bbox, "country": l.country}))
+		.collect();
+	let studies = serde_json::json!({ "trades": trade_stems, "locations": served, "open": opened }).to_string();
 	let (bare, again) = ((pool.clone(), build.clone()), (pool.clone(), build.clone()));
 	let places = pool.clone();
-	let mut app = Router::new()
+	let api = Router::new()
 		.route("/studies.json", get(move || std::future::ready(json(studies.clone()))))
 		.route(
 			"/payload/{trade}/{location}",
@@ -121,20 +126,37 @@ pub fn serve(
 			"/find/{location}",
 			get(move |UrlPath(l): UrlPath<String>, Query(q): Query<Search>| self::find(places.clone(), find.clone(), l, q.q)),
 		)
-		.nest_service("/pkg", tower_http::services::ServeDir::new(pkg));
-	for (path, method) in leptos::server_fn::axum::server_fn_paths() {
-		app = app.route(
-			path,
-			axum::routing::MethodRouter::new().on(
-				axum::routing::MethodFilter::try_from(method).expect("leptos only registers routable methods"),
-				leptos_axum::handle_server_fns,
-			),
-		);
-	}
-	let app = app
-		.fallback(get(leptos_axum::render_app_to_stream(shell)))
-		.layer(tower_http::compression::CompressionLayer::new())
-		.with_state(options);
+		.nest_service("/mfe", tower_http::services::ServeDir::new(mfe));
+
+	let (app, open) = match mode {
+		Mode::Page { key, open } => {
+			// leptos spawns the SSR stream through `any_spawner`, which has no executor until it is told
+			any_spawner::Executor::init_tokio().map_err(|e| eyre::eyre!("{e}"))?;
+			let options = LeptosOptions::builder()
+				.output_name("gmaps_optimal_placement_web")
+				.site_root(root.to_string_lossy().into_owned())
+				.site_addr(addr)
+				.build();
+			let shell = {
+				let (options, title) = (options.clone(), title.clone());
+				move || shell(options.clone(), title.clone(), key.clone())
+			};
+			let mut page = Router::new().nest_service("/pkg", tower_http::services::ServeDir::new(pkg));
+			for (path, method) in leptos::server_fn::axum::server_fn_paths() {
+				page = page.route(
+					path,
+					axum::routing::MethodRouter::new().on(
+						axum::routing::MethodFilter::try_from(method).expect("leptos only registers routable methods"),
+						leptos_axum::handle_server_fns,
+					),
+				);
+			}
+			let page = page.fallback(get(leptos_axum::render_app_to_stream(shell))).with_state(options);
+			(api.merge(page), open)
+		}
+		Mode::Conductor(keys) => (api.layer(axum::middleware::from_fn_with_state(Arc::new(keys), guard)), false),
+	};
+	let app = app.layer(tower_http::compression::CompressionLayer::new());
 
 	let rt = tokio::runtime::Runtime::new().wrap_err("starting the server runtime")?;
 	rt.block_on(async move {
@@ -149,6 +171,35 @@ pub fn serve(
 		}
 		axum::serve(listener, app.into_make_service()).await.wrap_err("serving")
 	})
+}
+
+/// Every request but the overlay build carries the conductor's assertion for exactly its method and
+/// path, made for a person who may read studies — and, for anything but a GET, spend on them.
+async fn guard(State(keys): State<Arc<sa_auth::Keys>>, req: Request, next: Next) -> Response {
+	let path = req.uri().path();
+	if path.starts_with("/mfe/") {
+		return next.run(req).await;
+	}
+	let Some(token) = req.headers().get(sa_auth::HEADER) else {
+		return (StatusCode::UNAUTHORIZED, format!("no {} on {path}", sa_auth::HEADER)).into_response();
+	};
+	let Ok(token) = token.to_str() else {
+		return (StatusCode::UNAUTHORIZED, format!("{} is not ASCII", sa_auth::HEADER)).into_response();
+	};
+	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("the clock is past 1970").as_secs() as i64;
+	let assertion = match sa_auth::verify(&keys, token, sa_auth::Service::Placement, req.method().as_str(), path, None, now) {
+		Ok(a) => a,
+		Err(e) => return (StatusCode::UNAUTHORIZED, format!("{}: {e}", sa_auth::HEADER)).into_response(),
+	};
+	let need = match *req.method() == Method::GET {
+		true => sa_auth::Study::Read,
+		false => sa_auth::Study::Spend,
+	};
+	match assertion.principal {
+		sa_auth::Principal::User(u) if u.permissions.may(need) => next.run(req).await,
+		sa_auth::Principal::User(u) => (StatusCode::FORBIDDEN, format!("{} does not hold {}", u.email, need.as_str())).into_response(),
+		other => (StatusCode::FORBIDDEN, format!("studies are a person's to read, not {other:?}'s")).into_response(),
+	}
 }
 
 /// Built on the first tab that asks for it, and kept until one asks for it again, which re-asks Google

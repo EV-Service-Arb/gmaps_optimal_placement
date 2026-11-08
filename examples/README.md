@@ -4,7 +4,7 @@ There is no code here. A study is a **trade applied to a location**: `import tra
 (import locations/Lyon.nix)`.
 
 ```
-                      _France.nix                grid, nv, the raw INSEE layers, the volume provider
+                      _France.nix                grid, nv, cars, the location layers, the volume provider
                    ^               ^
    locations/  Clermont-Ferrand.nix   Lyon.nix   bbox, the place volume resolves against, candidate
                    ^      ^      ^        ^
@@ -40,13 +40,16 @@ nix run .#study                                  # the detailing map, asserted i
 | Layer | Meaning |
 |---|---|
 | **Underserved demand** ★ | demand ÷ (1 + competition already reaching the cell) — the one to shop on |
-| Competitor pressure | Σ competitors of weight × exp(−distance/λ) |
 | Demand | the study's `model.demand` |
 | Population / Households / Households in houses / in flats | raw INSEE |
 | Standard of living €/yr | per-person rate, **not** a density |
+| Estimated cars | houses × 1.55 + flats × 0.85, inferred |
 
-The first three need a trade. Without one the bottom two rows are the whole table, and λ, the tier
-weights, the site sweep and the candidate comparison are disabled.
+The first two need a trade. Without one the bottom rows are the whole table, and λ, the tier
+weights, the pressure field, the site sweep and the candidate comparison are disabled.
+
+Competitor pressure — Σ competitors of weight × exp(−distance/λ) — is not a row: it is the blue
+field drawn over whichever layer is on.
 
 Live controls: catchment radius λ, the weight of one tier against the other, opacity, marker filters
 per tier, hide imputed cells.

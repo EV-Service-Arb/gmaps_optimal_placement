@@ -1,0 +1,28 @@
+[package]
+name = "gmaps_optimal_placement_overlay"
+description = "The heat, the pressure field and the competitor dots over a google.maps.Map, as one ES module"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# the `overlay()` the conductor imports; the Leptos map links the crate without it, so none of it
+# lands in that wasm
+export = ["dep:gloo-net", "dep:wasm-bindgen-futures"]
+
+[dependencies]
+gloo-net = { workspace = true, optional = true }
+gmaps_optimal_placement_core.workspace = true
+js-sys.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures = { workspace = true, optional = true }
+
+[lints]
+workspace = true

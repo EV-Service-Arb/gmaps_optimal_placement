@@ -111,13 +111,17 @@ impl std::fmt::Display for Exhausted {
 }
 impl std::error::Error for Exhausted {}
 
-/// `--block-spend` met a Places search the work dir has no answer for. A refusal of the same shape as
-/// [`Exhausted`], so a map opens on the grid for either.
+/// A run that buys nothing met Places searches the work dir has no answer for. A refusal of the same
+/// shape as [`Exhausted`], so a map opens on what the work dir does hold for either.
 #[derive(Debug)]
-pub struct Blocked;
+pub struct Blocked {
+	/// At least this many: a tile at the cap opens four more nobody has counted.
+	pub missing: usize,
+}
 impl std::fmt::Display for Blocked {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "`--block-spend` refuses Places searches the work dir has no answer for")
+		let s = if self.missing == 1 { "" } else { "es" };
+		write!(f, "at least {} Places search{s} the work dir has no answer for, and this run buys none", self.missing)
 	}
 }
 impl std::error::Error for Blocked {}
@@ -285,6 +289,14 @@ impl Work {
 		}
 	}
 
+	/// Refused here, before the first request, when this run buys nothing and `missing` is not zero.
+	pub(crate) fn may_buy(&self, missing: usize) -> Result<()> {
+		match self.block_spend && missing > 0 {
+			true => Err(Blocked { missing }.into()),
+			false => Ok(()),
+		}
+	}
+
 	/// A path under the work dir for something derived from what is already there, named by a key its
 	/// inputs decide. Nothing here expires either: a key covers everything the answer depends on, so a
 	/// changed input is a different file rather than a stale one.
@@ -345,7 +357,7 @@ impl Work {
 			return Ok(hit);
 		}
 		if self.block_spend && url == crate::poi::SEARCH_TEXT {
-			return Err(Blocked.into());
+			return Err(Blocked { missing: 1 }.into());
 		}
 		let canonical = serde_json::to_string(body)?;
 		let dst = self.post_path(url, &canonical)?;

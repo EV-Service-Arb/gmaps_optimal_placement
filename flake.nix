@@ -71,6 +71,16 @@
             target/wasm32-unknown-unknown/debug/gmaps_optimal_placement_web.wasm
         '';
 
+        # The module the conductor imports: the overlay wasm, its bindgen glue and `overlay.js`, which
+        # is the only thing a host names. Served from `target/site/mfe` as `/mfe/*`.
+        overlay = ''
+          cargo build -p gmaps_optimal_placement_overlay --lib --target wasm32-unknown-unknown --features export
+          mkdir -p target/site/mfe
+          wasm-bindgen --target web --out-dir target/site/mfe --out-name gmaps_optimal_placement_overlay \
+            target/wasm32-unknown-unknown/debug/gmaps_optimal_placement_overlay.wasm
+          cp gmaps_optimal_placement_overlay/src/overlay.js target/site/mfe/overlay.js
+        '';
+
         # The smoke test asserts Clermont's numbers, so it takes no study: `smoke.js` and
         # `car_detailing.nix` x `Clermont-Ferrand.nix` are one fixture. It is served the whole
         # product rather than that pairing, because reaching the pairing through the picker is
@@ -109,6 +119,19 @@
             ${client}
             fuser -k ${toString port}/tcp 2>/dev/null || true
             exec cargo run -p gmaps_optimal_placement -- serve "$@" --port ${toString port} --open
+          '';
+        };
+        # `conductor --port <p> [-t <trades>] [-l <locations>]` — the conductor's peer: the overlay
+        # module and the API behind its assertion, no page. Run from this checkout; needs
+        # PANEL_ASSERTION_KEYS, and the config's keys for whatever "Pull latest" buys.
+        conductor = pkgs.writeShellApplication {
+          name = "conductor";
+          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold nix wasm-bindgen-cli tailwindcss_4 ];
+          text = ''
+            cd "$(git rev-parse --show-toplevel)"
+            ${overlay}
+            cargo build -p gmaps_optimal_placement
+            exec cargo run -p gmaps_optimal_placement -- serve --behind-conductor "$@"
           '';
         };
         # `searches [-t <trades>] [-l <locations>]` — build the volume chart, serve it, open it.
@@ -152,6 +175,8 @@
                                             the query groups of one pairing. each axis is picked through fzf
             nix run .#misc <country> <tally>  which towns in a country to write a study about at all:
                                             pool | building | parcel per --per column, --floor to skip hamlets
+            nix run .#conductor -- --port <p> [-t ..] [-l ..]  serve the conductor: /mfe/overlay.js and the
+                                            API behind its assertion (PANEL_ASSERTION_KEYS); GETs never spend
             nix run .#study                 serve the Clermont map and assert it in headless Chromium
             nix run .#help                  this
             cached archives and API responses live under $XDG_CACHE_HOME/gmaps_optimal_placement;
@@ -168,6 +193,7 @@
           default = { type = "app"; program = pkgs.lib.getExe study; };
           study = { type = "app"; program = pkgs.lib.getExe study; };
           open = { type = "app"; program = pkgs.lib.getExe open; };
+          conductor = { type = "app"; program = pkgs.lib.getExe conductor; };
           searches = { type = "app"; program = pkgs.lib.getExe searches; };
           misc = { type = "app"; program = pkgs.lib.getExe misc; };
           help = { type = "app"; program = pkgs.lib.getExe help; };
@@ -192,6 +218,12 @@
               wasm-bindgen --target web --out-dir target/site/pkg --out-name gmaps_optimal_placement_web \
                 target/wasm32-unknown-unknown/release/gmaps_optimal_placement_web.wasm
               wasm-opt -Oz target/site/pkg/gmaps_optimal_placement_web_bg.wasm -o target/site/pkg/gmaps_optimal_placement_web_bg.wasm
+              cargo build --release -p gmaps_optimal_placement_overlay --lib --target wasm32-unknown-unknown --features export
+              mkdir -p target/site/mfe
+              wasm-bindgen --target web --out-dir target/site/mfe --out-name gmaps_optimal_placement_overlay \
+                target/wasm32-unknown-unknown/release/gmaps_optimal_placement_overlay.wasm
+              wasm-opt -Oz target/site/mfe/gmaps_optimal_placement_overlay_bg.wasm -o target/site/mfe/gmaps_optimal_placement_overlay_bg.wasm
+              cp gmaps_optimal_placement_overlay/src/overlay.js target/site/mfe/overlay.js
               runHook postBuild
             '';
 

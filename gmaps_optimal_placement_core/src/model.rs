@@ -17,18 +17,20 @@ const R: f64 = 6378137.;
 /// Beyond 3λ the exponential contributes under 5 % of one competitor — not worth the distance.
 const CUTOFF: f64 = 3.;
 
-/// Turbo, sampled at eight stops. Quantile colouring: these values are heavy-tailed, a linear ramp
-/// would show one hot pixel downtown and nothing else.
-const TURBO: [[f64; 3]; 8] = [
-	[48., 18., 59.],
-	[70., 107., 227.],
-	[38., 187., 203.],
-	[122., 231., 111.],
-	[219., 213., 50.],
-	[249., 132., 42.],
-	[199., 42., 17.],
-	[122., 4., 3.],
+/// Inferno, from its first purple on. Warm and sequential: blue belongs to the pressure field, which
+/// is painted over the heat and has to stay readable through it.
+const RAMP: [[f64; 3]; 8] = [
+	[40., 11., 84.],
+	[87., 16., 110.],
+	[135., 33., 107.],
+	[181., 54., 89.],
+	[221., 81., 58.],
+	[246., 125., 21.],
+	[250., 186., 31.],
+	[245., 245., 145.],
 ];
+/// The field's iso-lines, as quantiles of the pressure among the cells in view.
+pub const LEVELS: [f64; 3] = [0.5, 0.75, 0.9];
 /// Web-Mercator world coords, 256 px at zoom 0. Precomputed so a redraw is arithmetic instead of
 /// 40k projection calls per frame.
 pub fn world_x(lng: f64) -> f64 {
@@ -58,7 +60,6 @@ pub enum LayerRef {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TradeLayer {
 	Unmet,
-	Pressure,
 	Demand,
 	/// One competitor's share of the cell under the fitted model.
 	Share,
@@ -109,6 +110,9 @@ pub struct Model {
 	lng0: f64,
 	m_per_lng: f64,
 	m_per_lat: f64,
+	/// Every ring corner four cells meet at, as those cells: the squares the iso-lines are traced
+	/// over, centroid to centroid. Lower-left, lower-right, upper-right, upper-left.
+	quads: Vec<[usize; 4]>,
 	/// Present exactly when `payload.trade` is.
 	trade: Option<TradeState>,
 }
@@ -165,6 +169,19 @@ impl Model {
 		for i in 0..n {
 			(mx[i], my[i]) = local(c_lat[i], c_lng[i]);
 		}
+		// adjacent cells reproject one 3035 corner to the same rounded floats, so a corner is its bits
+		let mut corners: std::collections::HashMap<(u64, u64), [Option<usize>; 4]> = std::collections::HashMap::new();
+		for i in 0..n {
+			for (k, slot) in [2, 3, 0, 1].into_iter().enumerate() {
+				let at = (payload.ring[i * 8 + k * 2].to_bits(), payload.ring[i * 8 + k * 2 + 1].to_bits());
+				let seat = &mut corners.entry(at).or_default()[slot];
+				if let Some(j) = seat {
+					eyre::bail!("cells {j} and {i} both claim one corner of the grid");
+				}
+				*seat = Some(i);
+			}
+		}
+		let quads = corners.into_values().filter_map(|q| Some([q[0]?, q[1]?, q[2]?, q[3]?])).collect();
 		let trade = payload
 			.trade
 			.as_ref()
@@ -236,6 +253,7 @@ impl Model {
 			lng0,
 			m_per_lng,
 			m_per_lat,
+			quads,
 			trade,
 		})
 	}
@@ -273,7 +291,7 @@ impl Model {
 		((lng - self.lng0) * self.m_per_lng, (lat - self.lat0) * self.m_per_lat)
 	}
 
-	/// The three that move under the sliders, then whatever the study asked for. Without a trade only
+	/// The ones that move under the sliders, then whatever the study asked for. Without a trade only
 	/// the second half exists — every layer above it is a function of demand, competitors, or both.
 	pub fn layers(&self) -> Vec<LayerSpec> {
 		let mut out = Vec::new();
@@ -284,12 +302,6 @@ impl Model {
 					note: "Demand in the cell, divided down by how much competition already reaches it. This is the layer to shop for locations on.".to_owned(),
 					linear: false,
 					source: LayerRef::Trade(TradeLayer::Unmet),
-				},
-				LayerSpec {
-					name: "Competitor pressure".to_owned(),
-					note: "Σ over competitors of weight × exp(−distance/λ). High = already saturated.".to_owned(),
-					linear: false,
-					source: LayerRef::Trade(TradeLayer::Pressure),
 				},
 				LayerSpec {
 					name: "Demand".to_owned(),
@@ -329,6 +341,50 @@ impl Model {
 	/// [`Traded::values`], because the rest of the layers need a trade.
 	pub fn layer(&self, i: usize) -> &[f64] {
 		&self.payload.layers[i].values
+	}
+
+	/// Iso-lines of `values` at each of `levels`, traced by marching squares between cell centroids:
+	/// `[x0, y0, x1, y1, level]` per segment, in the Web-Mercator world coords `ring_x`/`ring_y` are in.
+	/// A hole in the grid ends a line rather than closing it.
+	pub fn contours(&self, values: &[f64], levels: &[f64]) -> Vec<f64> {
+		assert_eq!(values.len(), self.n(), "one value per cell");
+		let at = |i: usize| -> [f64; 2] {
+			let (x, y) = (&self.ring_x[i * 4..i * 4 + 4], &self.ring_y[i * 4..i * 4 + 4]);
+			[x.iter().sum::<f64>() / 4., y.iter().sum::<f64>() / 4.]
+		};
+		let mut out = Vec::new();
+		for q in &self.quads {
+			let v = q.map(|i| values[i]);
+			let p = q.map(at);
+			for (li, &level) in levels.iter().enumerate() {
+				let case = (0..4).fold(0, |c, k| c | (usize::from(v[k] >= level) << k));
+				let cut = |e: usize| -> [f64; 2] {
+					let (a, b) = (e, (e + 1) % 4);
+					let t = (level - v[a]) / (v[b] - v[a]);
+					[p[a][0] + t * (p[b][0] - p[a][0]), p[a][1] + t * (p[b][1] - p[a][1])]
+				};
+				let centre = v.iter().sum::<f64>() / 4. >= level;
+				let edges: &[[usize; 2]] = match case {
+					0 | 15 => &[],
+					1 | 14 => &[[3, 0]],
+					2 | 13 => &[[0, 1]],
+					3 | 12 => &[[3, 1]],
+					4 | 11 => &[[1, 2]],
+					6 | 9 => &[[0, 2]],
+					7 | 8 => &[[3, 2]],
+					5 if centre => &[[0, 1], [2, 3]],
+					5 => &[[3, 0], [1, 2]],
+					10 if centre => &[[3, 0], [1, 2]],
+					10 => &[[0, 1], [2, 3]],
+					_ => unreachable!("four corners make sixteen cases"),
+				};
+				for [a, b] in edges {
+					let (a, b) = (cut(*a), cut(*b));
+					out.extend([a[0], a[1], b[0], b[1], li as f64]);
+				}
+			}
+		}
+		out
 	}
 
 	pub fn nearest_cell(&self, mx: f64, my: f64) -> usize {
@@ -694,10 +750,9 @@ impl<'a> Traded<'a> {
 	}
 
 	/// `of` is the competitor the coverage layers are about, and is ignored by the rest.
-	pub fn values(self, source: TradeLayer, of: usize, lambda: f64, tiers: &[TierState], press: &'a [f64], unmet: &'a [f64]) -> Cow<'a, [f64]> {
+	pub fn values(self, source: TradeLayer, of: usize, lambda: f64, tiers: &[TierState], unmet: &'a [f64]) -> Cow<'a, [f64]> {
 		match source {
 			TradeLayer::Unmet => Cow::Borrowed(unmet),
-			TradeLayer::Pressure => Cow::Borrowed(press),
 			TradeLayer::Demand => Cow::Borrowed(&self.trade.demand),
 			TradeLayer::Share | TradeLayer::Seen => Cow::Owned(self.cloud(source, of, lambda, tiers)),
 		}
@@ -705,22 +760,26 @@ impl<'a> Traded<'a> {
 }
 
 pub fn ramp(t: f64) -> [f64; 3] {
-	let t = t.clamp(0., 1.) * (TURBO.len() - 1) as f64;
-	let i = (t.floor() as usize).min(TURBO.len() - 2);
+	let t = t.clamp(0., 1.) * (RAMP.len() - 1) as f64;
+	let i = (t.floor() as usize).min(RAMP.len() - 2);
 	let f = t - i as f64;
-	let (a, b) = (TURBO[i], TURBO[i + 1]);
+	let (a, b) = (RAMP[i], RAMP[i + 1]);
 	[a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f]
 }
 pub struct Colorised {
 	/// `n * 3` RGB. Only the entries `shown` marks are meaningful.
 	pub colors: Vec<u8>,
 	pub shown: Vec<u8>,
-	/// The legend's five labels, at 0/25/50/75/100 %.
+	/// The legend's five labels, at 0/25/50/75/100 % — of the cells in view.
 	pub ticks: [f64; 5],
+	/// Shown cells in view.
 	pub count: usize,
 }
-pub fn colorise(values: &[f64], imputed: &[u8], hide_imputed: bool, linear: bool) -> Colorised {
+/// The ramp spans the shown cells in view, so a city zoomed into is coloured against itself; cells
+/// outside it are coloured on the same ramp, clamped.
+pub fn colorise(values: &[f64], imputed: &[u8], hide_imputed: bool, linear: bool, in_view: &[bool]) -> Colorised {
 	let n = values.len();
+	assert_eq!(in_view.len(), n, "one view flag per cell");
 	let mut shown = vec![0u8; n];
 	let mut idx = Vec::new();
 	for i in 0..n {
@@ -729,7 +788,7 @@ pub fn colorise(values: &[f64], imputed: &[u8], hide_imputed: bool, linear: bool
 			idx.push(i);
 		}
 	}
-	let mut sorted: Vec<f64> = idx.iter().map(|&i| values[i]).collect();
+	let mut sorted: Vec<f64> = idx.iter().filter(|&&i| in_view[i]).map(|&i| values[i]).collect();
 	sorted.sort_by(f64::total_cmp);
 	let count = sorted.len();
 	let (lo, hi) = if count > 0 { (sorted[0], sorted[count - 1]) } else { (0., 1.) };
@@ -739,8 +798,7 @@ pub fn colorise(values: &[f64], imputed: &[u8], hide_imputed: bool, linear: bool
 		let t = if linear {
 			(values[i] - lo) / if hi - lo == 0. { 1. } else { hi - lo }
 		} else {
-			// rank within the shown cells: `partition_point` is the JS binary search verbatim
-			sorted.partition_point(|&s| s < values[i]) as f64 / if count > 1 { (count - 1) as f64 } else { 1. }
+			percentile(&sorted, values[i])
 		};
 		let c = ramp(t);
 		colors[i * 3] = c[0] as u8;
@@ -763,6 +821,94 @@ pub fn colorise(values: &[f64], imputed: &[u8], hide_imputed: bool, linear: bool
 		count,
 	}
 }
+
+/// Rank within `sorted`, 0..=1; a value past either end is at that end.
+fn percentile(sorted: &[f64], v: f64) -> f64 {
+	(sorted.partition_point(|&s| s < v) as f64 / if sorted.len() > 1 { (sorted.len() - 1) as f64 } else { 1. }).min(1.)
+}
+
+/// The pressure field over the cells in view: an alpha per cell rising with its percentile there,
+/// and the values at [`LEVELS`] its iso-lines are drawn at. `None` when no cell in view is under any
+/// pressure.
+pub struct Field {
+	pub alpha: Vec<u8>,
+	pub levels: [f64; 3],
+}
+pub fn field(values: &[f64], in_view: &[bool]) -> Option<Field> {
+	assert_eq!(in_view.len(), values.len(), "one view flag per cell");
+	let mut sorted: Vec<f64> = values.iter().zip(in_view).filter(|(v, seen)| **seen && **v > 0.).map(|(v, _)| *v).collect();
+	if sorted.is_empty() {
+		return None;
+	}
+	sorted.sort_by(f64::total_cmp);
+	let alpha = values
+		.iter()
+		.map(|&v| match v > 0. {
+			true => (haze(percentile(&sorted, v)) * 255.).round() as u8,
+			false => 0,
+		})
+		.collect();
+	Some(Field {
+		alpha,
+		levels: LEVELS.map(|q| sorted[(q * (sorted.len() - 1) as f64).floor() as usize]),
+	})
+}
+/// The field's colour. Nothing in [`ramp`] comes near it.
+pub const HAZE: [u8; 3] = [37, 99, 235];
+/// The haze's alpha at percentile `p` of the pressure in view. Low enough that the yellow end of the
+/// heat does not wash out under it: the iso-lines carry the reading, the haze only says where.
+pub fn haze(p: f64) -> f64 {
+	0.3 * p.powf(1.6)
+}
+
+/// A Google category, as Google files it — not as the study's `tier` rules read it. The tiers are
+/// the study's argument about what competes; this is the evidence they were argued from, and the
+/// two disagreeing is worth being able to see.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Category {
+	/// Places `primaryType`, which the colour is keyed by.
+	pub kind: String,
+	/// The Business Profile category Google displays. A place it typed as nothing is still on the
+	/// map and still says so.
+	pub label: String,
+	pub color: String,
+	/// Per tier, in the payload's order, so a panel can count only what is on screen.
+	pub counts: Vec<usize>,
+}
+
+/// Every category on the map, commonest first, each with the colour it is painted in. Golden-angle
+/// hues, so neighbours in the list land far apart however many a city turns out to have — over a
+/// wheel with blue cut out, which is the pressure field's.
+pub fn categories(trade: &Trade) -> Vec<Category> {
+	let mut out: Vec<Category> = Vec::new();
+	for p in &trade.pois {
+		let ti = trade.tiers.iter().position(|t| t.name == p.poi.tier).expect("the model rejected a payload whose tiers disagree");
+		let i = match out.iter().position(|c| c.kind == p.poi.kind) {
+			Some(i) => i,
+			None => {
+				out.push(Category {
+					kind: p.poi.kind.clone(),
+					label: match (p.poi.kind_label.as_str(), p.poi.kind.as_str()) {
+						("", "") => "no category".to_owned(),
+						("", k) => k.to_owned(),
+						(l, _) => l.to_owned(),
+					},
+					color: String::new(),
+					counts: vec![0; trade.tiers.len()],
+				});
+				out.len() - 1
+			}
+		};
+		out[i].counts[ti] += 1;
+	}
+	out.sort_by_key(|c| std::cmp::Reverse(c.counts.iter().sum::<usize>()));
+	for (i, c) in out.iter_mut().enumerate() {
+		let h = (i as f64 * 137.508) % 360. * 290. / 360.;
+		c.color = format!("hsl({:.0},72%,58%)", if h >= 190. { h + 70. } else { h });
+	}
+	out
+}
+
 /// Three significant-ish digits with an SI-ish suffix. Report and legend both read it, so a change
 /// here moves every number on the page at once.
 pub fn fmt(n: f64) -> String {

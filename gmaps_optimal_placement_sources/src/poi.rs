@@ -195,7 +195,9 @@ pub fn find(work: &Work, bbox: Bbox, q: &str) -> Result<Option<([f64; 2], String
 pub fn load(cfg: &PoiConfig, bbox: Bbox, what: &str, work: &Work) -> Result<Inventory> {
 	// the free walk first, so what this is about to buy is on screen before it buys it. It reads the
 	// cache and nothing else, and a sweep is a tenth of a second against the grid scan behind it
-	work.announce(what, Need::AtLeast(sweep(cfg, bbox, false, work)?.missing));
+	let missing = sweep(cfg, bbox, false, work)?.missing;
+	work.announce(what, Need::AtLeast(missing));
+	work.may_buy(missing)?;
 	work.forget(Kind::Inventory);
 	sweep(cfg, bbox, true, work)
 }

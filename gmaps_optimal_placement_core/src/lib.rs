@@ -11,6 +11,6 @@ pub mod rank;
 pub use expr::Expr;
 pub use grid::{Cell, CellId, Grid};
 pub use model::Model;
-pub use payload::{Candidate, LayerOut, Payload, Poi, PoiOut, Scale, TermOut, TierOut, Trade};
+pub use payload::{Candidate, LayerOut, Notice, Payload, Poi, PoiOut, Scale, TermOut, TierOut, Trade};
 pub use proj::Reproject;
 pub use rank::{Feats, Rank};

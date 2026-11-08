@@ -45,11 +45,11 @@ fn clermont_centre() {
 	columns         32
 	demand total    36501.2
 	Population      49327.0
-	Households      29006.8
 	Standard of living (€/yr) 5571857.5
+	Estimated cars  27082.0
+	Households      29006.8
 	Households in houses 3466.1
 	Households in flats 25540.7
-	Estimated cars  27082.0
 	");
 }
 
@@ -65,10 +65,11 @@ fn a_location_alone_builds_off_the_archive() {
 	assert!(p.trade.is_none(), "a location carries no demand surface and no competitors");
 	let m = gmaps_optimal_placement_core::Model::try_new(p).unwrap();
 	assert!(m.traded().is_none(), "and so no view onto anything a slider moves");
-	insta::assert_snapshot!(m.layers().into_iter().map(|l| l.name).collect::<Vec<_>>().join("\n"), @r"
+	insta::assert_snapshot!(m.layers().into_iter().map(|l| l.name).collect::<Vec<_>>().join("\n"), @"
 	Population
-	Households
 	Standard of living (€/yr)
+	Estimated cars
+	Households
 	Households in houses
 	Households in flats
 	");

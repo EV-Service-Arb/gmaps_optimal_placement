@@ -19,11 +19,18 @@ pub struct Payload {
 	/// Absent when a location was opened without one. Everything above is the location's, comes out
 	/// of the statistical archive, and costs nothing to ask for.
 	pub trade: Option<Trade>,
-	/// Why the map is less than what was asked for — a spent day of Places quota above all. Set, the
-	/// trade half is missing for a reason the page can state, rather than for the reason `trade: None`
-	/// usually means.
+	/// Why the map is less than what was asked for — a spent day of Places quota, or searches the
+	/// work dir does not hold and this build would not buy.
 	#[serde(default)]
-	pub notice: Option<String>,
+	pub notice: Option<Notice>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Notice {
+	pub text: String,
+	/// Searches the work dir is missing and nobody bought — at least this many. Set when that is
+	/// the reason.
+	pub missing: Option<usize>,
 }
 
 /// The half of a payload a trade decides, and the whole of the half that is billed. One `Option`

@@ -24,6 +24,8 @@ pub struct Study {
 	#[serde(skip)]
 	pub name: String,
 	pub area: Area,
+	/// ISO 3166-1 alpha-2 of the country the frame is in.
+	pub country: String,
 	pub grid: GridSpec,
 	/// The trade's three, absent together on a location opened without one.
 	#[serde(default)]

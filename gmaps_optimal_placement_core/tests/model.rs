@@ -4,7 +4,7 @@
 //! billed half of the pipeline, frozen, so this runs with no network and no key.
 use gmaps_optimal_placement_core::{
 	Model, Payload,
-	model::{LayerRef, Report, TierState, colorise, fmt},
+	model::{LayerRef, Report, TierState, colorise, field, fmt},
 };
 
 fn model() -> Model {
@@ -15,6 +15,10 @@ fn model() -> Model {
 /// The fixture is a trade over a location, so the view every slider reads is always there.
 fn trade(m: &Model) -> gmaps_optimal_placement_core::model::Traded<'_> {
 	m.traded().expect("the Clermont fixture is a trade over a location")
+}
+
+fn everywhere(m: &Model) -> Vec<bool> {
+	vec![true; m.n()]
 }
 
 fn sum(v: &[f64]) -> f64 {
@@ -42,7 +46,7 @@ fn state_matches_the_study() {
 	let tiers = m.tier_states();
 	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
 	let unmet = trade(&m).unmet(&press);
-	let c = colorise(&unmet, &m.payload.imputed, false, false);
+	let c = colorise(&unmet, &m.payload.imputed, false, false, &everywhere(&m));
 
 	insta::assert_snapshot!(format!(
 		"cells {}\ncompetitors {}\nimputed {}\nshown {}\npressure nonzero {}\ndemand nonzero {}\ndemand total {:.1}\nunmet total {:.1}\npressure total {:.6}",
@@ -173,10 +177,10 @@ fn every_layer_colours() {
 	for spec in m.layers() {
 		let v = match spec.source {
 			LayerRef::Study(i) => std::borrow::Cow::Borrowed(m.layer(i)),
-			LayerRef::Trade(t) => trade(&m).values(t, 0, trade(&m).trade.lambda_m, &tiers, &press, &unmet),
+			LayerRef::Trade(t) => trade(&m).values(t, 0, trade(&m).trade.lambda_m, &tiers, &unmet),
 		};
-		let shown = colorise(&v, &m.payload.imputed, false, spec.linear);
-		let hidden = colorise(&v, &m.payload.imputed, true, spec.linear);
+		let shown = colorise(&v, &m.payload.imputed, false, spec.linear, &everywhere(&m));
+		let hidden = colorise(&v, &m.payload.imputed, true, spec.linear, &everywhere(&m));
 		s.push_str(&format!(
 			"{:<28} {:>5} shown, {:>5} without imputed, ticks {}\n",
 			spec.name,
@@ -187,7 +191,6 @@ fn every_layer_colours() {
 	}
 	insta::assert_snapshot!(s, @"
 	Underserved demand  ★        10446 shown,  3914 without imputed, ticks 0.01 · 2.14 · 6.63 · 15 · 162
-	Competitor pressure           8576 shown,  3692 without imputed, ticks 0.00 · 0.32 · 1.12 · 3.85 · 23
 	Demand                       10446 shown,  3914 without imputed, ticks 0.23 · 3.65 · 13 · 45 · 786
 	Coverage · modelled          10446 shown,  3914 without imputed, ticks 0.00 · 0.02 · 0.03 · 0.05 · 0.06
 	Population                   10446 shown,  3914 without imputed, ticks 1.00 · 4.00 · 15 · 50 · 1.3k
@@ -205,7 +208,7 @@ fn tooltip_over_a_cell() {
 	let tiers: Vec<TierState> = m.tier_states();
 	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
 	let unmet = trade(&m).unmet(&press);
-	let shown = colorise(&unmet, &m.payload.imputed, false, false).shown;
+	let shown = colorise(&unmet, &m.payload.imputed, false, false, &everywhere(&m)).shown;
 	let hit = m.cell_at(45.7797, 3.0863, &shown).expect("the study centre is on the grid");
 	insta::assert_snapshot!(m.tooltip(hit, &press, &unmet), @"
 	Clermont-Ferrand
@@ -215,5 +218,35 @@ fn tooltip_over_a_cell() {
 	Households in houses 2.00
 	Estimated cars 219
 	demand 339 · pressure 16.61 · unmet 19
+	");
+}
+
+/// The view is what the colours are relative to: the heat ramp and the pressure field both span the
+/// cells in view, so the centre of a city zoomed into is read against itself and not against its
+/// countryside. The field's haze rises with pressure and is absent where there is none, and its
+/// lines run at the levels it reports.
+#[test]
+fn the_view_sets_the_scale() {
+	let m = model();
+	let tiers = m.tier_states();
+	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
+	let centre: Vec<bool> = (0..m.n()).map(|i| (m.c_lat[i] - 45.7797).abs() < 0.02 && (m.c_lng[i] - 3.0863).abs() < 0.03).collect();
+
+	let whole = colorise(&press, &m.payload.imputed, false, false, &everywhere(&m));
+	let zoomed = colorise(&press, &m.payload.imputed, false, false, &centre);
+	assert!(zoomed.count < whole.count && zoomed.ticks[0] > whole.ticks[0], "the centre is a narrower, hotter range");
+
+	let f = field(&press, &centre).expect("the centre is under pressure");
+	let mut by: Vec<(f64, u8)> = press.iter().copied().zip(f.alpha.iter().copied()).collect();
+	by.sort_by(|a, b| a.0.total_cmp(&b.0));
+	assert!(by.windows(2).all(|w| w[0].1 <= w[1].1), "haze never falls as pressure rises");
+	assert!(by.iter().all(|(p, a)| (*p > 0.) || *a == 0), "no haze where nothing presses");
+
+	let segs = m.contours(&press, &f.levels);
+	let per: Vec<usize> = (0..3).map(|l| segs.chunks(5).filter(|s| s[4] == l as f64).count()).collect();
+	insta::assert_snapshot!(format!("levels {}\nsegments {per:?}\nalpha max {}", f.levels.map(fmt).join(" · "), f.alpha.iter().max().unwrap()), @"
+	levels 14 · 17 · 19
+	segments [55, 46, 28]
+	alpha max 77
 	");
 }
