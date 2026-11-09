@@ -18,6 +18,8 @@
         version = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.version;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
         port = 8731;
+        # the first of this repository's ten in SA_PORT_RANGE: site_conductor's docs/port_range.md
+        SA_PORTS = 52850;
 
         # Pinned to match the workspace's `wasm-bindgen` — nixpkgs ships a different minor, and a
         # CLI/crate schema skew is a hard error at `wasm-bindgen` time. Shadows
@@ -282,6 +284,8 @@
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
             env.RUST_BACKTRACE = 1;
+            # where the conductor's local-stack serves `conductor` from
+            PLACEMENT_PORT = toString SA_PORTS;
           };
       }
     );
