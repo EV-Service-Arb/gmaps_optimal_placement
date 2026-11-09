@@ -126,7 +126,7 @@ legend's ticks move with the view.
 assertion for exactly its method and path, checked against `PANEL_ASSERTION_KEYS`; reading needs
 `sa:placement:study:read`, anything else `sa:placement:study:spend`. A GET never spends: a pairing
 whose searches are not in the work dir opens on what the work dir holds, and its notice says how many
-are missing. "Pull latest", the POST, is the one thing that buys. Either reads the answers store.
+are missing. "Pull latest", the POST, is the one thing that buys. Either reads the queries cache.
 
 ## Invariants
 
@@ -159,10 +159,10 @@ are missing. "Pull latest", the POST, is the one thing that buys. Either reads t
 - **Google Maps keys live in the server's environment, never in an artifact.** The config names each
   by the variable holding it.
 - **A billed answer is bought once, wherever this runs.** Places, DataForSEO and Keyword Planner
-  answers are kept in the conductor's answers store (site_conductor's docs/ARCHITECTURE.md, Answers),
-  claimed there while bought; the work dir under `$XDG_CACHE_HOME/gmaps_optimal_placement` mirrors
-  what it served, and a run goes on from that mirror with the store out of reach until it needs an
-  answer the mirror lacks. Bulk archives are free and cache there alone — the INSEE archive is ~87 MB.
+  answers are kept in the conductor's queries cache (settings' `queries_cache`; site_conductor's
+  docs/ARCHITECTURE.md, Queries cache), claimed there while bought; the work dir under `$XDG_CACHE_HOME/gmaps_optimal_placement` mirrors
+  what it served, and a run goes on from that mirror with the cache out of reach until it needs an
+  answer the mirror lacks. `local` keeps them in the work dir alone. Bulk archives are free and cache there alone — the INSEE archive is ~87 MB.
   A 200 that is a refusal is never kept: it would answer for its request everywhere.
 - **Nothing in that cache expires.** An answer older than its kind's configured age is served anyway,
   and its age rides onto the map beside the imputed flag. Google's daily search quota is the scarce

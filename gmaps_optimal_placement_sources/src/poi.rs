@@ -325,7 +325,7 @@ fn swept(work: &Work, query: &str, typed: Option<&str>, bbox: Bbox, root: u32) -
 		return Ok(root);
 	}
 	// a `Work` of its own, so what this reads to choose is not counted as what the map was served
-	let scratch = Work::at(work.path(), work.store().clone()).policy(Age::default(), work.tiling());
+	let scratch = Work::at(work.path(), work.queries_cache().clone()).policy(Age::default(), work.tiling());
 	let mut begun = None;
 	for r in std::iter::once(root).chain(1..=ROOTS) {
 		let mut found = Found {

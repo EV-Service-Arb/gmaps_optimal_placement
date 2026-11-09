@@ -21,6 +21,9 @@ pub struct AppConfig {
 	#[serde(default)]
 	#[settings(skip)]
 	pub google_maps: Vec<MapsKey>,
+	/// Where what is bought is cached for everyone: the conductor's `<origin>/api/queries_cache`,
+	/// so no machine buys the same query twice; or `local`, this machine's work dir alone.
+	pub queries_cache: String,
 }
 
 #[derive(Clone, ConfigJsonSchema, Debug, MyConfigPrimitives)]

@@ -1,7 +1,7 @@
 //! The work dir: bulk archives and API responses, so a rerun costs nothing. A billed response is
-//! the conductor's answers store's to keep (`sa_core::answers`), so it is bought once wherever this
-//! runs; the work dir mirrors what the store served, and runs on from that mirror while the store
-//! is out of reach, until a response it does not hold is needed.
+//! the conductor's queries cache's to keep (`sa_core::queries_cache`), so it is bought once wherever
+//! this runs; the work dir mirrors what the cache served, and runs on from that mirror while the
+//! cache is out of reach, until a response it does not hold is needed.
 //!
 //! Nothing here expires. An answer past the age its kind allows is still served and its age is
 //! reported, because the alternative — refetching — spends a day of quota to learn the same thing,
@@ -21,7 +21,7 @@ use std::{
 };
 
 use eyre::{Result, WrapErr, bail};
-use sa_core::answers::{self, Claim, ClaimBody, Key, Put, Scheme, Stored};
+use sa_core::queries_cache::{Claim, ClaimBody, Key, Put, Scheme, Stored, under};
 use sha2::{Digest, Sha256};
 
 /// What an answer is about, which is what says how old it may get before the map says so.
@@ -160,19 +160,30 @@ impl std::fmt::Display for Need {
 	}
 }
 
-/// Where the responses a run pays for are kept.
+/// Where the responses a run pays for are cached: the settings' `queries_cache`.
 #[derive(Clone, Debug)]
-pub enum Store {
-	/// The work dir alone: nothing is shared with another machine.
-	Alone,
-	/// The conductor's answers store at `url` (`<origin>/api/answers`), as an `answers` source key;
-	/// the work dir mirrors it.
-	Conductor { url: String, key_id: String, secret: String },
+pub enum QueriesCache {
+	/// `local`: the work dir alone, shared with no other machine.
+	Local,
+	/// The conductor's queries cache at this URL (`<origin>/api/queries_cache`); the work dir
+	/// mirrors it.
+	Conductor(String),
+}
+impl std::str::FromStr for QueriesCache {
+	type Err = eyre::Report;
+
+	fn from_str(s: &str) -> Result<Self> {
+		match s.trim() {
+			"local" => Ok(Self::Local),
+			url if url.starts_with("http://") || url.starts_with("https://") => Ok(Self::Conductor(url.trim_end_matches('/').to_owned())),
+			other => bail!("queries_cache is `local` or the conductor's `<origin>/api/queries_cache`, not {other:?}"),
+		}
+	}
 }
 
 pub struct Work {
 	dir: PathBuf,
-	store: Store,
+	cache: QueriesCache,
 	billed: Cell<usize>,
 	/// Configured rather than `ureq::post`: the default turns a 4xx into an error before the body is
 	/// read, and a Google error body is the only thing that says which quota ran out.
@@ -194,10 +205,10 @@ pub struct Work {
 }
 
 impl Work {
-	pub fn at(dir: impl Into<PathBuf>, store: Store) -> Self {
+	pub fn at(dir: impl Into<PathBuf>, cache: QueriesCache) -> Self {
 		Self {
 			dir: dir.into(),
-			store,
+			cache,
 			billed: Cell::new(0),
 			agent: ureq::Agent::config_builder().http_status_as_error(false).build().new_agent(),
 			age: Age::default(),
@@ -252,8 +263,8 @@ impl Work {
 		&self.dir
 	}
 
-	pub fn store(&self) -> &Store {
-		&self.store
+	pub fn queries_cache(&self) -> &QueriesCache {
+		&self.cache
 	}
 
 	/// Cache misses since this `Work` was made — the calls a run actually paid for.
@@ -390,38 +401,38 @@ impl Work {
 		let request = format!("{url}\n{canonical}");
 		let key = Key(Sha256::digest(request.as_bytes()).into());
 		let dst = self.post_path(key)?;
-		if let Store::Conductor { .. } = self.store {
+		if let QueriesCache::Conductor(_) = self.cache {
 			let fresh_since = self.refresh.then(jiff::Timestamp::now);
 			loop {
-				match self.ask_store("POST", &format!("{}/claim", answers::under(Scheme::Gop, key)), &serde_json::to_vec(&ClaimBody { fresh_since })?)? {
-					(200, text) => match serde_json::from_str(&text).wrap_err("the answers store's claim")? {
+				match self.ask_cache("POST", &format!("{}/claim", under(Scheme::Gop, key)), &serde_json::to_vec(&ClaimBody { fresh_since })?)? {
+					(200, text) => match serde_json::from_str(&text).wrap_err("the queries cache's claim")? {
 						Claim::Stored(kept) => return self.mirror(&dst, kept),
 						Claim::Held { .. } => std::thread::sleep(Duration::from_millis(500)),
 						Claim::Granted { .. } => break,
 					},
-					(status, text) => bail!("the answers store refused a claim: {status}: {text}"),
+					(status, text) => bail!("the queries cache refused a claim: {status}: {text}"),
 				}
 			}
 		}
 		let bought = self.buy(url, &canonical, headers, refused, &dst);
 		if bought.is_err()
-			&& let Store::Conductor { .. } = self.store
-			&& let Err(e) = self.ask_store("DELETE", &format!("{}/claim", answers::under(Scheme::Gop, key)), &[])
+			&& let QueriesCache::Conductor(_) = self.cache
+			&& let Err(e) = self.ask_cache("DELETE", &format!("{}/claim", under(Scheme::Gop, key)), &[])
 		{
 			// the buy's error is the one to tell; the claim lapses with its lease anyway
-			eprintln!("releasing the answers store's claim after a failed buy: {e:#}");
+			eprintln!("releasing the queries cache's claim after a failed buy: {e:#}");
 		}
 		let (answer, text) = bought?;
-		if let Store::Conductor { .. } = self.store {
+		if let QueriesCache::Conductor(_) = self.cache {
 			let put = serde_json::to_vec(&Put { answer: answer.clone(), request })?;
-			match self.ask_store("PUT", &answers::under(Scheme::Gop, key), &put)? {
+			match self.ask_cache("PUT", &under(Scheme::Gop, key), &put)? {
 				(204, _) => {}
-				(status, text) => bail!("the answers store refused a paid answer: {status}: {text}"),
+				(status, text) => bail!("the queries cache refused a paid answer: {status}: {text}"),
 			}
 		}
 		// renamed into place, so an interrupted write never leaves a truncated answer for the next read
-		// to choke on; and written only once the store has it, or a rerun would read it here and never
-		// tell the store
+		// to choke on; and written only once the cache has it, or a rerun would read it here and never
+		// tell the cache
 		let part = dst.with_extension("part");
 		fs::write(&part, &text)?;
 		fs::rename(&part, &dst)?;
@@ -486,7 +497,7 @@ impl Work {
 	}
 
 	/// The response to this exact request and when it was written, if it has been made before: out
-	/// of the work dir, else out of the store, mirrored. Reading the probe's orderings back this way
+	/// of the work dir, else out of the queries cache, mirrored. Reading the probe's orderings back this way
 	/// is what keeps a refit from turning into a purchase.
 	pub fn cached(&self, url: &str, body: &serde_json::Value) -> Result<Option<(serde_json::Value, SystemTime)>> {
 		let key = Key(Sha256::digest(format!("{url}\n{}", serde_json::to_string(body)?).as_bytes()).into());
@@ -499,13 +510,13 @@ impl Work {
 			Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
 			Err(e) => return Err(e).wrap_err_with(|| format!("reading {}", dst.display())),
 		}
-		if let Store::Alone = self.store {
+		if let QueriesCache::Local = self.cache {
 			return Ok(None);
 		}
-		match self.ask_store("GET", &answers::under(Scheme::Gop, key), &[])? {
-			(200, text) => Ok(Some(self.mirror(&dst, serde_json::from_str(&text).wrap_err("the answers store's answer")?)?)),
+		match self.ask_cache("GET", &under(Scheme::Gop, key), &[])? {
+			(200, text) => Ok(Some(self.mirror(&dst, serde_json::from_str(&text).wrap_err("the queries cache's answer")?)?)),
 			(404, _) => Ok(None),
-			(status, text) => bail!("the answers store refused a read: {status}: {text}"),
+			(status, text) => bail!("the queries cache refused a read: {status}: {text}"),
 		}
 	}
 
@@ -519,24 +530,18 @@ impl Work {
 		Ok((kept.answer, at))
 	}
 
-	/// A signed request `under` the conductor's answers store: its status and body.
-	fn ask_store(&self, method: &str, under: &str, body: &[u8]) -> Result<(u16, String)> {
-		let Store::Conductor { url: store, key_id, secret } = &self.store else {
-			unreachable!("asked only of a conductor's store")
+	/// A request `under` the conductor's queries cache: its status and body.
+	fn ask_cache(&self, method: &str, under: &str, body: &[u8]) -> Result<(u16, String)> {
+		let QueriesCache::Conductor(cache) = &self.cache else {
+			unreachable!("asked only of a conductor's cache")
 		};
-		let url = format!("{}{under}", store.trim_end_matches('/'));
-		let path = url.parse::<ureq::http::Uri>().wrap_err_with(|| format!("the answers store's URL {store:?}"))?.path().to_owned();
-		let ts = jiff::Timestamp::now().as_second().to_string();
-		let signature = sa_core::signature::sign(secret.as_bytes(), &ts, &answers::signed(method, &path, body));
+		let url = format!("{cache}{under}");
 		let req = ureq::http::Request::builder()
 			.method(method)
 			.uri(&url)
-			.header("x-sa-key-id", key_id)
-			.header("x-sa-timestamp", ts)
-			.header("x-sa-signature", signature)
 			.header("content-type", "application/json")
 			.body(body.to_vec())?;
-		let mut res = self.agent.run(req).wrap_err_with(|| format!("the answers store at {store} did not answer"))?;
+		let mut res = self.agent.run(req).wrap_err_with(|| format!("the queries cache at {cache} did not answer"))?;
 		let text = res.body_mut().read_to_string().wrap_err_with(|| format!("{method} {url}: the answer was cut off"))?;
 		Ok((res.status().as_u16(), text))
 	}
@@ -636,7 +641,7 @@ mod tests {
 	#[test]
 	fn a_blocked_run_serves_the_cache_and_buys_nothing() {
 		let dir = std::env::temp_dir().join(format!("gmaps_block_spend_{}", std::process::id()));
-		let work = Work::at(&dir, Store::Alone).block_spend(true);
+		let work = Work::at(&dir, QueriesCache::Local).block_spend(true);
 		let (hit, miss) = (serde_json::json!({"textQuery": "kept"}), serde_json::json!({"textQuery": "never asked"}));
 		let key = Key(Sha256::digest(format!("{}\n{}", crate::poi::SEARCH_TEXT, serde_json::to_string(&hit).unwrap())).into());
 		let dst = work.post_path(key).unwrap();

@@ -37,7 +37,7 @@ impl Served {
 		// no `google_maps`: there is no key to buy with
 		std::fs::write(
 			dir.join("config.nix"),
-			r#"{ age = { communes = "1y"; inventory = "1w"; ordering = "1y"; }; sweep = { depth = 3; root = 3; }; }"#,
+			r#"{ age = { communes = "1y"; inventory = "1w"; ordering = "1y"; }; sweep = { depth = 3; root = 3; }; queries_cache = "local"; }"#,
 		)
 		.unwrap();
 		std::fs::write(dir.join("site/mfe/overlay.js"), "export async function overlay() {}").unwrap();
@@ -69,14 +69,12 @@ impl Served {
 		let child = Command::new(env!("CARGO_BIN_EXE_gmaps_optimal_placement"))
 			.arg("--config")
 			.arg(dir.join("config.nix"))
-			.args(["--answers-alone", "serve", "--behind-conductor", "--port", &port.to_string(), "-t"])
+			.args(["serve", "--behind-conductor", "--port", &port.to_string(), "-t"])
 			.arg(dir.join("trades"))
 			.arg("-l")
 			.arg(dir.join("locations"))
 			.env("PANEL_ASSERTION_KEYS", panel.public())
-			.env_remove("SA_ANSWERS_URL")
-			.env_remove("SA_ANSWERS_KEY_ID")
-			.env_remove("SA_ANSWERS_SECRET")
+			.env_remove("GMAPS_OPTIMAL_PLACEMENT_QUERIES_CACHE")
 			.env("LEPTOS_SITE_ROOT", dir.join("site"))
 			.spawn()
 			.unwrap();

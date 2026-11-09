@@ -10,4 +10,5 @@
     { key = { env = "GOOGLE_MAPS_KEY"; }; free = true; }
     { key = { env = "GOOGLE_MAPS_KEY_ICOS1"; }; free = true; }
   ];
+  queries_cache = "http://127.0.0.1:52800/api/queries_cache";
 }

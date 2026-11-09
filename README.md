@@ -1,6 +1,8 @@
 # gmaps_optimal_placement
 ![Minimum Supported Rust Version](https://img.shields.io/badge/nightly-1.92+-ab6000.svg)
 ![Lines Of Code](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/valeratrades/b48e6f02c61942200e7d1e3eeabf9bcb/raw/gmaps_optimal_placement-loc.json)
+![Build time](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/valeratrades/b48e6f02c61942200e7d1e3eeabf9bcb/raw/gmaps_optimal_placement-build.json)
+![Test time](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/valeratrades/b48e6f02c61942200e7d1e3eeabf9bcb/raw/gmaps_optimal_placement-test.json)
 <br>
 [<img alt="ci errors" src="https://img.shields.io/github/actions/workflow/status/EV-Service-Arb/gmaps_optimal_placement/errors.yml?branch=main&style=for-the-badge&style=flat-square&label=errors&labelColor=420d09" height="20">](https://github.com/EV-Service-Arb/gmaps_optimal_placement/actions?query=branch%3Amain) <!--NB: Won't find it if repo is private-->
 [<img alt="ci warnings" src="https://img.shields.io/github/actions/workflow/status/EV-Service-Arb/gmaps_optimal_placement/warnings.yml?branch=main&style=for-the-badge&style=flat-square&label=warnings&labelColor=d16002" height="20">](https://github.com/EV-Service-Arb/gmaps_optimal_placement/actions?query=branch%3Amain) <!--NB: Won't find it if repo is private-->
@@ -47,16 +49,15 @@ cargo install --path gmaps_optimal_placement
 # first, moving on as each one's day is spent; the map loads with the first:
 #   google_maps = [ { key = { env = "GOOGLE_MAPS_KEY_TRIAL"; }; free = true; } { key = { env = "GOOGLE_MAPS_KEY"; }; free = false; } ];
 export GOOGLE_MAPS_KEY_TRIAL=... GOOGLE_MAPS_KEY=...
-# What is bought is kept in the Service-Arb conductor's answers store, so no machine buys it twice:
-# an `answers` key of the conductor's (`panel source add <id> --kind answers`). Or pass
-# `--answers-alone` to keep it in this machine's work dir only.
-export SA_ANSWERS_URL=https://sa.evinvest.ltd/api/answers SA_ANSWERS_KEY_ID=... SA_ANSWERS_SECRET=...
+# and where what is bought is cached for everyone, so no machine buys the same query twice: the
+# Service-Arb conductor's queries cache, or `local` for this machine's work dir alone:
+#   queries_cache = "https://sa.evinvest.ltd/api/queries_cache";
 
 # Serve the map. A study is a trade applied to a location, and the two directories are all this
 # takes — the page picks the pairing, with a field per axis: type in either, Enter picks its top
 # row, and Load opens the pair as a tab over one map. Press `t` for one more. Both flags default to
 # what is shown here. Bulk archives cache in $XDG_CACHE_HOME/gmaps_optimal_placement, and so do the
-# API responses the answers store served;
+# API responses the queries cache served;
 # candidates you promote from the map land in $XDG_DATA_HOME/gmaps_optimal_placement.
 gmaps_optimal_placement serve --trades examples/trades --locations examples/locations --open
 
@@ -111,9 +112,11 @@ against the source's own column list.
 
 <br>
 
-<sup>
-	This repository follows <a href="https://github.com/valeratrades/.github/tree/master/best_practices">my best practices</a> and <a href="https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md">Tiger Style</a> (except "proper capitalization for acronyms": (VsrState, not VSRState) and formatting). For project's architecture, see <a href="./docs/ARCHITECTURE.md">ARCHITECTURE.md</a>.
-</sup>
+<sup>Links for devs:</sup>
+- <sup><a href="./docs/ARCHITECTURE.md">architecture</a></sup>
+- <sup><a href="https://github.com/EV-Main/.github/blob/main/code/STYLE.md">style</a></sup>
+- <sup><a href="https://github.com/EV-Main/.github/tree/main/code/conventions">conventions</a></sup>
+- <sup><a href="https://github.com/EV-Main/.github/blob/main/code/conventions/git">contributing</a></sup>
 
 #### License
 
