@@ -7,7 +7,7 @@ use gmaps_optimal_placement::{
 	settings::{AppConfig, SettingsCommand, SettingsFlags},
 };
 use gmaps_optimal_placement_rank::{League, Observed, Ordering, fit, pooled};
-use gmaps_optimal_placement_sources::Work;
+use gmaps_optimal_placement_sources::{Work, work::Store};
 
 #[derive(Parser)]
 #[command(about = "Paint a study's demand model over the competitors already on the ground")]
@@ -19,6 +19,11 @@ struct Cli {
 	/// missing, and a probe stops at its first miss
 	#[arg(long, global = true)]
 	block_spend: bool,
+	/// Keep what is paid for in this machine's work dir alone, sharing it with nothing. Without
+	/// it, SA_ANSWERS_URL, SA_ANSWERS_KEY_ID and SA_ANSWERS_SECRET name the conductor's answers
+	/// store, which every machine buys through
+	#[arg(long, global = true)]
+	answers_alone: bool,
 	#[command(subcommand)]
 	cmd: Cmd,
 }
@@ -120,6 +125,22 @@ enum Cmd {
 	},
 }
 
+/// Where what a run pays for is kept: the conductor's answers store, unless told to share nothing.
+fn answers_store(alone: bool) -> Result<Store> {
+	const VARS: [&str; 3] = ["SA_ANSWERS_URL", "SA_ANSWERS_KEY_ID", "SA_ANSWERS_SECRET"];
+	let set = VARS.map(|v| std::env::var(v).ok().filter(|s| !s.trim().is_empty()));
+	match (alone, set) {
+		(true, [None, None, None]) => Ok(Store::Alone),
+		(true, _) => eyre::bail!("`--answers-alone` shares nothing, and {} name a store to share with", VARS.join(", ")),
+		(false, [Some(url), Some(key_id), Some(secret)]) => Ok(Store::Conductor { url, key_id, secret }),
+		(false, [None, None, None]) => eyre::bail!(
+			"what is paid for is kept in the conductor's answers store: set {} (`panel source add <id> --kind answers` mints the key), or pass `--answers-alone`",
+			VARS.join(", ")
+		),
+		(false, _) => eyre::bail!("{}: all three or none", VARS.join(", ")),
+	}
+}
+
 fn main() -> Result<()> {
 	color_eyre::install()?;
 	let cli = Cli::parse();
@@ -134,7 +155,8 @@ fn main() -> Result<()> {
 	let behind = matches!(cli.cmd, Cmd::Serve { behind_conductor: true, .. });
 	let block_spend = cli.block_spend;
 	let keys: Vec<String> = (&cfg).into();
-	let work = Work::at(v_utils::xdg_cache_dir!(""))
+	let store = answers_store(cli.answers_alone)?;
+	let work = Work::at(v_utils::xdg_cache_dir!(""), store.clone())
 		.policy((&cfg.age).into(), (&cfg.sweep).into())
 		.keys(keys.clone())
 		.refresh(refresh)
@@ -201,10 +223,10 @@ fn main() -> Result<()> {
 				})
 				.collect::<Result<Vec<_>>>()?;
 			let build = std::sync::Arc::new({
-				let (dir, keys) = (dir.clone(), keys.clone());
+				let (dir, keys, store) = (dir.clone(), keys.clone(), store.clone());
 				move |trade: Option<&std::path::Path>, location: &std::path::Path, refresh: bool| {
 					eyre::ensure!(!(refresh && block_spend), "`--block-spend` buys nothing, so it re-asks nothing either");
-					let work = Work::at(dir.clone())
+					let work = Work::at(dir.clone(), store.clone())
 						.policy(age, tiling)
 						.keys(keys.clone())
 						.refresh(refresh)
@@ -215,7 +237,8 @@ fn main() -> Result<()> {
 			});
 			let find = std::sync::Arc::new(move |location: &std::path::Path, q: &str| {
 				let frame = gmaps_optimal_placement::load(None, location)?.area.bbox;
-				gmaps_optimal_placement_sources::poi::find(&Work::at(dir.clone()).policy(age, tiling).keys(keys.clone()).block_spend(block_spend || behind), frame, q)
+				let work = Work::at(dir.clone(), store.clone()).policy(age, tiling).keys(keys.clone()).block_spend(block_spend || behind);
+				gmaps_optimal_placement_sources::poi::find(&work, frame, q)
 			});
 			gmaps_optimal_placement_web::serve::serve(trades, located, prebuilt, build, find, SocketAddr::from(([127, 0, 0, 1], port)), mode)
 		}

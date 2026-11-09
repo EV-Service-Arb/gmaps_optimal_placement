@@ -126,7 +126,7 @@ legend's ticks move with the view.
 assertion for exactly its method and path, checked against `PANEL_ASSERTION_KEYS`; reading needs
 `sa:placement:study:read`, anything else `sa:placement:study:spend`. A GET never spends: a pairing
 whose searches are not in the work dir opens on what the work dir holds, and its notice says how many
-are missing. "Pull latest", the POST, is the one thing that buys.
+are missing. "Pull latest", the POST, is the one thing that buys. Either reads the answers store.
 
 ## Invariants
 
@@ -157,9 +157,13 @@ are missing. "Pull latest", the POST, is the one thing that buys.
   map are a diff beside it, under `XDG_DATA_HOME` — data, not cache, because a promoted candidate is
   a decision and cache is what cleaners delete.
 - **Google Maps keys live in the server's environment, never in an artifact.** The config names each
-  by the variable holding it. Bulk archives and
-  API responses cache under `$XDG_CACHE_HOME/gmaps_optimal_placement` so a rerun costs nothing — the
-  INSEE archive is ~87 MB and Places calls are billed.
+  by the variable holding it.
+- **A billed answer is bought once, wherever this runs.** Places, DataForSEO and Keyword Planner
+  answers are kept in the conductor's answers store (site_conductor's docs/ARCHITECTURE.md, Answers),
+  claimed there while bought; the work dir under `$XDG_CACHE_HOME/gmaps_optimal_placement` mirrors
+  what it served, and a run goes on from that mirror with the store out of reach until it needs an
+  answer the mirror lacks. Bulk archives are free and cache there alone — the INSEE archive is ~87 MB.
+  A 200 that is a refusal is never kept: it would answer for its request everywhere.
 - **Nothing in that cache expires.** An answer older than its kind's configured age is served anyway,
   and its age rides onto the map beside the imputed flag. Google's daily search quota is the scarce
   side, and refetching spends a day of it to learn what is mostly the same thing; `--refresh`, or the

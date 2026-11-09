@@ -48,10 +48,13 @@ eyre = "0.6"
 flate2 = "1"
 indexmap = { version = "2", features = ["serde"] }
 insta = "1"
+jiff = "0.2"
 proj4rs = "0.1"
 regex = "1"
 # the panel's assertion and the permission catalog
 sa_auth = { git = "https://github.com/EV-Service-Arb/site_conductor", branch = "main" }
+# the answers store's wire and its signature
+sa_core = { git = "https://github.com/EV-Service-Arb/site_conductor", branch = "main" }
 schemars = { version = "1", features = ["indexmap2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

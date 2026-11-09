@@ -1,4 +1,7 @@
-//! The work dir: bulk archives and API responses, so a rerun costs nothing.
+//! The work dir: bulk archives and API responses, so a rerun costs nothing. A billed response is
+//! the conductor's answers store's to keep (`sa_core::answers`), so it is bought once wherever this
+//! runs; the work dir mirrors what the store served, and runs on from that mirror while the store
+//! is out of reach, until a response it does not hold is needed.
 //!
 //! Nothing here expires. An answer past the age its kind allows is still served and its age is
 //! reported, because the alternative — refetching — spends a day of quota to learn the same thing,
@@ -18,6 +21,7 @@ use std::{
 };
 
 use eyre::{Result, WrapErr, bail};
+use sa_core::answers::{self, Claim, ClaimBody, Key, Put, Scheme, Stored};
 use sha2::{Digest, Sha256};
 
 /// What an answer is about, which is what says how old it may get before the map says so.
@@ -156,8 +160,19 @@ impl std::fmt::Display for Need {
 	}
 }
 
+/// Where the responses a run pays for are kept.
+#[derive(Clone, Debug)]
+pub enum Store {
+	/// The work dir alone: nothing is shared with another machine.
+	Alone,
+	/// The conductor's answers store at `url` (`<origin>/api/answers`), as an `answers` source key;
+	/// the work dir mirrors it.
+	Conductor { url: String, key_id: String, secret: String },
+}
+
 pub struct Work {
 	dir: PathBuf,
+	store: Store,
 	billed: Cell<usize>,
 	/// Configured rather than `ureq::post`: the default turns a 4xx into an error before the body is
 	/// read, and a Google error body is the only thing that says which quota ran out.
@@ -179,9 +194,10 @@ pub struct Work {
 }
 
 impl Work {
-	pub fn at(dir: impl Into<PathBuf>) -> Self {
+	pub fn at(dir: impl Into<PathBuf>, store: Store) -> Self {
 		Self {
 			dir: dir.into(),
+			store,
 			billed: Cell::new(0),
 			agent: ureq::Agent::config_builder().http_status_as_error(false).build().new_agent(),
 			age: Age::default(),
@@ -234,6 +250,10 @@ impl Work {
 
 	pub fn path(&self) -> &Path {
 		&self.dir
+	}
+
+	pub fn store(&self) -> &Store {
+		&self.store
 	}
 
 	/// Cache misses since this `Work` was made — the calls a run actually paid for.
@@ -345,12 +365,19 @@ impl Work {
 	}
 
 	/// A cached POST, and when the answer was written. The key is the request itself, so editing a
-	/// query refetches and rerunning does not.
+	/// query refetches and rerunning does not. `refused` names what in a 200 is a refusal rather than
+	/// an answer: one kept would answer for its request everywhere, forever.
 	///
 	/// The key covers url and body but not headers, and a Places field mask is a header that changes
 	/// the response shape. Two callers asking the same body under different masks would share one
 	/// entry; today they do not, because they differ in the body as well.
-	pub fn cached_post(&self, url: &str, body: &serde_json::Value, headers: &[(&str, &str)]) -> Result<(serde_json::Value, SystemTime)> {
+	pub fn cached_post(
+		&self,
+		url: &str,
+		body: &serde_json::Value,
+		headers: &[(&str, &str)],
+		refused: &dyn Fn(&serde_json::Value) -> Option<String>,
+	) -> Result<(serde_json::Value, SystemTime)> {
 		if !self.refresh
 			&& let Some(hit) = self.cached(url, body)?
 		{
@@ -360,7 +387,50 @@ impl Work {
 			return Err(Blocked { missing: 1 }.into());
 		}
 		let canonical = serde_json::to_string(body)?;
-		let dst = self.post_path(url, &canonical)?;
+		let request = format!("{url}\n{canonical}");
+		let key = Key(Sha256::digest(request.as_bytes()).into());
+		let dst = self.post_path(key)?;
+		if let Store::Conductor { .. } = self.store {
+			let fresh_since = self.refresh.then(jiff::Timestamp::now);
+			loop {
+				match self.ask_store("POST", &format!("{}/claim", answers::under(Scheme::Gop, key)), &serde_json::to_vec(&ClaimBody { fresh_since })?)? {
+					(200, text) => match serde_json::from_str(&text).wrap_err("the answers store's claim")? {
+						Claim::Stored(kept) => return self.mirror(&dst, kept),
+						Claim::Held { .. } => std::thread::sleep(Duration::from_millis(500)),
+						Claim::Granted { .. } => break,
+					},
+					(status, text) => bail!("the answers store refused a claim: {status}: {text}"),
+				}
+			}
+		}
+		let bought = self.buy(url, &canonical, headers, refused, &dst);
+		if bought.is_err()
+			&& let Store::Conductor { .. } = self.store
+			&& let Err(e) = self.ask_store("DELETE", &format!("{}/claim", answers::under(Scheme::Gop, key)), &[])
+		{
+			// the buy's error is the one to tell; the claim lapses with its lease anyway
+			eprintln!("releasing the answers store's claim after a failed buy: {e:#}");
+		}
+		let (answer, text) = bought?;
+		if let Store::Conductor { .. } = self.store {
+			let put = serde_json::to_vec(&Put { answer: answer.clone(), request })?;
+			match self.ask_store("PUT", &answers::under(Scheme::Gop, key), &put)? {
+				(204, _) => {}
+				(status, text) => bail!("the answers store refused a paid answer: {status}: {text}"),
+			}
+		}
+		// renamed into place, so an interrupted write never leaves a truncated answer for the next read
+		// to choke on; and written only once the store has it, or a rerun would read it here and never
+		// tell the store
+		let part = dst.with_extension("part");
+		fs::write(&part, &text)?;
+		fs::rename(&part, &dst)?;
+		Ok((answer, SystemTime::now()))
+	}
+
+	/// `canonical` POSTed to `url`, with the first key not spent when it is a Places search: the
+	/// answer, and its text. What is paid for and not an answer is kept beside `dst`.
+	fn buy(&self, url: &str, canonical: &str, headers: &[(&str, &str)], refused: &dyn Fn(&serde_json::Value) -> Option<String>, dst: &Path) -> Result<(serde_json::Value, String)> {
 		let places = url == crate::poi::SEARCH_TEXT;
 		let (status, text) = loop {
 			let mut req = self.agent.post(url).header("Content-Type", "application/json");
@@ -379,8 +449,8 @@ impl Work {
 			let status = res.status();
 			let mut text = String::new();
 			res.body_mut().as_reader().read_to_string(&mut text)?;
-			// the body of a refusal says which quota or which field, and it is never written to the cache:
-			// one cached 429 would answer for that request forever
+			// the body of a refusal says which quota or which field, and it is never kept: one kept 429
+			// would answer for that request forever
 			if !status.is_success()
 				&& places && let Some(why) = Self::spent(&text)
 			{
@@ -399,34 +469,79 @@ impl Work {
 			bail!("POST {url} -> {status}\n{}", text.trim());
 		}
 		self.billed.set(self.billed.get() + 1);
+		// billed already, so kept beside the cache rather than in it, where it would answer for the request forever
+		let kept = dst.with_extension("rejected");
 		let json: serde_json::Value = match serde_json::from_str(&text) {
 			Ok(j) => j,
 			Err(e) => {
-				// billed already: kept beside the cache rather than in it, where it would answer for the request forever
-				let kept = dst.with_extension("rejected");
 				fs::write(&kept, &text)?;
 				bail!("POST {url} returned non-JSON ({e}); the paid response is kept at {}", kept.display());
 			}
 		};
-		// renamed into place, so an interrupted write never leaves a truncated answer for the next read to choke on
-		let part = dst.with_extension("part");
-		fs::write(&part, &text)?;
-		fs::rename(&part, &dst)?;
-		Ok((json, SystemTime::now()))
+		if let Some(why) = refused(&json) {
+			fs::write(&kept, &text)?;
+			bail!("{why}; the paid response is kept at {}", kept.display());
+		}
+		Ok((json, text))
 	}
 
-	/// The response to this exact request and when it was written, if it has been made before.
-	/// Reading the probe's orderings back this way is what keeps a refit from turning into a
-	/// purchase.
+	/// The response to this exact request and when it was written, if it has been made before: out
+	/// of the work dir, else out of the store, mirrored. Reading the probe's orderings back this way
+	/// is what keeps a refit from turning into a purchase.
 	pub fn cached(&self, url: &str, body: &serde_json::Value) -> Result<Option<(serde_json::Value, SystemTime)>> {
-		let dst = self.post_path(url, &serde_json::to_string(body)?)?;
-		let Ok(s) = fs::read_to_string(&dst) else { return Ok(None) };
-		let json = serde_json::from_str(&s).wrap_err_with(|| format!("cached response {} is not JSON", dst.display()))?;
-		Ok(Some((json, mtime(&dst)?)))
+		let key = Key(Sha256::digest(format!("{url}\n{}", serde_json::to_string(body)?).as_bytes()).into());
+		let dst = self.post_path(key)?;
+		match fs::read_to_string(&dst) {
+			Ok(s) => {
+				let json = serde_json::from_str(&s).wrap_err_with(|| format!("cached response {} is not JSON", dst.display()))?;
+				return Ok(Some((json, mtime(&dst)?)));
+			}
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+			Err(e) => return Err(e).wrap_err_with(|| format!("reading {}", dst.display())),
+		}
+		if let Store::Alone = self.store {
+			return Ok(None);
+		}
+		match self.ask_store("GET", &answers::under(Scheme::Gop, key), &[])? {
+			(200, text) => Ok(Some(self.mirror(&dst, serde_json::from_str(&text).wrap_err("the answers store's answer")?)?)),
+			(404, _) => Ok(None),
+			(status, text) => bail!("the answers store refused a read: {status}: {text}"),
+		}
 	}
 
-	fn post_path(&self, url: &str, canonical: &str) -> Result<PathBuf> {
-		let key = hex(Sha256::digest(format!("{url}\n{canonical}").as_bytes()).as_slice());
+	/// `kept` written to `dst` as of when it was fetched, so its age reads the same from either.
+	fn mirror(&self, dst: &Path, kept: Stored) -> Result<(serde_json::Value, SystemTime)> {
+		let at = SystemTime::from(kept.fetched_at);
+		let part = dst.with_extension("part");
+		fs::write(&part, kept.answer.to_string())?;
+		fs::File::options().write(true).open(&part)?.set_modified(at)?;
+		fs::rename(&part, dst)?;
+		Ok((kept.answer, at))
+	}
+
+	/// A signed request `under` the conductor's answers store: its status and body.
+	fn ask_store(&self, method: &str, under: &str, body: &[u8]) -> Result<(u16, String)> {
+		let Store::Conductor { url: store, key_id, secret } = &self.store else {
+			unreachable!("asked only of a conductor's store")
+		};
+		let url = format!("{}{under}", store.trim_end_matches('/'));
+		let path = url.parse::<ureq::http::Uri>().wrap_err_with(|| format!("the answers store's URL {store:?}"))?.path().to_owned();
+		let ts = jiff::Timestamp::now().as_second().to_string();
+		let signature = sa_core::signature::sign(secret.as_bytes(), &ts, &answers::signed(method, &path, body));
+		let req = ureq::http::Request::builder()
+			.method(method)
+			.uri(&url)
+			.header("x-sa-key-id", key_id)
+			.header("x-sa-timestamp", ts)
+			.header("x-sa-signature", signature)
+			.header("content-type", "application/json")
+			.body(body.to_vec())?;
+		let mut res = self.agent.run(req).wrap_err_with(|| format!("the answers store at {store} did not answer"))?;
+		let text = res.body_mut().read_to_string().wrap_err_with(|| format!("{method} {url}: the answer was cut off"))?;
+		Ok((res.status().as_u16(), text))
+	}
+
+	fn post_path(&self, key: Key) -> Result<PathBuf> {
 		Ok(self.dir("data/places_cache")?.join(format!("{key}.json")))
 	}
 
@@ -521,13 +636,14 @@ mod tests {
 	#[test]
 	fn a_blocked_run_serves_the_cache_and_buys_nothing() {
 		let dir = std::env::temp_dir().join(format!("gmaps_block_spend_{}", std::process::id()));
-		let work = Work::at(&dir).block_spend(true);
+		let work = Work::at(&dir, Store::Alone).block_spend(true);
 		let (hit, miss) = (serde_json::json!({"textQuery": "kept"}), serde_json::json!({"textQuery": "never asked"}));
-		let dst = work.post_path(crate::poi::SEARCH_TEXT, &serde_json::to_string(&hit).unwrap()).unwrap();
+		let key = Key(Sha256::digest(format!("{}\n{}", crate::poi::SEARCH_TEXT, serde_json::to_string(&hit).unwrap())).into());
+		let dst = work.post_path(key).unwrap();
 		fs::write(&dst, r#"{"places":[]}"#).unwrap();
 
-		assert_eq!(work.cached_post(crate::poi::SEARCH_TEXT, &hit, &[]).unwrap().0, serde_json::json!({"places": []}));
-		let e = work.cached_post(crate::poi::SEARCH_TEXT, &miss, &[]).unwrap_err();
+		assert_eq!(work.cached_post(crate::poi::SEARCH_TEXT, &hit, &[], &|_| None).unwrap().0, serde_json::json!({"places": []}));
+		let e = work.cached_post(crate::poi::SEARCH_TEXT, &miss, &[], &|_| None).unwrap_err();
 		assert!(e.downcast_ref::<Blocked>().is_some(), "{e:#}");
 		assert_eq!(work.billed(), 0);
 		fs::remove_dir_all(&dir).unwrap();

@@ -78,11 +78,9 @@ impl GoogleAds {
 				&format!("{API}/geoTargetConstants:suggest"),
 				&body,
 				&[("Authorization", &auth), ("developer-token", &self.developer_token)],
+				&|res| res.get("error").map(|e| format!("geoTargetConstants:suggest for {city:?}: {e}")),
 			)?
 			.0;
-		if let Some(e) = res.get("error") {
-			bail!("geoTargetConstants:suggest for {city:?}: {e}");
-		}
 		let mut seen = Vec::new();
 		for s in res["geoTargetConstantSuggestions"].as_array().into_iter().flatten() {
 			let g = &s["geoTargetConstant"];
@@ -114,10 +112,8 @@ impl SearchVolume for GoogleAds {
 			"keywordPlanNetwork": "GOOGLE_SEARCH",
 		});
 		let url = format!("{API}/customers/{}:generateKeywordIdeas", self.customer_id);
-		let res = work.cached_post(&url, &body, &self.headers()?)?.0;
-		if let Some(e) = res.get("error") {
-			bail!("generateKeywordIdeas for {seeds:?}: {e}");
-		}
+		let refused = |res: &serde_json::Value| res.get("error").map(|e| format!("generateKeywordIdeas for {seeds:?}: {e}"));
+		let res = work.cached_post(&url, &body, &self.headers()?, &refused)?.0;
 
 		let mut out = Vec::new();
 		for r in res["results"].as_array().into_iter().flatten() {

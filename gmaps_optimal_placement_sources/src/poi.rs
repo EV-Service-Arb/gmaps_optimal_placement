@@ -149,7 +149,7 @@ pub fn search_text(work: &Work, buy: bool, body: &serde_json::Value, mask: &str,
 			body["pageToken"] = serde_json::Value::String(t.clone());
 		}
 		let (res, at) = match buy {
-			true => work.cached_post(SEARCH_TEXT, &body, &[("X-Goog-FieldMask", mask)])?,
+			true => work.cached_post(SEARCH_TEXT, &body, &[("X-Goog-FieldMask", mask)], &|_| None)?,
 			false => match work.cached(SEARCH_TEXT, &body)? {
 				Some(hit) => hit,
 				None => break,
@@ -180,7 +180,7 @@ pub fn find(work: &Work, bbox: Bbox, q: &str) -> Result<Option<([f64; 2], String
 		"high": {"latitude": bbox.lat[1], "longitude": bbox.lon[1]},
 	});
 	let body = serde_json::json!({"textQuery": q, "pageSize": 1, "locationBias": {"rectangle": rect}});
-	let (res, _) = work.cached_post(SEARCH_TEXT, &body, &[("X-Goog-FieldMask", "places.location,places.formattedAddress")])?;
+	let (res, _) = work.cached_post(SEARCH_TEXT, &body, &[("X-Goog-FieldMask", "places.location,places.formattedAddress")], &|_| None)?;
 	if let Some(e) = res.get("error") {
 		bail!("Places text search {q:?}: {e}");
 	}
@@ -325,7 +325,7 @@ fn swept(work: &Work, query: &str, typed: Option<&str>, bbox: Bbox, root: u32) -
 		return Ok(root);
 	}
 	// a `Work` of its own, so what this reads to choose is not counted as what the map was served
-	let scratch = Work::at(work.path()).policy(Age::default(), work.tiling());
+	let scratch = Work::at(work.path(), work.store().clone()).policy(Age::default(), work.tiling());
 	let mut begun = None;
 	for r in std::iter::once(root).chain(1..=ROOTS) {
 		let mut found = Found {

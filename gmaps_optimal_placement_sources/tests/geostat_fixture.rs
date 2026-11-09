@@ -6,7 +6,7 @@
 use std::io::Write;
 
 use gmaps_optimal_placement_core::grid::Bbox;
-use gmaps_optimal_placement_sources::{GridSource, Work, grid};
+use gmaps_optimal_placement_sources::{GridSource, Work, grid, work::Store};
 
 const HEADER: &str = "GRD_ID,T,M,F,Y_LT15,Y_1564,Y_GE65,EMP,NAT,EU_OTH,OTH,SAME,CHG_IN,CHG_OUT,LAND_SURFACE,POPULATED,CNTR_ID";
 const ROWS: &[&str] = &[
@@ -28,7 +28,7 @@ fn work_with_fixture(name: &str) -> (tempdir::Dir, Work) {
 		writeln!(z, "{r}").unwrap();
 	}
 	z.finish().unwrap();
-	let work = Work::at(dir.path());
+	let work = Work::at(dir.path(), Store::Alone);
 	(dir, work)
 }
 

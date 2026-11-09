@@ -5,7 +5,7 @@ use gmaps_optimal_placement_core::grid::Bbox;
 use gmaps_optimal_placement_sources::{
 	Work,
 	poi::{self, PoiConfig, SEARCH_TEXT, Tiling},
-	work::Age,
+	work::{Age, Store},
 };
 use sha2::{Digest, Sha256};
 
@@ -60,7 +60,7 @@ fn a_changed_root_serves_what_the_old_one_paid_for() {
 		"tier": [{"name": "plumber", "weight": 1.0, "match": "plomb"}],
 	}))
 	.unwrap();
-	let work = Work::at(&dir).policy(Age::default(), Tiling { root: 2, depth: 3 }).block_spend(true);
+	let work = Work::at(&dir, Store::Alone).policy(Age::default(), Tiling { root: 2, depth: 3 }).block_spend(true);
 
 	let inv = poi::cached(&cfg, BBOX, &work).unwrap();
 	assert_eq!(inv.missing, 0, "every root-3 tile is on disk, so nothing is left to buy");

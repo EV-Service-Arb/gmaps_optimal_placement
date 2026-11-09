@@ -23,17 +23,20 @@ impl SearchVolume for DataForSeo {
 	fn ideas(&self, seeds: &[String], place: &str, lang: &str, work: &Work) -> Result<Vec<Keyword>> {
 		ensure!(!seeds.is_empty(), "a group needs at least one seed");
 		let body = serde_json::json!([{"keywords": seeds, "location_name": place, "language_code": lang, "sort_by": "search_volume"}]);
+		// a refused task still answers 200
+		let refused = |res: &serde_json::Value| {
+			let task = &res["tasks"][0];
+			(task["status_code"].as_u64() != Some(20000)).then(|| format!("keywords_for_keywords for {seeds:?}: {} {}", task["status_code"], task["status_message"]))
+		};
 		let res = work
 			.cached_post(
 				"https://api.dataforseo.com/v3/keywords_data/google_ads/keywords_for_keywords/live",
 				&body,
 				&[("Authorization", self.auth.as_str())],
+				&refused,
 			)?
 			.0;
 		let task = &res["tasks"][0];
-		if task["status_code"].as_u64() != Some(20000) {
-			bail!("keywords_for_keywords for {seeds:?}: {} {}", task["status_code"], task["status_message"]);
-		}
 
 		let mut out = Vec::new();
 		for r in task["result"].as_array().into_iter().flatten() {

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use gmaps_optimal_placement::{Study, config::Area};
 use gmaps_optimal_placement_core::grid::Bbox;
-use gmaps_optimal_placement_sources::Work;
+use gmaps_optimal_placement_sources::{Work, work::Store};
 
 fn root() -> &'static Path {
 	Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("crate lives in the workspace")
@@ -30,7 +30,7 @@ fn narrowed(trade: Option<PathBuf>) -> Study {
 fn clermont_centre() {
 	let study = narrowed(Some(root().join("examples/trades/car_detailing.nix")));
 	assert_eq!(study.name, "car_detailing_-_Clermont-Ferrand", "the pairing names itself off the two stems");
-	let c = study.cells(&Work::at(v_utils::xdg_cache_dir!(""))).unwrap();
+	let c = study.cells(&Work::at(v_utils::xdg_cache_dir!(""), Store::Alone)).unwrap();
 	let sum = |v: &[f64]| v.iter().sum::<f64>();
 	let mut lines = vec![
 		format!("cells           {}", c.grid.len()),
@@ -61,7 +61,7 @@ fn a_location_alone_builds_off_the_archive() {
 	let study = narrowed(None);
 	assert_eq!(study.name, "Clermont-Ferrand", "with no trade to apply, a study is named after the city");
 
-	let p = study.build(&Work::at(v_utils::xdg_cache_dir!(""))).unwrap();
+	let p = study.build(&Work::at(v_utils::xdg_cache_dir!(""), Store::Alone)).unwrap();
 	assert!(p.trade.is_none(), "a location carries no demand surface and no competitors");
 	let m = gmaps_optimal_placement_core::Model::try_new(p).unwrap();
 	assert!(m.traded().is_none(), "and so no view onto anything a slider moves");
