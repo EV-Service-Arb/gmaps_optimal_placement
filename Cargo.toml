@@ -49,9 +49,9 @@ flate2 = "1"
 indexmap = { version = "2", features = ["serde"] }
 insta = "1"
 proj4rs = "0.1"
-# the panel's assertion and the permission catalog; local-only for the conductor epic
-sa_auth = { path = "/home/v/s/ev/_sa/site_conductor/crates/auth" }
 regex = "1"
+# the panel's assertion and the permission catalog
+sa_auth = { git = "https://github.com/EV-Service-Arb/site_conductor", branch = "main" }
 schemars = { version = "1", features = ["indexmap2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
