@@ -1,21 +1,12 @@
-/* Car detailing and washing, over whichever city is handed in. */
+/* Car detailing and washing, over whichever area is handed in. */
 loc:
+# the tier and drop vocabulary below is French
+assert loc.searches.language == "fr";
 {
   inherit (loc) area grid candidate country column layer;
 
   poi = {
     source = "google_places";
-    queries = [
-      "lavage auto"
-      "nettoyage voiture"
-      "car detailing"
-      "car wash"
-      "station de lavage"
-      "lavage auto sans eau"
-      "esthétique automobile"
-      "covering carrosserie"
-    ];
-
     # A dedicated detailer is direct competition; a rollover wash at a hypermarket is weak.
     # First match wins, so this stays a list.
     tier = [
@@ -44,17 +35,7 @@ loc:
     lambda_m = 2000;
   };
 
-  # Not `poi.queries`: those name the trade the way the trade names itself, which is exactly the
-  # variation the name coefficient cannot be fitted on. Nobody outside the trade says "esthétique
-  # automobile"; they say they want the car cleaned.
-  rank = {
-    nodes = 32;
-    term = [
-      { text = "lavage auto"; weight = 1.0; }
-      { text = "nettoyage intérieur voiture"; weight = 0.6; }
-      { text = "polissage carrosserie"; weight = 0.4; }
-    ];
-  };
+  rank.nodes = 32;
 
   # `match` / `drop` are the same vocabulary as `poi.tier` / `poi.drop`: case-insensitive regex,
   # `drop` checked first. The expansion is fuzzy and drags in intent that is not demand.

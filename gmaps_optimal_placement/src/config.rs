@@ -1,16 +1,18 @@
 //! The study document. Not settings: there is no sane environment-variable spelling of `[[layer]]`,
 //! so it is plain `Deserialize` from a path, with a JSON schema for the editor.
 //!
-//! A study is not one file. It is a trade applied to a location — `import trades/cleaning.nix
-//! (import locations/Lyon.nix)` — because the two vary independently. What the location decides is
-//! the frame, the statistics office behind it, and the addresses being considered; everything else
-//! is the trade. Nothing here may need both: see the invariant in `docs/ARCHITECTURE.md`.
+//! A study is not one file. It is a trade applied to an area — `import trades/cleaning.nix
+//! (import countries/FR.nix // { area = …; })` — because the two vary independently, and then the
+//! category's own words added on top: its Google categories are what the sweep asks, its keywords
+//! what the competitors are scored on. What the area decides is the frame, the statistics office
+//! behind it, and the addresses being considered; everything else is the trade. Nothing here may
+//! need both: see the invariant in `docs/ARCHITECTURE.md`.
 //!
-//! A location on its own is also a study — `import locations/Lyon.nix`, the identity of the pairing
-//! — and the three fields below that a trade fills are `None` for it. What is left is what the
-//! statistical archive publishes, which is the whole of the free half: a city can be looked at
-//! before a single Places call is spent on it.
-use gmaps_optimal_placement_core::grid::Bbox;
+//! An area on its own is also a study, the identity of the pairing — and the three fields below
+//! that a trade fills are `None` for it. What is left is what the statistical archive publishes,
+//! which is the whole of the free half: a city can be looked at before a single Places call is spent
+//! on it.
+use gmaps_optimal_placement_core::define::{Area, Category};
 pub use gmaps_optimal_placement_core::payload::{Candidate, Scale};
 use gmaps_optimal_placement_sources::{GridSource, PoiConfig};
 use schemars::JsonSchema;
@@ -19,10 +21,14 @@ use serde::Deserialize;
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Study {
-	/// `<trade>_-_<location>`, from the two file stems. Not written down anywhere: it names a pairing
-	/// the CLI made, and it is what the pin file and the searches chart are keyed by.
+	/// The definition's: `<study>·<CC>·<slug>`. Not written down anywhere, and what the pin file and
+	/// the searches chart are keyed by.
 	#[serde(skip)]
 	pub name: String,
+	/// What the study was asked over; `None` with `poi`, `model` and `rank`.
+	#[serde(skip)]
+	pub category: Option<Category>,
+	/// The definition's, handed through the trade untouched.
 	pub area: Area,
 	/// ISO 3166-1 alpha-2 of the country the frame is in.
 	pub country: String,
@@ -54,15 +60,6 @@ pub struct Study {
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct Area {
-	pub bbox: Bbox,
-	/// [lat, lon] the map opens at
-	pub center: [f64; 2],
-	pub zoom: u8,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct GridSpec {
 	pub source: GridSource,
 	pub vintage: u16,
@@ -77,28 +74,17 @@ pub struct Model {
 	pub lambda_m: f64,
 }
 
-/// What the study asks Google, and how much each answer counts. The reviews→prominence curve is
-/// not here: it is a property of how Google ranks, shared by every trade, and lives in
-/// `gmaps_optimal_placement_core::rank`.
+/// How the probe samples the frame. What it asks there is the category's keywords — never the sweep's
+/// queries: those name the trade the way the trade names itself, which biases them toward words
+/// already in the shop names, and the name coefficient is identified by businesses that were close
+/// and did not appear. The reviews→prominence curve is not here either: it is a property of how
+/// Google ranks, shared by every trade, and lives in `gmaps_optimal_placement_core::rank`.
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RankSpec {
 	/// Power of two — a k-d split to depth log2(n), one equal share of demand per stratum. The
 	/// `locationBias` circle the probe asks from is a stratum's worth of ground, so this sets it too.
 	pub nodes: usize,
-	/// Deliberately not `poi.queries`: those are tuned to *find* competitors, which biases them
-	/// toward words already in the shop names. The name coefficient is identified by businesses that
-	/// were close and did not appear, so this set must contain terms the names do not.
-	#[serde(rename = "term")]
-	pub terms: Vec<Term>,
-}
-
-/// One query, and what a searcher typing it is worth — this is where searches × ticket price enters.
-#[derive(Clone, Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Term {
-	pub text: String,
-	pub weight: f64,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
@@ -124,9 +110,11 @@ pub struct Layer {
 pub struct Searches {
 	/// `google_ads` or `dataforseo`.
 	pub provider: String,
-	/// A Google canonical location name, e.g. `Clermont-Ferrand,Auvergne-Rhone-Alpes,France`.
-	/// DataForSEO's `location_name` format is the same string.
-	pub place: String,
+	/// A Google canonical location name, e.g. `Clermont-Ferrand,Auvergne-Rhone-Alpes,France`, which
+	/// the `searches` chart resolves volume against. A location file names one; an area handed in at
+	/// runtime has none. DataForSEO's `location_name` format is the same string.
+	#[serde(default)]
+	pub place: Option<String>,
 	/// ISO-639-1.
 	pub language: String,
 	/// The trade's, so a location states the provider and the place and nothing else. `searches`

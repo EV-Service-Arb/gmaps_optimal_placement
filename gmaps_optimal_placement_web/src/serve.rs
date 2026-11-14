@@ -1,15 +1,23 @@
-//! The server half. It holds a set of trades and a set of locations and serves the map over their
-//! product — and over each location on its own, which is the same product with the trade axis
-//! extended by the identity.
+//! The server half. gop's own page holds a set of categories and a set of locations and serves the
+//! map over their product — and over each location on its own, which is the same product with the
+//! category axis extended by the identity. Behind the conductor it holds the trades and the country
+//! bases instead, and builds whatever definition the conductor's map hands in.
 //!
 //! `LeptosOptions` is built here rather than read from `Cargo.toml`: this ships as a CLI that runs
 //! from wherever the studies are, and `--port` has to win over a manifest it may never see.
 //!
 //! Building a study is the CLI's job, so it arrives as a closure: the web crate never learns what a
-//! `.nix` file is, nor that a trade is a function of a location.
+//! `.nix` file is, nor that a trade is a function of an area.
 //!
 //! Behind the conductor there is no page: the conductor's own map imports `/mfe/overlay.js`, which is
 //! open, and every other request carries the conductor's assertion for exactly itself.
+//!
+//! ```text
+//!   GET  /trades.json            Read   {trades, countries}: what a category may be studied by, and where
+//!   PUT  /studies/{sha}          Read   a Definition; 400 unless sha = its id, or it does not hold
+//!   GET  /studies/{sha}          Read   the payload, built once; never spends
+//!   POST /studies/{sha}/pull     Spend  the payload, built again buying what the work dir lacks
+//! ```
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{
@@ -18,27 +26,38 @@ use axum::{
 	http::{Method, StatusCode},
 	middleware::Next,
 	response::{IntoResponse, Response},
-	routing::get,
+	routing::{get, post},
 };
 use eyre::{Result, WrapErr};
+use gmaps_optimal_placement_core::define::Definition;
 use leptos::prelude::*;
 
-/// A trade and a location, to the serialised `Payload` of pairing them, re-asking every answer it is
-/// built from when told to. No trade is a location on its own, which is the half of the product that
-/// costs nothing to build.
+/// A category file and a location, to the serialised `Payload` of pairing them, re-asking every
+/// answer it is built from when told to. No category is a location on its own, which is the half of
+/// the product that costs nothing to build.
 pub type Build = Arc<dyn Fn(Option<&std::path::Path>, &std::path::Path, bool) -> Result<String> + Send + Sync>;
 
 /// A location and a search, to the one place it names there: `[lat, lon]` and Google's address. The
 /// CLI's for the same reason `Build` is, and because what it may spend is the CLI's to say.
 pub type Find = Arc<dyn Fn(&std::path::Path, &str) -> Result<Option<([f64; 2], String)>> + Send + Sync>;
 
+/// A definition, to the serialised `Payload` of building it, buying what the work dir lacks when told
+/// to. `Err` before anything is read when the definition does not hold.
+pub type Built = Arc<dyn Fn(&Definition, bool) -> Result<String> + Send + Sync>;
+
+/// Whether a definition holds — its trade is served, its country has a base, the trade takes it —
+/// without building it.
+pub type Holds = Arc<dyn Fn(&Definition) -> Result<()> + Send + Sync>;
+
+type Slot = Arc<tokio::sync::Mutex<Option<axum::body::Bytes>>>;
+
 /// One slot per pairing, so two tabs asking at once read the 87 MB archive once between them. Keyed
 /// by the two stems rather than by the study's name: what a pairing is called is the CLI's to say,
 /// and a second spelling of it here is a second thing to keep in step with the pin file.
 type Key = (Option<String>, String);
-type Pool = Arc<HashMap<Key, (Option<PathBuf>, PathBuf, Arc<tokio::sync::Mutex<Option<axum::body::Bytes>>>)>>;
+type Pool = Arc<HashMap<Key, (Option<PathBuf>, PathBuf, Slot)>>;
 
-/// One served location: its file, and what the conductor places it on a map by.
+/// One served location: its file, and what the page places it on a map by.
 pub struct Location {
 	pub path: PathBuf,
 	/// West, south, east, north.
@@ -48,88 +67,48 @@ pub struct Location {
 }
 
 pub enum Mode {
-	/// gop's own page. `key` is the one the browser loads Google's script with.
-	Page { key: String, open: bool },
-	/// Behind the conductor, which signs every request it forwards with one of these.
-	Conductor(sa_auth::Keys),
+	/// gop's own page. `key` is the one the browser loads Google's script with; `prebuilt` is
+	/// `(category stem, location stem, payload)` — whatever the CLI already paid for.
+	Page {
+		key: String,
+		open: bool,
+		categories: Vec<PathBuf>,
+		locations: Vec<Location>,
+		prebuilt: Vec<(Option<String>, String, String)>,
+		build: Build,
+		find: Find,
+	},
+	/// Behind the conductor, which signs every request it forwards with one of `keys`. `catalog` is
+	/// `/trades.json`'s body; `studies` the directory every definition handed in is kept under.
+	Conductor {
+		keys: sa_auth::Keys,
+		catalog: String,
+		studies: PathBuf,
+		holds: Holds,
+		build: Built,
+	},
 }
 
-/// `prebuilt` is `(trade stem, location stem, payload)` — whatever the CLI already paid for.
-pub fn serve(trades: Vec<PathBuf>, locations: Vec<Location>, prebuilt: Vec<(Option<String>, String, String)>, build: Build, find: Find, addr: SocketAddr, mode: Mode) -> Result<()> {
+pub fn serve(addr: SocketAddr, mode: Mode) -> Result<()> {
 	let root = site_root();
 	let (pkg, mfe) = (root.join("pkg"), root.join("mfe"));
 	let built = match &mode {
 		Mode::Page { .. } => pkg.join("gmaps_optimal_placement_web.js"),
-		Mode::Conductor(_) => mfe.join("overlay.js"),
+		Mode::Conductor { .. } => mfe.join("overlay.js"),
 	};
 	eyre::ensure!(built.exists(), "no client build at {} — nix's `open`/`conductor` apps build it", built.display());
 
-	eyre::ensure!(
-		!trades.is_empty() && !locations.is_empty(),
-		"the product of {} trades and {} locations is empty",
-		trades.len(),
-		locations.len()
-	);
-	let stem = |p: &PathBuf| -> String { p.file_stem().expect("a *.nix path has a stem").to_string_lossy().into_owned() };
-	let trade_stems: Vec<String> = trades.iter().map(stem).collect();
-	let location_stems: Vec<String> = locations.iter().map(|l| stem(&l.path)).collect();
-
-	// every location twice over: crossed with each trade, and on its own
-	let mut pool: HashMap<Key, _> = locations
-		.iter()
-		.zip(&location_stems)
-		.flat_map(|(l, ls)| {
-			let bare = std::iter::once(((None, ls.clone()), (None, l.path.clone(), Arc::new(tokio::sync::Mutex::new(None)))));
-			bare.chain(
-				trades
-					.iter()
-					.zip(&trade_stems)
-					.map(move |(t, ts)| ((Some(ts.clone()), ls.clone()), (Some(t.clone()), l.path.clone(), Arc::new(tokio::sync::Mutex::new(None))))),
-			)
-		})
-		.collect();
-	let opened: Vec<Key> = prebuilt.iter().map(|(t, l, _)| (t.clone(), l.clone())).collect();
-	for (t, l, json) in prebuilt {
-		let (_, _, slot) = pool
-			.get_mut(&(t.clone(), l.clone()))
-			.ok_or_else(|| eyre::eyre!("{t:?} x {l:?} was built but is not in the product"))?;
-		let slot = Arc::get_mut(slot).expect("nothing has seen the pool yet").get_mut();
-		assert!(slot.replace(axum::body::Bytes::from(json)).is_none(), "each study is prebuilt at most once");
-	}
-	let pool: Pool = Arc::new(pool);
-
-	let title = match (trade_stems.as_slice(), location_stems.as_slice()) {
-		([t], [l]) => format!("{t} in {l}"),
-		(t, l) => format!("{} trades over {} locations", t.len(), l.len()),
-	};
-
-	let served: Vec<serde_json::Value> = locations
-		.iter()
-		.zip(&location_stems)
-		.map(|(l, name)| serde_json::json!({"name": name, "bbox": l.bbox, "country": l.country}))
-		.collect();
-	let studies = serde_json::json!({ "trades": trade_stems, "locations": served, "open": opened }).to_string();
-	let (bare, again) = ((pool.clone(), build.clone()), (pool.clone(), build.clone()));
-	let places = pool.clone();
-	let api = Router::new()
-		.route("/studies.json", get(move || std::future::ready(json(studies.clone()))))
-		.route(
-			"/payload/{trade}/{location}",
-			get(move |UrlPath((t, l)): UrlPath<(String, String)>| payload(pool.clone(), build.clone(), (Some(t), l), false))
-				.post(move |UrlPath((t, l)): UrlPath<(String, String)>| payload(again.0.clone(), again.1.clone(), (Some(t), l), true)),
-		)
-		.route(
-			"/place/{location}",
-			get(move |UrlPath(l): UrlPath<String>| payload(bare.0.clone(), bare.1.clone(), (None, l), false)),
-		)
-		.route(
-			"/find/{location}",
-			get(move |UrlPath(l): UrlPath<String>, Query(q): Query<Search>| self::find(places.clone(), find.clone(), l, q.q)),
-		)
-		.nest_service("/mfe", tower_http::services::ServeDir::new(mfe));
-
-	let (app, open) = match mode {
-		Mode::Page { key, open } => {
+	let (app, open, title) = match mode {
+		Mode::Page {
+			key,
+			open,
+			categories,
+			locations,
+			prebuilt,
+			build,
+			find,
+		} => {
+			let (api, title) = page_api(categories, locations, prebuilt, build, find)?;
 			// leptos spawns the SSR stream through `any_spawner`, which has no executor until it is told
 			any_spawner::Executor::init_tokio().map_err(|e| eyre::eyre!("{e}"))?;
 			let options = LeptosOptions::builder()
@@ -152,9 +131,21 @@ pub fn serve(trades: Vec<PathBuf>, locations: Vec<Location>, prebuilt: Vec<(Opti
 				);
 			}
 			let page = page.fallback(get(leptos_axum::render_app_to_stream(shell))).with_state(options);
-			(api.merge(page), open)
+			(api.nest_service("/mfe", tower_http::services::ServeDir::new(mfe)).merge(page), open, title)
 		}
-		Mode::Conductor(keys) => (api.layer(axum::middleware::from_fn_with_state(Arc::new(keys), guard)), false),
+		Mode::Conductor {
+			keys,
+			catalog,
+			studies,
+			holds,
+			build,
+		} => {
+			std::fs::create_dir_all(&studies).wrap_err_with(|| format!("creating {}", studies.display()))?;
+			let api = conductor_api(catalog, studies, holds, build)
+				.layer(axum::middleware::from_fn_with_state(Arc::new(keys), guard))
+				.nest_service("/mfe", tower_http::services::ServeDir::new(mfe));
+			(api, false, "studies behind the conductor".to_owned())
+		}
 	};
 	let app = app.layer(tower_http::compression::CompressionLayer::new());
 
@@ -173,8 +164,159 @@ pub fn serve(trades: Vec<PathBuf>, locations: Vec<Location>, prebuilt: Vec<(Opti
 	})
 }
 
+/// The page's product: `/studies.json`, `/payload/{category}/{location}`, `/place/{location}` and
+/// `/find/{location}`.
+fn page_api(categories: Vec<PathBuf>, locations: Vec<Location>, prebuilt: Vec<(Option<String>, String, String)>, build: Build, find: Find) -> Result<(Router, String)> {
+	eyre::ensure!(
+		!categories.is_empty() && !locations.is_empty(),
+		"the product of {} categories and {} locations is empty",
+		categories.len(),
+		locations.len()
+	);
+	let stem = |p: &PathBuf| -> String { p.file_stem().expect("a study file has a stem").to_string_lossy().into_owned() };
+	let category_stems: Vec<String> = categories.iter().map(stem).collect();
+	let location_stems: Vec<String> = locations.iter().map(|l| stem(&l.path)).collect();
+
+	// every location twice over: crossed with each category, and on its own
+	let mut pool: HashMap<Key, _> = locations
+		.iter()
+		.zip(&location_stems)
+		.flat_map(|(l, ls)| {
+			let bare = std::iter::once(((None, ls.clone()), (None, l.path.clone(), Slot::default())));
+			bare.chain(
+				categories
+					.iter()
+					.zip(&category_stems)
+					.map(move |(c, cs)| ((Some(cs.clone()), ls.clone()), (Some(c.clone()), l.path.clone(), Slot::default()))),
+			)
+		})
+		.collect();
+	let opened: Vec<Key> = prebuilt.iter().map(|(t, l, _)| (t.clone(), l.clone())).collect();
+	for (t, l, json) in prebuilt {
+		let (_, _, slot) = pool
+			.get_mut(&(t.clone(), l.clone()))
+			.ok_or_else(|| eyre::eyre!("{t:?} x {l:?} was built but is not in the product"))?;
+		let slot = Arc::get_mut(slot).expect("nothing has seen the pool yet").get_mut();
+		assert!(slot.replace(axum::body::Bytes::from(json)).is_none(), "each study is prebuilt at most once");
+	}
+	let pool: Pool = Arc::new(pool);
+
+	let title = match (category_stems.as_slice(), location_stems.as_slice()) {
+		([c], [l]) => format!("{c} in {l}"),
+		(c, l) => format!("{} categories over {} locations", c.len(), l.len()),
+	};
+
+	let served: Vec<serde_json::Value> = locations
+		.iter()
+		.zip(&location_stems)
+		.map(|(l, name)| serde_json::json!({"name": name, "bbox": l.bbox, "country": l.country}))
+		.collect();
+	let studies = serde_json::json!({ "categories": category_stems, "locations": served, "open": opened }).to_string();
+	let (bare, again) = ((pool.clone(), build.clone()), (pool.clone(), build.clone()));
+	let places = pool.clone();
+	let api = Router::new()
+		.route("/studies.json", get(move || std::future::ready(json(studies.clone()))))
+		.route(
+			"/payload/{category}/{location}",
+			get(move |UrlPath((t, l)): UrlPath<(String, String)>| payload(pool.clone(), build.clone(), (Some(t), l), false))
+				.post(move |UrlPath((t, l)): UrlPath<(String, String)>| payload(again.0.clone(), again.1.clone(), (Some(t), l), true)),
+		)
+		.route(
+			"/place/{location}",
+			get(move |UrlPath(l): UrlPath<String>| payload(bare.0.clone(), bare.1.clone(), (None, l), false)),
+		)
+		.route(
+			"/find/{location}",
+			get(move |UrlPath(l): UrlPath<String>, Query(q): Query<Search>| self::find(places.clone(), find.clone(), l, q.q)),
+		);
+	Ok((api, title))
+}
+
+/// What the conductor's map reads. A definition is kept on disk once handed in, so a restart serves
+/// it again and `fit` can read what it collected; its payload is kept in memory once built.
+fn conductor_api(catalog: String, studies: PathBuf, holds: Holds, build: Built) -> Router {
+	// shortcut: unbounded, one payload per area × category any operator opened; an LRU when the process grows
+	let built: Arc<std::sync::Mutex<HashMap<String, Slot>>> = Arc::default();
+	let slot = move |sha: &str| -> Slot { built.lock().expect("no holder panics").entry(sha.to_owned()).or_default().clone() };
+	let (put_dir, get_dir, pull_dir) = (studies.clone(), studies.clone(), studies);
+	let (get_slot, pull_slot) = (slot.clone(), slot);
+	let (get_build, pull_build) = (build.clone(), build);
+	Router::new()
+		.route("/trades.json", get(move || std::future::ready(json(catalog.clone()))))
+		.route(
+			"/studies/{sha}",
+			get(move |UrlPath(sha): UrlPath<String>| {
+				let (dir, slot, build) = (get_dir.clone(), get_slot(&sha), get_build.clone());
+				async move { study(&dir, &sha, slot, build, false).await }
+			})
+			.put(move |UrlPath(sha): UrlPath<String>, body: axum::body::Bytes| define(put_dir.clone(), holds.clone(), sha, body)),
+		)
+		.route(
+			"/studies/{sha}/pull",
+			post(move |UrlPath(sha): UrlPath<String>| {
+				let (dir, slot, build) = (pull_dir.clone(), pull_slot(&sha), pull_build.clone());
+				async move { study(&dir, &sha, slot, build, true).await }
+			}),
+		)
+}
+
+/// A definition, checked against the key it was put under and against what is served, and kept.
+async fn define(dir: PathBuf, holds: Holds, sha: String, body: axum::body::Bytes) -> Result<StatusCode, (StatusCode, String)> {
+	let bad = |e: String| (StatusCode::BAD_REQUEST, e);
+	let def: Definition = serde_json::from_slice(&body).map_err(|e| bad(format!("not a definition: {e}")))?;
+	let id = def.id();
+	if id != sha {
+		return Err(bad(format!("the definition's id is {id}, not {sha}")));
+	}
+	let canonical = serde_json::to_vec(&def.clone().canonical()).expect("a definition serialises");
+	let path = dir.join(format!("{sha}.json"));
+	tokio::task::spawn_blocking(move || {
+		holds(&def).map_err(|e| bad(format!("{e:#}")))?;
+		// renamed into place: a reader never sees half a definition
+		let part = path.with_extension("part");
+		std::fs::write(&part, &canonical)
+			.and_then(|()| std::fs::rename(&part, &path))
+			.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("keeping {}: {e}", path.display())))
+	})
+	.await
+	.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("checking {sha}: {e}")))??;
+	Ok(StatusCode::NO_CONTENT)
+}
+
+/// Built on the first GET and kept. A pull re-asks Google everything it is built from, and that
+/// answer goes to the puller alone: one stopped part-way by the day's quota is a map with no
+/// competitors, while the work dir now holds every answer it paid for, so the next GET builds from that.
+async fn study(dir: &std::path::Path, sha: &str, slot: Slot, build: Built, pull: bool) -> Result<([(axum::http::HeaderName, &'static str); 1], axum::body::Bytes), (StatusCode, String)> {
+	let path = dir.join(format!("{sha}.json"));
+	let mut slot = slot.lock().await;
+	if pull {
+		*slot = None;
+	}
+	if let Some(built) = &*slot {
+		return Ok(json(built.clone()));
+	}
+	let def: Definition = match std::fs::read(&path) {
+		Ok(b) => serde_json::from_slice(&b).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{} is not a definition: {e}", path.display())))?,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err((StatusCode::NOT_FOUND, format!("no study {sha} was defined here: PUT it first"))),
+		Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("reading {}: {e}", path.display()))),
+	};
+	let name = def.name();
+	let built = tokio::task::spawn_blocking(move || build(&def, pull).map(axum::body::Bytes::from))
+		.await
+		.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("building {name}: {e}")))?
+		.map_err(|e| {
+			eprintln!("building {name}: {e:?}");
+			(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
+		})?;
+	if !pull {
+		*slot = Some(built.clone());
+	}
+	Ok(json(built))
+}
+
 /// Every request but the overlay build carries the conductor's assertion for exactly its method and
-/// path, made for a person who may read studies — and, for anything but a GET, spend on them.
+/// path, made for a person who may read studies — and, for a pull, spend on them. A PUT defines a
+/// study and buys nothing.
 async fn guard(State(keys): State<Arc<sa_auth::Keys>>, req: Request, next: Next) -> Response {
 	let path = req.uri().path();
 	if path.starts_with("/mfe/") {
@@ -191,9 +333,9 @@ async fn guard(State(keys): State<Arc<sa_auth::Keys>>, req: Request, next: Next)
 		Ok(a) => a,
 		Err(e) => return (StatusCode::UNAUTHORIZED, format!("{}: {e}", sa_auth::HEADER)).into_response(),
 	};
-	let need = match *req.method() == Method::GET {
-		true => sa_auth::Study::Read,
-		false => sa_auth::Study::Spend,
+	let need = match *req.method() == Method::POST && path.ends_with("/pull") {
+		true => sa_auth::Study::Spend,
+		false => sa_auth::Study::Read,
 	};
 	match assertion.principal {
 		sa_auth::Principal::User(u) if u.permissions.may(need) => next.run(req).await,

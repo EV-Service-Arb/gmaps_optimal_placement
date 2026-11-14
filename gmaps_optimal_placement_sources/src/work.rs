@@ -119,8 +119,9 @@ impl std::fmt::Display for Exhausted {
 }
 impl std::error::Error for Exhausted {}
 
-/// A run that buys nothing met Places searches the work dir has no answer for. A refusal of the same
-/// shape as [`Exhausted`], so a map opens on what the work dir does hold for either.
+/// A run that buys nothing met paid questions the work dir has no answer for — Places searches, or
+/// keyword volumes. A refusal of the same shape as [`Exhausted`], so a map opens on what the work dir
+/// does hold for either.
 #[derive(Debug)]
 pub struct Blocked {
 	/// At least this many: a tile at the cap opens four more nobody has counted.
@@ -128,8 +129,8 @@ pub struct Blocked {
 }
 impl std::fmt::Display for Blocked {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		let s = if self.missing == 1 { "" } else { "es" };
-		write!(f, "at least {} Places search{s} the work dir has no answer for, and this run buys none", self.missing)
+		let s = if self.missing == 1 { "" } else { "s" };
+		write!(f, "at least {} paid answer{s} the work dir does not hold, and this run buys none", self.missing)
 	}
 }
 impl std::error::Error for Blocked {}
@@ -197,7 +198,7 @@ pub struct Work {
 	/// Re-ask every billed request and overwrite what it answered. The only thing that spends on a
 	/// question already answered; age alone never does.
 	refresh: bool,
-	/// Refuse every Places search the work dir has no answer for.
+	/// Refuse every paid question the work dir has no answer for.
 	block_spend: bool,
 	/// Age of every cached answer this run served, by kind.
 	served: RefCell<Vec<(Kind, Duration)>>,
@@ -399,7 +400,7 @@ impl Work {
 		{
 			return Ok(hit);
 		}
-		if self.block_spend && url == crate::poi::SEARCH_TEXT {
+		if self.block_spend {
 			return Err(Blocked { missing: 1 }.into());
 		}
 		let canonical = serde_json::to_string(body)?;

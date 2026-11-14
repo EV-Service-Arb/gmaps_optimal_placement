@@ -13,7 +13,7 @@ const path = require("node:path");
 
 const URL_ = process.argv[2] || "http://localhost:8731/";
 const PORT = 9333;
-const PINS = path.join(process.env.XDG_DATA_HOME || "", "gmaps_optimal_placement", "pins-car_detailing_-_Clermont-Ferrand.json");
+const PINS = path.join(process.env.XDG_DATA_HOME || "", "gmaps_optimal_placement", "pins-car_detailing·FR·clermont-ferrand.json");
 const PROMOTED = "Smoke Site";
 
 const chrome = spawn("chromium", [
@@ -97,7 +97,7 @@ async function main() {
       await sleep(500);
     }
     // a click picks its own field and no more, so the loading is asked for on its own
-    await pick(0, "car_detailing");
+    await pick(0, "car_detailing_FR");
     await pick(1, "Clermont-Ferrand");
     await take();
     // an uncached pairing reads the 87 MB archive and every POI page before the panel can fill
@@ -153,7 +153,7 @@ async function main() {
   log("state:", s);
 
   assert.equal(s.banner, null, "no banner");
-  assert.equal(s.layers, 9, "three live layers plus the location's six");
+  assert.equal(s.layers, 7, "three live layers plus the location's four");
   assert.equal(s.tierRows, 4, "one row per tier, plus hide-imputed and the pressure field");
   assert(/\d+ cells in view/.test(s.note), `legend counts the cells in view: ${s.note}`);
   assert(s.painted > 100, "canvas actually painted");
@@ -243,8 +243,8 @@ async function main() {
   // the CLI was given the two directories, so the pool is their whole product and the one open tab
   // is what the picker was pointed at; a pairing nobody asked for is built the first time a tab does
   log("step: tabs");
-  assert.deepEqual(await tabs(), ["car_detailing_-_Clermont-Ferrand"], "the pairing picked at load is the one open tab");
-  assert.equal(await layers(), 9, "three live layers plus the location's six");
+  assert.deepEqual(await tabs(), ["car_detailing·FR·clermont-ferrand"], "the pairing picked at load is the one open tab");
+  assert.equal(await layers(), 7, "three live layers plus the location's four");
 
   // the city on its own: the archive and nothing billed, which is what the last row of the trade
   // field buys. Everything a slider moves is a trade's, so the panel has to say so
@@ -252,20 +252,20 @@ async function main() {
   await press("t");
   // the other order from `load`'s: a coordinate is known in either
   await pick(1, "Clermont-Ferrand");
-  await pick(0, "(no trade · grid only)");
+  await pick(0, "(no category · grid only)");
   await take();
   for (let i = 0; i < 240; i++) {
     if ((await tabs()).length === 2) break;
     await sleep(1000);
   }
-  assert.deepEqual(await tabs(), ["car_detailing_-_Clermont-Ferrand", "Clermont-Ferrand"], "a location on its own is named after the city");
-  assert.equal(await layers(), 6, "the location's six layers, and not one that needs a demand model");
+  assert.deepEqual(await tabs(), ["car_detailing·FR·clermont-ferrand", "clermont-ferrand"], "a location on its own is named after the area");
+  assert.equal(await layers(), 4, "the location's four layers, and not one that needs a demand model");
   // the city's own candidate is still a pin — a premises is the location's, not the trade's
   await expectMarkers(1, "nothing was bought, so no competitor is on the map");
   assert(await evaluate(`${ctl("Rank top 10 sites")}.disabled`), "the sweep has no demand to sweep");
   assert(await evaluate("document.querySelector('#ctl input[type=range]').disabled"), "and λ has no catchment to set");
   await press("w");
-  assert.deepEqual(await tabs(), ["car_detailing_-_Clermont-Ferrand"], "`w` leaves the trade study behind it");
+  assert.deepEqual(await tabs(), ["car_detailing·FR·clermont-ferrand"], "`w` leaves the trade study behind it");
 
   log("step: escape");
   await press("t");
@@ -276,8 +276,8 @@ async function main() {
   await press("t");
   assert.deepEqual(
     await rows(0),
-    ["car_detailing", "cleaning", "plumbing", "(no trade · grid only)"],
-    "one field per axis, and this one is the trades — with the city-on-its-own row last",
+    ["car_detailing_FR", "cleaning_FR", "plumbing_FR", "(no category · grid only)"],
+    "one field per axis, and this one is the categories — with the city-on-its-own row last",
   );
   assert.deepEqual(await rows(1), ["Angers", "Clermont-Ferrand", "Lyon"], "the locations are up at the same time, not after");
 
@@ -285,10 +285,10 @@ async function main() {
   await press("c");
   await press("l");
   await press("e");
-  assert.deepEqual(await rows(0), ["cleaning"], "the caret starts in the trade field");
-  assert.deepEqual(await rows(1), ["Angers", "Clermont-Ferrand", "Lyon"], "and narrowing the trade leaves the locations alone");
+  assert.deepEqual(await rows(0), ["cleaning_FR"], "the caret starts in the category field");
+  assert.deepEqual(await rows(1), ["Angers", "Clermont-Ferrand", "Lyon"], "and narrowing the category leaves the locations alone");
   await stroke("Enter", 13);
-  assert.equal(await picked(0), "cleaning", "Enter picks the top row of the field it is in");
+  assert.equal(await picked(0), "cleaning_FR", "Enter picks the top row of the field it is in");
   assert(await pickerUp(), "and loads nothing");
 
   // half a pairing opens nothing, and the half that is missing says so
@@ -296,12 +296,12 @@ async function main() {
   assert(await pickerUp(), "Load with no location leaves the picker up");
   assert.equal(await invalid(1), "true", "and marks the location field");
   assert.equal(await invalid(0), null, "and only that one");
-  assert.deepEqual(await tabs(), ["car_detailing_-_Clermont-Ferrand"], "nothing was opened");
+  assert.deepEqual(await tabs(), ["car_detailing·FR·clermont-ferrand"], "nothing was opened");
 
   // the pick is a value and not a row, so the query it was found through is free to move after
   await stroke("Backspace", 8);
-  assert.deepEqual((await rows(0)).sort(), ["car_detailing", "cleaning"], "widening the query brings the other trades back");
-  assert.equal(await picked(0), "cleaning", "and leaves the pick where it was made");
+  assert.deepEqual((await rows(0)).sort(), ["car_detailing_FR", "cleaning_FR"], "widening the query brings the other categories back");
+  assert.equal(await picked(0), "cleaning_FR", "and leaves the pick where it was made");
   await stroke("Tab", 9);
   assert.equal(await focused(), 1, "native Tab order crosses to the location field");
   await press("C");
@@ -319,29 +319,29 @@ async function main() {
     if ((await tabs()).length === 2) break;
     await sleep(1000);
   }
-  assert.deepEqual(await tabs(), ["car_detailing_-_Clermont-Ferrand", "cleaning_-_Clermont-Ferrand"], "the picked pairing is a second tab");
-  assert.equal(await layers(), 12, "the cleaning study's nine layers and three live ones are what the panel now offers");
+  assert.deepEqual(await tabs(), ["car_detailing·FR·clermont-ferrand", "cleaning·FR·clermont-ferrand"], "the picked pairing is a second tab");
+  assert.equal(await layers(), 10, "the cleaning study's seven layers and three live ones are what the panel now offers");
   assert(
     (await evaluate("document.querySelector('#ctl div.note').innerText")).includes("10446 cells"),
     "the second study covers the same grid",
   );
 
   await press("[");
-  assert.equal(await layers(), 9, "`[` goes back to the detailing study");
+  assert.equal(await layers(), 7, "`[` goes back to the detailing study");
   await press("]");
-  assert.equal(await layers(), 12, "`]` comes forward again");
+  assert.equal(await layers(), 10, "`]` comes forward again");
 
   log("step: find an open tab");
   await press("[");
   await press("f");
-  assert.deepEqual(await rows(0), ["car_detailing_-_Clermont-Ferrand", "cleaning_-_Clermont-Ferrand"], "`f` lists the open tabs");
-  await pick(0, "cleaning_-_Clermont-Ferrand");
+  assert.deepEqual(await rows(0), ["car_detailing·FR·clermont-ferrand", "cleaning·FR·clermont-ferrand"], "`f` lists the open tabs");
+  await pick(0, "cleaning·FR·clermont-ferrand");
   assert(!(await pickerUp()), "a pick there is the whole motion");
-  assert.equal(await layers(), 12, "and switches to the tab picked");
+  assert.equal(await layers(), 10, "and switches to the tab picked");
 
   await press("w");
-  assert.deepEqual(await tabs(), ["car_detailing_-_Clermont-Ferrand"], "`w` closes the active tab");
-  assert.equal(await layers(), 9, "and the panel is the surviving study's");
+  assert.deepEqual(await tabs(), ["car_detailing·FR·clermont-ferrand"], "`w` closes the active tab");
+  assert.equal(await layers(), 7, "and the panel is the surviving study's");
   await expectMarkers(C + 1, "so is the map");
 
   assert.deepEqual(errors, [], "no uncaught exceptions");

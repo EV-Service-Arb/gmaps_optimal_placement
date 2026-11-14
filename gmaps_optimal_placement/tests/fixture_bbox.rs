@@ -5,8 +5,8 @@
 //! is made: [`Study::cells`] stops before the billed half.
 use std::path::{Path, PathBuf};
 
-use gmaps_optimal_placement::{Study, config::Area};
-use gmaps_optimal_placement_core::grid::Bbox;
+use gmaps_optimal_placement::{Base, Study};
+use gmaps_optimal_placement_core::define::{Area, Category, Definition, Viewport};
 use gmaps_optimal_placement_sources::{Work, work::QueriesCache};
 
 fn root() -> &'static Path {
@@ -14,22 +14,28 @@ fn root() -> &'static Path {
 }
 
 /// The same few hundred cells every time, so two studies over them are comparable.
-fn narrowed(trade: Option<PathBuf>) -> Study {
-	let mut study = gmaps_optimal_placement::load(trade.as_deref(), &root().join("examples/locations/Clermont-Ferrand.nix")).unwrap();
-	study.area = Area {
-		bbox: Bbox {
-			lat: [45.770, 45.790],
-			lon: [3.050, 3.090],
+fn narrowed(category: Option<PathBuf>) -> Study {
+	let def = Definition {
+		area: Area::City {
+			slug: "clermont-ferrand".into(),
+			country: "FR".into(),
+			viewport: Viewport {
+				south: 45.770,
+				west: 3.050,
+				north: 45.790,
+				east: 3.090,
+			},
+			margin_m: 0.,
 		},
-		..study.area
+		category: category.map(|c| serde_json::from_str::<Category>(&std::fs::read_to_string(c).unwrap()).unwrap()),
 	};
-	study
+	gmaps_optimal_placement::load(&def, Base::Location(&root().join("examples/locations/Clermont-Ferrand.nix")), &root().join("examples/trades")).unwrap()
 }
 
 #[test]
 fn clermont_centre() {
-	let study = narrowed(Some(root().join("examples/trades/car_detailing.nix")));
-	assert_eq!(study.name, "car_detailing_-_Clermont-Ferrand", "the pairing names itself off the two stems");
+	let study = narrowed(Some(root().join("examples/categories/car_detailing_FR.json")));
+	assert_eq!(study.name, "car_detailing·FR·clermont-ferrand", "the study names itself off its trade, country and area");
 	let c = study.cells(&Work::at(v_utils::xdg_cache_dir!(""), QueriesCache::Local)).unwrap();
 	let sum = |v: &[f64]| v.iter().sum::<f64>();
 	let mut lines = vec![
@@ -40,16 +46,14 @@ fn clermont_centre() {
 	];
 	lines.extend(c.layers.iter().map(|l| format!("{:<15} {:.1}", l.name, sum(&l.values))));
 	insta::assert_snapshot!(lines.join("\n"), @"
-	cells           196
-	imputed         9
+	cells           166
+	imputed         6
 	columns         32
-	demand total    36501.2
-	Population      49327.0
-	Standard of living (€/yr) 5571857.5
-	Estimated cars  27082.0
-	Households      29006.8
-	Households in houses 3466.1
-	Households in flats 25540.7
+	demand total    32330.6
+	Population      43697.0
+	Standard of living (€/yr) 4748488.4
+	Estimated cars  23892.5
+	Households      25879.9
 	");
 }
 
@@ -59,7 +63,7 @@ fn clermont_centre() {
 #[test]
 fn a_location_alone_builds_off_the_archive() {
 	let study = narrowed(None);
-	assert_eq!(study.name, "Clermont-Ferrand", "with no trade to apply, a study is named after the city");
+	assert_eq!(study.name, "clermont-ferrand", "with no category to apply, a study is named after the area");
 
 	let p = study.build(&Work::at(v_utils::xdg_cache_dir!(""), QueriesCache::Local)).unwrap();
 	assert!(p.trade.is_none(), "a location carries no demand surface and no competitors");
@@ -70,7 +74,5 @@ fn a_location_alone_builds_off_the_archive() {
 	Standard of living (€/yr)
 	Estimated cars
 	Households
-	Households in houses
-	Households in flats
 	");
 }

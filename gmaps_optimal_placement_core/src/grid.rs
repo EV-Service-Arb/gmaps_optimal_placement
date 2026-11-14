@@ -107,6 +107,17 @@ impl Grid {
 		self.cells.push(cell);
 		Ok(())
 	}
+
+	/// Only the cells `keep` holds, every column with them.
+	pub fn retain(&mut self, keep: impl Fn(&Cell) -> bool) {
+		let flags: Vec<bool> = self.cells.iter().map(&keep).collect();
+		for col in self.columns.values_mut() {
+			let mut f = flags.iter();
+			col.retain(|_| *f.next().expect("a column is as long as the cells"));
+		}
+		let mut f = flags.iter();
+		self.cells.retain(|_| *f.next().expect("one flag per cell"));
+	}
 }
 
 #[cfg(test)]

@@ -42,15 +42,15 @@ impl From<&AppConfig> for Vec<String> {
 	}
 }
 
-/// How the competitor sweep tiles a study's frame. Every answer is cached under the exact tile it
-/// was asked for. A query already on disk keeps the root it was swept from until `--refresh`; a
-/// deeper `depth` asks the finer tiles under whatever came back at the cap.
+/// How the competitor sweep tiles the ground. Every answer is cached under the exact quadtree tile it
+/// was asked for, so a changed `zoom` asks a new set of tiles; a deeper `depth` asks the finer tiles
+/// under whatever came back at the cap.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, SettingsNested, SmartDefault)]
 #[serde(default)]
 pub struct Sweep {
-	/// Tiles a side the frame starts as, before any query is asked.
-	#[default(Tiling::ROOT)]
-	pub root: u32,
+	/// The Web-Mercator level a query is first asked at.
+	#[default(Tiling::ZOOM)]
+	pub zoom: u32,
 	/// How many times a tile that came back at Google's 60-result cap may be quartered.
 	#[default(Tiling::DEPTH)]
 	pub depth: u32,
@@ -58,7 +58,7 @@ pub struct Sweep {
 
 impl From<&Sweep> for Tiling {
 	fn from(s: &Sweep) -> Self {
-		Self { root: s.root, depth: s.depth }
+		Self { zoom: s.zoom, depth: s.depth }
 	}
 }
 

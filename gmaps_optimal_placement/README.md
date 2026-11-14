@@ -1,33 +1,38 @@
 CLI and the study document.
 
-Every command takes the same two paths, each a directory or a single `*.nix`. A directory is the
-whole axis: the page picks out of it, `fzf` picks out of it, `fit` takes all of it.
+Every command takes the same two axes, each a directory or a single file: `-c` categories (`*.json`,
+a `core::define::Category` each) and `-l` locations (`*.nix`), over `-t` trades and `--countries`
+country bases looked up by name. A directory is the whole axis: the page picks out of it, `fzf`
+picks out of it, `fit` takes all of it — and every definition the conductor ever handed in.
 
 ```sh
-gmaps_optimal_placement serve    <trades> <locations> [--port 8731] [--open]
-gmaps_optimal_placement searches <trades> <locations> [-o searches.html]
-gmaps_optimal_placement probe    <trades> <locations> [--dry-run]  # ask Google, from equal-demand nodes
-gmaps_optimal_placement fit      <trades> <locations>              # refit rank::COEF over every ordering cached
+gmaps_optimal_placement serve    -c <categories> -l <locations> [--port 8731] [--open]
+gmaps_optimal_placement serve    --behind-conductor -t <trades> --countries <dir>
+gmaps_optimal_placement searches -c <categories> -l <locations> [-o searches.html]
+gmaps_optimal_placement probe    -c <categories> -l <locations> [--dry-run]  # ask Google, from equal-demand nodes
+gmaps_optimal_placement fit      -c <categories> -l <locations>              # refit rank::COEF over every ordering cached
 gmaps_optimal_placement schema                    # JSON schema for the study document
 ```
 
-The study is [`Study`]: a trade applied to a location, evaluating to an area, a grid source, what a
-competitor is, and how demand follows from the columns that source publishes. [`load`] is where the
-two meet, and where the pairing is named `<trade>_-_<location>`. `column` adds derived columns in
+The study is [`Study`]: a `core::define::Definition` — an area and a category — with the trade the
+category names applied to the area, evaluating to a grid source, what a competitor is, and how demand
+follows from the columns that source publishes. [`load`] is where they meet: the category's Google
+categories become the sweep's queries and the first tier's Places type, and a trade that writes
+either is refused. The study is named `<study>·<CC>·<slug>`. `column` adds derived columns in
 list order, so a study can name a quantity its source only implies. Every expression is evaluated
 before any of it reaches the map — an expression naming a column that does not exist is an error,
 not a zero.
 
-`load` takes no trade as well, and then a location is already a study: `poi`, `model` and `rank` are
+`load` takes no category as well, and then an area is already a study: `poi`, `model` and `rank` are
 `None`, [`Study::build`] never reaches `poi::load`, and what comes back is the grid's own layers
-under the city's own name. `serve` offers it as the last row of the trade field.
+under the area's own name. `serve` offers it as the last row of the category field.
 
 An optional `searches` block names groups of queries. [`fold`] is the half of that command that is
 ours: the provider expands seeds semantically, a regex keeps or drops each member, and the survivors
 sum into one line of [`SearchPayload`] — with their own series alongside, so the sum can be audited.
 
-The `rank` block says which queries the study is about and what each is worth. `probe` asks them from
-the demand strata, `fit` estimates `gmaps_optimal_placement_core::rank::COEF` over every ordering in the work dir
+The category's keywords are the terms the study is about, each worth its search volume over the
+country, over the largest. `probe` asks them from the `rank.nodes` demand strata, `fit` estimates `gmaps_optimal_placement_core::rank::COEF` over every ordering in the work dir
 — the whole product at once, because how Google ranks is one mechanism and one pairing on its own is
 about fifty orderings. A pairing nobody harvested contributes nothing and costs nothing: `fit` reads
 the work dir with no key, so it cannot buy what it is missing. [`fit::Fit::check`] is what refuses a

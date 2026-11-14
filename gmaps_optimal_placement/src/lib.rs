@@ -11,6 +11,7 @@ use eyre::{Result, WrapErr, bail, ensure};
 pub use gmaps_optimal_placement_core as core;
 use gmaps_optimal_placement_core::{
 	Expr, LayerOut, Notice, PoiOut, Scale, TierOut,
+	define::{Area, Category, Definition},
 	rank::{self, Biz, Feats, Rank},
 };
 pub use gmaps_optimal_placement_core::{Payload, payload};
@@ -68,7 +69,13 @@ impl Study {
 	/// Fails on the first expression that does not hold against the source's columns, before any
 	/// POI call is made.
 	pub fn cells(&self, work: &Work) -> Result<Cells> {
-		let mut grid = grid::load(self.grid.source, self.grid.vintage, self.area.bbox, work)?;
+		let frame = self.area.frame();
+		let mut grid = grid::load(self.grid.source, self.grid.vintage, frame.bbox, work)?;
+		grid.retain(|c| {
+			let (lon, lat) = c.ring.iter().fold((0., 0.), |(x, y), p| (x + p[0] / 4., y + p[1] / 4.));
+			frame.contains(lat, lon)
+		});
+		ensure!(!grid.is_empty(), "no cell's centre falls inside {}", self.name);
 		let n = grid.len();
 
 		for c in &self.columns {
@@ -109,6 +116,53 @@ impl Study {
 		))
 	}
 
+	fn category(&self) -> Result<&Category> {
+		self.category
+			.as_ref()
+			.ok_or_else(|| eyre::eyre!("{} has a trade but no category to say what it is asked", self.name))
+	}
+
+	/// What the probe asks from each node: every keyword, weighed or not, so a plan does not move with
+	/// what the provider happened to answer.
+	fn terms(&self) -> Result<Vec<String>> {
+		Ok(self.category()?.keywords.clone())
+	}
+
+	/// The category's keywords, each weighed by its search volume over the country: a weight is a
+	/// ratio, and the country's buckets are the finest the provider gives one. Fails on a volume the
+	/// work dir lacks when this run buys none, as a Places search would.
+	fn weigh(&self, work: &Work) -> Result<Terms> {
+		let cat = self.category()?;
+		let cfg = self
+			.searches
+			.as_ref()
+			.ok_or_else(|| eyre::eyre!("{} declares no `searches` block, which names who weighs its keywords", self.name))?;
+		let provider = searches::provider(&cfg.provider).map_err(|e| Unweighable(format!("{e:#}")))?;
+		let answered = provider.volumes(&cat.keywords, searches::country_place(&self.country)?, &cfg.language, work)?;
+		let mut avg: Vec<(String, Option<f64>)> = Vec::new();
+		for k in &cat.keywords {
+			let series = answered.iter().find(|a| a.text == *k).and_then(|a| a.monthly.as_ref());
+			let mean = series.filter(|m| !m.is_empty()).map(|m| m.iter().map(|x| x.searches as f64).sum::<f64>() / m.len() as f64);
+			avg.push((k.clone(), mean.filter(|v| *v > 0.)));
+		}
+		let top = avg.iter().filter_map(|(_, v)| *v).fold(0., f64::max);
+		ensure!(
+			top > 0.,
+			"none of {}'s {} keywords has a search volume in {}, so no term weighs anything",
+			self.name,
+			cat.keywords.len(),
+			self.country
+		);
+		let (mut weighted, mut unweighted) = (Vec::new(), Vec::new());
+		for (k, v) in avg {
+			match v {
+				Some(v) => weighted.push((k, round1(v / top, 4))),
+				None => unweighted.push(k),
+			}
+		}
+		Ok(Terms { weighted, unweighted })
+	}
+
 	/// The demand a trade's model puts over this grid.
 	fn demand<'a>(&self, cells: &'a Cells) -> Result<&'a [f64]> {
 		self.trade()?;
@@ -121,7 +175,7 @@ impl Study {
 	pub fn observations(&self, work: &Work) -> Result<Option<Observed>> {
 		let cells = self.cells(work)?;
 		let (poi, _, _) = self.trade()?;
-		let inv = poi::cached(poi, self.area.bbox, work)?;
+		let inv = poi::cached(poi, self.area.frame(), work)?;
 		let mut obs = inv.obs;
 		let probed = probe::cached(work, &probe::plan(&at(&self.nodes(&cells)?), &self.terms()?, self.radius_m()?))?;
 		eprintln!("{}: {} orderings from the inventory sweep, {} from the probe", self.name, obs.len(), probed.len());
@@ -150,19 +204,12 @@ impl Study {
 		Ok(out)
 	}
 
-	fn terms(&self) -> Result<Vec<String>> {
-		Ok(self.trade()?.2.terms.iter().map(|t| t.text.clone()).collect())
-	}
-
 	/// The `locationBias` circle: one stratum's worth of ground, as a circle. `rank.nodes` cuts the
 	/// frame into equal shares of demand, so this is how far a searcher standing at one of them is
 	/// from its edge on average — which is the distance the coefficient is identified over. Not a
 	/// study's to state: it needs the frame and the node count, and those sit on opposite axes.
 	fn radius_m(&self) -> Result<f64> {
-		let b = self.area.bbox;
-		let lat_m = (b.lat[1] - b.lat[0]) * 111_320.;
-		let lon_m = (b.lon[1] - b.lon[0]) * 111_320. * ((b.lat[0] + b.lat[1]) / 2.).to_radians().cos();
-		Ok((lat_m * lon_m / self.trade()?.2.nodes as f64 / std::f64::consts::PI).sqrt())
+		Ok((self.area.frame().area_m2() / self.trade()?.2.nodes as f64 / std::f64::consts::PI).sqrt())
 	}
 
 	fn nodes(&self, cells: &Cells) -> Result<Vec<rank::Node>> {
@@ -202,13 +249,14 @@ impl Study {
 			// a half-written trade is not a location, and `trade()` says which block is missing
 			_ => {
 				let (poi_cfg, _, _) = self.trade()?;
-				match poi::load(poi_cfg, self.area.bbox, &self.name, work) {
-					Ok(inv) => (Some(self.billed(&cells, &place, inv, work)?), None),
+				let frame = self.area.frame();
+				match self.weigh(work).map(|terms| (poi::load(poi_cfg, frame, &self.name, work), terms)) {
+					Ok((Ok(inv), terms)) => (Some(self.billed(&cells, &place, inv, terms, work)?), None),
 					// the refusals that are neither this tool's fault nor a study that will not build: the map opens on
 					// what the work dir holds and says what it is missing
-					Err(e) => match (e.downcast_ref::<sources::work::Blocked>(), e.downcast_ref::<sources::work::Exhausted>()) {
-						(Some(blocked), _) => {
-							let held = poi::cached(poi_cfg, self.area.bbox, work)?;
+					Ok((Err(e), terms)) => match refusal(e)? {
+						Refusal::Blocked(blocked) => {
+							let held = poi::cached(poi_cfg, frame, work)?;
 							let missing = Some(blocked.missing);
 							match held.pois.len() {
 								0 => (
@@ -219,7 +267,7 @@ impl Study {
 									}),
 								),
 								n => (
-									Some(self.billed(&cells, &place, held, work)?),
+									Some(self.billed(&cells, &place, held, terms, work)?),
 									Some(Notice {
 										text: format!("{blocked}. The {n} competitors on this map are the part of the sweep it does hold."),
 										missing,
@@ -227,14 +275,38 @@ impl Study {
 								),
 							}
 						}
-						(None, Some(spent)) => (
+						Refusal::Spent(spent) => (
 							None,
 							Some(Notice {
 								text: format!("{spent}. {EMPTY}"),
 								missing: None,
 							}),
 						),
-						(None, None) => return Err(e),
+						Refusal::Unweighable(_) => unreachable!("weighed before the sweep"),
+					},
+					// competitors are scored on the weighted keywords, so a sweep held in full is still not a map
+					Err(e) => match refusal(e)? {
+						Refusal::Blocked(blocked) => (
+							None,
+							Some(Notice {
+								text: format!("{blocked}: the keywords' search volumes, which weigh what each competitor is scored on. {EMPTY}"),
+								missing: Some(blocked.missing),
+							}),
+						),
+						Refusal::Spent(spent) => (
+							None,
+							Some(Notice {
+								text: format!("{spent}. {EMPTY}"),
+								missing: None,
+							}),
+						),
+						Refusal::Unweighable(why) => (
+							None,
+							Some(Notice {
+								text: format!("{why}. {EMPTY}"),
+								missing: None,
+							}),
+						),
 					},
 				}
 			}
@@ -258,8 +330,8 @@ impl Study {
 		layers.extend(cells.layers);
 		Ok(Payload {
 			name: self.name.clone(),
-			center: self.area.center,
-			zoom: self.area.zoom,
+			center: self.area.center(),
+			zoom: self.area.zoom(),
 			ring,
 			imputed: cells.grid.cells.iter().map(|c| u8::from(c.imputed)).collect(),
 			place,
@@ -271,10 +343,10 @@ impl Study {
 	}
 
 	/// The billed half, over an inventory already bought or already held.
-	fn billed(&self, cells: &Cells, place: &[String], inv: poi::Inventory, work: &Work) -> Result<payload::Trade> {
-		let (poi_cfg, model_cfg, rank_cfg) = self.trade()?;
+	fn billed(&self, cells: &Cells, place: &[String], inv: poi::Inventory, terms: Terms, work: &Work) -> Result<payload::Trade> {
+		let (poi_cfg, model_cfg, _) = self.trade()?;
 		let model = Rank::try_new(feats(place, &inv.pois)?, rank::COEF)?;
-		let terms: Vec<(String, f64)> = rank_cfg.terms.iter().map(|t| (t.text.clone(), t.weight)).collect();
+		let Terms { weighted: terms, unweighted } = terms;
 
 		// a study nobody has probed carries no nodes, and the map offers no observed coverage layer
 		let nodes = at(&self.nodes(cells)?);
@@ -335,6 +407,7 @@ impl Study {
 				})
 				.collect(),
 			terms: terms.into_iter().map(|(text, weight)| payload::TermOut { text, weight }).collect(),
+			unweighted,
 			queries,
 			nodes,
 			pois,
@@ -345,11 +418,12 @@ impl Study {
 	pub fn searches(&self, work: &Work) -> Result<SearchPayload> {
 		let cfg = self.searches.as_ref().ok_or_else(|| eyre::eyre!("study {:?} declares no `searches` block", self.name))?;
 		ensure!(!cfg.groups.is_empty(), "searches declares no group");
+		let place = cfg.place.as_ref().ok_or_else(|| eyre::eyre!("{} names no `searches.place` to chart volume over", self.name))?;
 		let provider = searches::provider(&cfg.provider)?;
 		let (mut months, mut groups) = (Vec::new(), Vec::<GroupOut>::new());
 		for g in &cfg.groups {
 			ensure!(!groups.iter().any(|o| o.name == g.name), "two searches.group are both named {:?}", g.name);
-			let ideas = provider.ideas(&g.seed, &cfg.place, &cfg.language, work)?;
+			let ideas = provider.ideas(&g.seed, place, &cfg.language, work)?;
 			eprintln!("{}: {} ideas around {:?}", g.name, ideas.len(), g.seed);
 			let (axis, out) = fold(g, ideas)?;
 			match groups.first() {
@@ -360,7 +434,7 @@ impl Study {
 		}
 		Ok(SearchPayload {
 			name: self.name.clone(),
-			place: cfg.place.clone(),
+			place: place.clone(),
 			months,
 			groups,
 		})
@@ -476,34 +550,90 @@ pub fn pick(path: &Path) -> Result<PathBuf> {
 	Ok(found[i].clone())
 }
 
-/// A trade applied to a location. The trade file is a function of the location's attrset, which is
-/// what lets the frame and the statistics office it publishes be stated once per city rather than
-/// once per city and trade.
+/// What an area's attrset is built from: a location file, which carries its own frame and premises,
+/// or a country base, over which an area handed in at runtime has none.
+#[derive(Clone, Copy, Debug)]
+pub enum Base<'a> {
+	Location(&'a Path),
+	Country(&'a Path),
+}
+
+/// The area a location file draws: its outline, named by its stem as the conductor names an area by
+/// its slug.
+pub fn location_area(location: &Path) -> Result<Area> {
+	let location = abs(location)?;
+	let slug = stem(&location).to_lowercase();
+	eval(&format!("let l = import {}; in l.area // {{ slug = \"{slug}\"; country = l.country; }}", location.display()))
+}
+
+/// A trade applied to an area, and the category's words on top. The trade file is a function of the
+/// area's attrset, which is what lets the frame and the statistics office behind it be stated once
+/// per area rather than once per area and trade.
 ///
-/// No trade is the identity of that application: the location's own attrset is already a study, and
+/// No category is the identity of that application: the area's own attrset is already a study, and
 /// it is the one that costs nothing to build.
-pub fn load(trade: Option<&Path>, location: &Path) -> Result<Study> {
-	let (trade, location) = (trade.map(abs).transpose()?, abs(location)?);
-	let expr = match &trade {
-		Some(t) => format!("import {} (import {})", t.display(), location.display()),
-		None => format!("import {}", location.display()),
+pub fn load(def: &Definition, base: Base, trades: &Path) -> Result<Study> {
+	def.check()?;
+	let (base_expr, candidates) = match base {
+		Base::Location(p) => (abs(p)?, ""),
+		Base::Country(p) => (abs(p)?, " candidate = [];"),
 	};
-	// `--impure` for the absolute paths: pure evaluation only admits a path it was handed as the
-	// root, and the root here is a pair
-	let out = std::process::Command::new("nix")
-		.args(["eval", "--impure", "--json", "--expr", &expr])
-		.output()
-		.wrap_err("running `nix eval` — a study is a Nix expression, so nix must be on PATH")?;
-	ensure!(out.status.success(), "evaluating {expr}:\n{}", String::from_utf8_lossy(&out.stderr).trim());
-	let mut study: Study = serde_json::from_slice(&out.stdout).wrap_err_with(|| format!("parsing {expr}"))?;
-	study.name = match &trade {
-		Some(t) => format!("{}_-_{}", stem(t), stem(&location)),
-		None => stem(&location).to_owned(),
+	// a Nix string of the JSON: `\`, `"` and the `$` of an interpolation escaped
+	let area = serde_json::to_string(&def.area)?.replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$");
+	let loc = format!("(import {}) // {{ area = builtins.fromJSON \"{area}\";{candidates} }}", base_expr.display());
+	let expr = match &def.category {
+		Some(c) => {
+			let trade = trades.join(format!("{}.nix", c.study));
+			ensure!(
+				trade.is_file(),
+				"category {}·{} is studied by {:?}, and {} holds no such trade",
+				c.trade,
+				c.country,
+				c.study,
+				trades.display()
+			);
+			format!("import {} ({loc})", abs(&trade)?.display())
+		}
+		None => loc,
 	};
+	let mut study: Study = eval(&expr)?;
+	study.name = def.name();
+	ensure!(study.area == def.area, "{}: the trade handed back an area other than the one it was given", study.name);
+	ensure!(
+		study.country == def.area.country(),
+		"{}: {} is a base for {}, not {}",
+		study.name,
+		base_expr.display(),
+		study.country,
+		def.area.country()
+	);
 	if study.layers.is_empty() {
 		bail!("{} declares no [[layer]]", study.name);
 	}
+	if let Some(c) = &def.category {
+		let poi = study.poi.as_mut().ok_or_else(|| eyre::eyre!("{}: trade {:?} declares no `poi`", study.name, c.study))?;
+		let first = poi.tiers.first_mut().ok_or_else(|| eyre::eyre!("{}: trade {:?} declares no [[poi.tier]]", study.name, c.study))?;
+		ensure!(
+			first.spec.types.is_empty(),
+			"{}: trade {:?} types its first tier, which is the category's primary Google category to say",
+			study.name,
+			c.study
+		);
+		first.spec.types = vec![c.google_primary.places_type().to_owned()];
+		poi.queries = std::iter::once(&c.google_primary).chain(&c.google_additional).map(|g| g.name.clone()).collect();
+	}
+	study.category = def.category.clone();
 	Ok(study)
+}
+
+fn eval<T: serde::de::DeserializeOwned>(expr: &str) -> Result<T> {
+	// `--impure` for the absolute paths: pure evaluation only admits a path it was handed as the root
+	let out = std::process::Command::new("nix")
+		.args(["eval", "--impure", "--json", "--expr", expr])
+		.output()
+		.wrap_err("running `nix eval` — a study is a Nix expression, so nix must be on PATH")?;
+	ensure!(out.status.success(), "evaluating {expr}:\n{}", String::from_utf8_lossy(&out.stderr).trim());
+	serde_json::from_slice(&out.stdout).wrap_err_with(|| format!("parsing {expr}"))
 }
 
 /// `nix eval --expr` resolves a bare path against the invocation directory, and the server builds
@@ -550,6 +680,43 @@ pub fn search_stats(p: &SearchPayload) -> IndexMap<String, String> {
 	}
 	m
 }
+/// The category's keywords, split by whether they weigh anything.
+pub struct Terms {
+	pub weighted: Vec<(String, f64)>,
+	/// No volume data, or nobody searched it.
+	pub unweighted: Vec<String>,
+}
+
+/// This server cannot ask anyone for search volume: its provider's credentials are not in its
+/// environment. A map without competitors, and the reason on it.
+#[derive(Debug)]
+struct Unweighable(String);
+impl std::fmt::Display for Unweighable {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "no volume provider to weigh the keywords with ({})", self.0)
+	}
+}
+impl std::error::Error for Unweighable {}
+
+enum Refusal {
+	Blocked(sources::work::Blocked),
+	Spent(sources::work::Exhausted),
+	Unweighable(Unweighable),
+}
+
+/// The refusals a map opens through rather than fails on; anything else is the error it was.
+fn refusal(e: eyre::Report) -> Result<Refusal> {
+	let e = match e.downcast::<sources::work::Blocked>() {
+		Ok(b) => return Ok(Refusal::Blocked(b)),
+		Err(e) => e,
+	};
+	let e = match e.downcast::<sources::work::Exhausted>() {
+		Ok(x) => return Ok(Refusal::Spent(x)),
+		Err(e) => e,
+	};
+	e.downcast::<Unweighable>().map(Refusal::Unweighable)
+}
+
 fn at(nodes: &[rank::Node]) -> Vec<[f64; 2]> {
 	nodes.iter().map(|n| n.at).collect()
 }

@@ -1,21 +1,12 @@
-/* Plumbing and heating, over whichever city is handed in. */
+/* Plumbing and heating, over whichever area is handed in. */
 loc:
+# the tier and drop vocabulary below is French
+assert loc.searches.language == "fr";
 {
-  inherit (loc) area grid candidate country;
+  inherit (loc) area grid candidate country layer;
 
   poi = {
     source = "google_places";
-    queries = [
-      "plombier"
-      "plomberie"
-      "plombier chauffagiste"
-      "chauffagiste"
-      "dépannage plomberie"
-      "débouchage canalisation"
-      "installateur sanitaire"
-      "installation chauffage"
-    ];
-
     # A plumber is direct competition; a handyman who will take the job if asked is not found first.
     # First match wins, so this stays a list.
     tier = [
@@ -23,7 +14,6 @@ loc:
         name = "plumber";
         weight = 1.0;
         match = "plombier|plomberie|sanitaire|chauffagiste|chauffage|chaudière|chaudiere|canalisation|débouchage|debouchage|assainissement";
-        types = [ "plumber" ];
       }
       {
         name = "general";
@@ -56,34 +46,7 @@ loc:
     lambda_m = 5000;
   };
 
-  # Not `poi.queries`: those name the trade the way the trade names itself, which is exactly the
-  # variation the name coefficient cannot be fitted on. "chauffage" is what the customer types.
-  rank = {
-    nodes = 32;
-    term = [
-      { text = "plombier"; weight = 1.0; }
-      { text = "chauffage"; weight = 0.7; }
-      { text = "dépannage plomberie"; weight = 0.4; }
-    ];
-  };
-
-  layer = loc.layer ++ [
-    {
-      name = "Addressable dwellings";
-      expr = "homes";
-      note = "Houses in full, flats at half.";
-    }
-    {
-      name = "Pre-1970 stock";
-      expr = "log_av45 + log_45_70";
-      note = "Lead, steel and first-generation copper. Where the failures are.";
-    }
-    {
-      name = "Owner-occupiers";
-      expr = "men_prop";
-      note = "The household that pays the invoice itself, rather than passing it to a landlord.";
-    }
-  ];
+  rank.nodes = 32;
 
   # Nobody searches "chauffagiste" and everybody searches "chauffage" (see niches/plumbing/Aquafix),
   # so the heating group is seeded on the trade word and matched on the layman's.

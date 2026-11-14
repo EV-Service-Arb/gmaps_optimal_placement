@@ -864,7 +864,7 @@ pub fn haze(p: f64) -> f64 {
 /// A Google category, as Google files it — not as the study's `tier` rules read it. The tiers are
 /// the study's argument about what competes; this is the evidence they were argued from, and the
 /// two disagreeing is worth being able to see.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Category {
 	/// Places `primaryType`, which the colour is keyed by.
 	pub kind: String,
@@ -907,6 +907,96 @@ pub fn categories(trade: &Trade) -> Vec<Category> {
 		c.color = format!("hsl({:.0},72%,58%)", if h >= 190. { h + 70. } else { h });
 	}
 	out
+}
+
+/// What a panel shows of the payload on the map, as gop's map and the overlay's `data` event both
+/// read it. Static: nothing here moves with the view or the sliders.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Summary {
+	pub name: String,
+	pub cells: usize,
+	/// Cells whose values are modelled rather than observed.
+	pub imputed: usize,
+	pub layers: Vec<LayerRow>,
+	pub trade: Option<TradeSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct LayerRow {
+	pub id: String,
+	pub name: String,
+	pub note: String,
+	pub trade: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TradeSummary {
+	pub lambda_m: f64,
+	pub tiers: Vec<TierRow>,
+	pub categories: Vec<Category>,
+	pub queries: Vec<crate::payload::QueryOut>,
+	pub terms: Vec<crate::payload::TermOut>,
+	pub unweighted: Vec<String>,
+	pub searches: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TierRow {
+	pub name: String,
+	pub weight: f64,
+	/// Unix seconds of the freshest answer naming each competitor of the tier.
+	pub fetched_s: Vec<u64>,
+}
+
+impl Summary {
+	pub fn of(m: &Model) -> Self {
+		let p = &m.payload;
+		Self {
+			name: p.name.clone(),
+			cells: m.n(),
+			imputed: p.imputed.iter().filter(|&&i| i == 1).count(),
+			layers: m
+				.layers()
+				.into_iter()
+				.map(|l| LayerRow {
+					id: layer_id(&l.name),
+					trade: matches!(l.source, LayerRef::Trade(_)),
+					name: l.name,
+					note: l.note,
+				})
+				.collect(),
+			trade: p.trade.as_ref().map(|t| TradeSummary {
+				lambda_m: t.lambda_m,
+				tiers: t
+					.tiers
+					.iter()
+					.map(|x| TierRow {
+						name: x.name.clone(),
+						weight: x.weight,
+						fetched_s: t.pois.iter().filter(|q| q.poi.tier == x.name).map(|q| q.poi.fetched_s).collect(),
+					})
+					.collect(),
+				categories: categories(t),
+				queries: t.queries.clone(),
+				terms: t.terms.clone(),
+				unweighted: t.unweighted.clone(),
+				searches: t.searches,
+			}),
+		}
+	}
+}
+
+/// A layer's id: lowercase ASCII, every run of anything else one `-`, none at either end.
+pub fn layer_id(name: &str) -> String {
+	let mut out = String::new();
+	for c in name.chars() {
+		match c.is_ascii_alphanumeric() {
+			true => out.push(c.to_ascii_lowercase()),
+			false if !out.is_empty() && !out.ends_with('-') => out.push('-'),
+			false => {}
+		}
+	}
+	out.trim_end_matches('-').to_owned()
 }
 
 /// Three significant-ish digits with an SI-ish suffix. Report and legend both read it, so a change

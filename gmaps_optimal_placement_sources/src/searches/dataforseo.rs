@@ -37,30 +37,53 @@ impl SearchVolume for DataForSeo {
 				&refused,
 			)?
 			.0;
-		let task = &res["tasks"][0];
-
-		let mut out = Vec::new();
-		for r in task["result"].as_array().into_iter().flatten() {
-			let Some(text) = r["keyword"].as_str() else { bail!("result without a keyword: {r}") };
-			let monthly = r["monthly_searches"]
-				.as_array()
-				.map(|v| {
-					v.iter()
-						.map(|m| {
-							let (Some(year), Some(month), Some(searches)) = (m["year"].as_u64(), m["month"].as_u64(), m["search_volume"].as_u64()) else {
-								bail!("monthly volume for {text:?} is incomplete: {m}")
-							};
-							Ok(Month {
-								year: year as u16,
-								month: month as u8,
-								searches,
-							})
-						})
-						.collect::<Result<Vec<_>>>()
-				})
-				.transpose()?;
-			out.push(Keyword { text: text.to_owned(), monthly });
-		}
-		Ok(out)
+		parse(&res)
 	}
+
+	fn volumes(&self, keywords: &[String], place: &str, lang: &str, work: &Work) -> Result<Vec<Keyword>> {
+		ensure!(!keywords.is_empty(), "no keyword to weigh");
+		let body = serde_json::json!([{"keywords": keywords, "location_name": place, "language_code": lang}]);
+		let refused = |res: &serde_json::Value| {
+			let task = &res["tasks"][0];
+			(task["status_code"].as_u64() != Some(20000)).then(|| format!("search_volume for {keywords:?}: {} {}", task["status_code"], task["status_message"]))
+		};
+		let res = work
+			.cached_post(
+				sa_core::prices::Item::DataForSeo(sa_core::prices::DataForSeoTask::SearchVolume),
+				"https://api.dataforseo.com/v3/keywords_data/google_ads/search_volume/live",
+				&body,
+				&[("Authorization", self.auth.as_str())],
+				&refused,
+			)?
+			.0;
+		parse(&res)
+	}
+}
+
+/// Both endpoints answer `tasks[0].result[]` of `{keyword, monthly_searches}`.
+fn parse(res: &serde_json::Value) -> Result<Vec<Keyword>> {
+	let task = &res["tasks"][0];
+	let mut out = Vec::new();
+	for r in task["result"].as_array().into_iter().flatten() {
+		let Some(text) = r["keyword"].as_str() else { bail!("result without a keyword: {r}") };
+		let monthly = r["monthly_searches"]
+			.as_array()
+			.map(|v| {
+				v.iter()
+					.map(|m| {
+						let (Some(year), Some(month), Some(searches)) = (m["year"].as_u64(), m["month"].as_u64(), m["search_volume"].as_u64()) else {
+							bail!("monthly volume for {text:?} is incomplete: {m}")
+						};
+						Ok(Month {
+							year: year as u16,
+							month: month as u8,
+							searches,
+						})
+					})
+					.collect::<Result<Vec<_>>>()
+			})
+			.transpose()?;
+		out.push(Keyword { text: text.to_owned(), monthly });
+	}
+	Ok(out)
 }

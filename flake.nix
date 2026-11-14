@@ -84,7 +84,7 @@
         '';
 
         # The smoke test asserts Clermont's numbers, so it takes no study: `smoke.js` and
-        # `car_detailing.nix` x `Clermont-Ferrand.nix` are one fixture. It is served the whole
+        # `car_detailing_FR.json` x `Clermont-Ferrand.nix` are one fixture. It is served the whole
         # product rather than that pairing, because reaching the pairing through the picker is
         # itself one of the things under test.
         study = pkgs.writeShellApplication {
@@ -98,7 +98,7 @@
             XDG_DATA_HOME="$(mktemp -d)"
             export XDG_DATA_HOME
             cargo build -p gmaps_optimal_placement # a cold compile outlasts any wait for the port
-            cargo run -p gmaps_optimal_placement -- --block-spend --sweep-root 1 serve --port ${toString port} & # a smoke run spends nothing; the tiling smoke.js asserts was swept from the whole frame
+            cargo run -p gmaps_optimal_placement -- --block-spend serve --port ${toString port} & # a smoke run spends nothing
             server=$!
             trap 'kill $server 2>/dev/null || true; rm -rf "$XDG_DATA_HOME"' EXIT
             up=
@@ -110,7 +110,7 @@
             node examples/smoke.js "http://localhost:${toString port}/"
           '';
         };
-        # `open [-t <trades>] [-l <locations>]` — build the client, serve, open a browser. The axes
+        # `open [-c <categories>] [-l <locations>]` — build the client, serve, open a browser. The axes
         # are the binary's own flags; everything here does is build the client and hold the port.
         # Paths are read from the repository root, which is where the defaults live.
         open = pkgs.writeShellApplication {
@@ -123,9 +123,10 @@
             exec cargo run -p gmaps_optimal_placement -- serve "$@" --port ${toString port} --open
           '';
         };
-        # `conductor --port <p> [-t <trades>] [-l <locations>]` — the conductor's peer: the overlay
+        # `conductor --port <p> [-t <trades>] [--countries <dir>]` — the conductor's peer: the overlay
         # module and the API behind its assertion, no page. Run from this checkout; needs
-        # PANEL_ASSERTION_KEYS, and the config's keys for whatever "Pull latest" buys.
+        # PANEL_ASSERTION_KEYS, the config's keys for whatever "Pull latest" buys, and the volume
+        # provider's credentials to weigh a category's keywords.
         conductor = pkgs.writeShellApplication {
           name = "conductor";
           runtimeInputs = with pkgs; [ rust git pkg-config openssl mold nix wasm-bindgen-cli tailwindcss_4 ];
@@ -136,7 +137,7 @@
             exec cargo run -p gmaps_optimal_placement -- serve --behind-conductor "$@"
           '';
         };
-        # `searches [-t <trades>] [-l <locations>]` — build the volume chart, serve it, open it.
+        # `searches [-c <categories>] [-l <locations>]` — build the volume chart, serve it, open it.
         searches = pkgs.writeShellApplication {
           name = "open-searches";
           runtimeInputs = with pkgs; [ rust git pkg-config openssl mold python3 psmisc xdg-utils nix fzf ];
@@ -168,24 +169,27 @@
           name = "help";
           text = ''
             cat <<'EOF'
-            nix run .#open -- [-t <trades>] [-l <locations>]  serve the map on :${toString port} and open it
+            nix run .#open -- [-c <categories>] [-l <locations>]  serve the map on :${toString port} and open it
                                             (Ctrl-C to stop). the two directories (default
-                                            examples/trades examples/locations) are all this takes —
-                                            the page picks the pairing, trade and city side by side,
+                                            examples/categories examples/locations) are all this takes —
+                                            the page picks the pairing, category and city side by side,
                                             and `t` opens another as a tab over the same map
-            nix run .#searches -- [-t <trades>] [-l <locations>]  open the monthly search-volume chart for
+            nix run .#searches -- [-c <categories>] [-l <locations>]  open the monthly search-volume chart for
                                             the query groups of one pairing. each axis is picked through fzf
             nix run .#misc <country> <tally>  which towns in a country to write a study about at all:
                                             pool | building | parcel per --per column, --floor to skip hamlets
-            nix run .#conductor -- --port <p> [-t ..] [-l ..]  serve the conductor: /mfe/overlay.js and the
-                                            API behind its assertion (PANEL_ASSERTION_KEYS); GETs never spend
+            nix run .#conductor -- --port <p> [-t ..] [--countries ..]  serve the conductor: /mfe/overlay.js and
+                                            the studies it defines, behind its assertion (PANEL_ASSERTION_KEYS);
+                                            only a pull spends
             nix run .#study                 serve the Clermont map and assert it in headless Chromium
             nix run .#help                  this
             cached archives and API responses live under $XDG_CACHE_HOME/gmaps_optimal_placement;
             promoted candidates live under $XDG_DATA_HOME/gmaps_optimal_placement
-            a study is a trade applied to a location. examples/trades/<t>.nix is a function of the
-            location's attrset; examples/locations/<l>.nix carries area, candidate and searches.place.
-            together they evaluate to what `gmaps_optimal_placement schema` describes.
+            a study is a category over an area. examples/categories/<c>.json names the trade that
+            studies it; examples/trades/<t>.nix is a function of the area's attrset;
+            examples/locations/<l>.nix carries area, candidate and searches.place over
+            examples/countries/<CC>.nix. together they evaluate to what `gmaps_optimal_placement schema`
+            describes.
             EOF
           '';
         };

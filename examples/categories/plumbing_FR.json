@@ -1,0 +1,8 @@
+{
+  "trade": 1,
+  "country": "FR",
+  "study": "plumbing",
+  "keywords": ["plombier", "fuite d'eau", "débouchage canalisation", "plombier chauffagiste"],
+  "google_primary": { "id": "gcid:plumber", "name": "Plombier" },
+  "google_additional": [{ "id": "gcid:heating_contractor", "name": "Chauffagiste" }]
+}

@@ -19,8 +19,8 @@ use crate::{
 /// live signals; the map instance underneath is never rebuilt.
 #[derive(Clone)]
 pub struct Tab {
-	/// The two file stems, which is what `/payload/{trade}/{location}` is keyed by. No trade is a
-	/// location on its own, under `/place/{location}`. What the pairing is *called* is the payload's
+	/// The two file stems, which is what `/payload/{category}/{location}` is keyed by. No category is
+	/// a location on its own, under `/place/{location}`. What the pairing is *called* is the payload's
 	/// to say.
 	pub at: (Option<String>, String),
 	/// The payload's own name once it has landed, the pairing until then.
@@ -44,7 +44,7 @@ pub struct State {
 	pub tabs: RwSignal<Vec<Tab>, LocalStorage>,
 	pub active: RwSignal<usize>,
 	/// The two axes served, whether or not any pairing of them has a tab.
-	pub trades: RwSignal<Vec<String>>,
+	pub categories: RwSignal<Vec<String>>,
 	pub locations: RwSignal<Vec<String>>,
 	pub picker: RwSignal<Option<Pool>>,
 	pub settings: RwSignal<bool>,
@@ -93,7 +93,7 @@ impl State {
 			heavy: StoredValue::new_local(Heavy::default()),
 			tabs: RwSignal::new_local(Vec::new()),
 			active: RwSignal::new(0),
-			trades: RwSignal::new(Vec::new()),
+			categories: RwSignal::new(Vec::new()),
 			locations: RwSignal::new(Vec::new()),
 			picker: RwSignal::new(None),
 			settings: RwSignal::new(false),
@@ -623,7 +623,7 @@ pub fn MapView() -> impl IntoView {
 				let text = match (l.notice, l.traded) {
 					(Some(n), _) => n,
 					(None, false) => {
-						"No trade — this is the statistical grid alone, and it cost no Places call. Open the same city under a trade for demand, the competitors on it, and the sweeps."
+						"No category — this is the statistical grid alone, and it cost no Places call. Open the same city under a category for demand, the competitors on it, and the sweeps."
 							.to_owned()
 					}
 					(None, true) => return None,
@@ -733,7 +733,7 @@ mod imp {
 
 #[cfg(feature = "hydrate")]
 mod imp {
-	use gmaps_optimal_placement_core::model::{LayerRef, LayerSpec, TradeLayer, categories};
+	use gmaps_optimal_placement_core::model::{LayerRef, LayerSpec, Summary, TradeLayer, categories};
 	use gmaps_optimal_placement_overlay::Scene;
 	use leptos::prelude::*;
 	use wasm_bindgen::{closure::WasmClosure, prelude::*};
@@ -907,7 +907,7 @@ mod imp {
 	/// The two axes the CLI was given, and whatever pairing it already built.
 	#[derive(serde::Deserialize)]
 	struct Studies {
-		trades: Vec<String>,
+		categories: Vec<String>,
 		locations: Vec<Location>,
 		open: Vec<(Option<String>, String)>,
 	}
@@ -923,7 +923,7 @@ mod imp {
 			Ok(d) => d,
 			Err(e) => return s.banner.set(Some(format!("⚠ what is served never arrived — {e}"))),
 		};
-		s.trades.set(served.trades);
+		s.categories.set(served.categories);
 		s.locations.set(served.locations.into_iter().map(|l| l.name).collect());
 		match crate::tabs::load_keys().await {
 			Ok(Some(k)) => s.keys.set(k),
@@ -1062,32 +1062,25 @@ mod imp {
 		s.temp.set(t.temp);
 		s.report.set(None);
 		s.selected.set(t.selected);
+		let summary = Summary::of(&m);
+		let now = js_sys::Date::now() / 1000.;
+		let trade = summary.trade.as_ref();
 		s.loaded.set(Some(super::Loaded {
-			layers: m.layers().into_iter().map(|l| (l.name, l.note)).collect(),
-			tier_counts: m
-				.payload
-				.trade
+			layers: summary.layers.iter().map(|l| (l.name.clone(), l.note.clone())).collect(),
+			tier_counts: trade.iter().flat_map(|t| t.tiers.iter().map(|x| x.fetched_s.len())).collect(),
+			categories: trade.iter().flat_map(|t| t.categories.iter().cloned()).collect(),
+			imputed: summary.imputed,
+			searches: trade.map(|t| t.searches),
+			ages: trade
 				.iter()
-				.flat_map(|t| t.tiers.iter().map(|x| t.pois.iter().filter(|p| p.poi.tier == x.name).count()))
-				.collect(),
-			categories: m.payload.trade.iter().flat_map(categories).collect(),
-			imputed: m.payload.imputed.iter().filter(|&&i| i == 1).count(),
-			searches: m.payload.trade.as_ref().map(|t| t.searches),
-			ages: {
-				let now = js_sys::Date::now() / 1000.;
-				m.payload
-					.trade
-					.iter()
-					.flat_map(|t| {
-						t.pois.iter().map(move |p| {
-							let tier = t.tiers.iter().position(|x| x.name == p.poi.tier).expect("the model rejected a payload whose tiers disagree");
-							// an answer dated ahead of this clock is a clock that moved, and the answer is still not old
-							(((now - p.poi.fetched_s as f64) / 86_400.).max(0.), tier)
-						})
+				.flat_map(|t| {
+					t.tiers.iter().enumerate().flat_map(move |(tier, x)| {
+						// an answer dated ahead of this clock is a clock that moved, and the answer is still not old
+						x.fetched_s.iter().map(move |&f| (((now - f as f64) / 86_400.).max(0.), tier))
 					})
-					.collect()
-			},
-			queries: m.payload.trade.iter().flat_map(|t| t.queries.iter().map(|q| (q.text.clone(), q.hits))).collect(),
+				})
+				.collect(),
+			queries: trade.iter().flat_map(|t| t.queries.iter().map(|q| (q.text.clone(), q.hits))).collect(),
 			traded: m.traded().is_some(),
 			notice: m.payload.notice.as_ref().map(|n| n.text.clone()),
 		}));

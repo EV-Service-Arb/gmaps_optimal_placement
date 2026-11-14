@@ -1,14 +1,16 @@
 # gmaps_optimal_placement
 
-Where should a service business open. A location describes an area and the statistical grid behind
-it; a trade, applied to that location, describes what counts as a competitor and how demand follows
-from whatever columns that grid publishes; the tool serves a map that answers it.
+Where should a service business open. An area and the country base under it describe the ground
+and the statistical grid behind it; a trade, applied to that area, describes how demand follows from
+whatever columns that grid publishes and how to read a competitor's name; the conductor's category —
+a trade in a country — says what the trade is called on Google and what its customers type. The
+tool serves a map that answers it.
 
-The question is the input. Retargeting a city, a country or a trade is an edit to one of the two
-documents, never to the code.
+The question is the input. Retargeting an area, a country, a trade or a category is an edit to one
+of those documents, never to the code.
 
 ```
-        trade.nix (location.nix) ─── the pinned interface
+  category (conductor) · trade.nix (country.nix // area) ─── the pinned interface
                    │
    ┌───────────────┴───────────────────────────────────────────┐
    │ gmaps_optimal_placement_sources        network, cache     │
@@ -36,7 +38,7 @@ documents, never to the code.
    ┌───────┴──────────────────────────┐   ┌────────┴──────────────────────┐
    │ gmaps_optimal_placement          │   │ gmaps_optimal_placement_web   │
    │   CLI, study, settings, HTML     │──▶│   ssr: axum + server fns      │
-   │   trades × locations             │   │   hydrate: the MapView island │
+   │   categories × areas             │   │   hydrate: the MapView island │
    └───────┬──────────────────────────┘   │   map_core.js: map, pins      │
            │  the orderings on disk       └────────┬──────────────────────┘
    ┌───────┴──────────────────────────┐   ┌────────┴──────────────────────┐
@@ -49,24 +51,25 @@ documents, never to the code.
                           gop's own map · the conductor's map · one <name>-searches.html
 ```
 
-`serve` holds the two axes rather than a study, and the page picks a point on their product — one
-field per axis, both live at once, because a coordinate is known in either order; neither loads on its
-own, a separate Load spends the pair. The server builds
-a pairing the first time a tab asks for it, and the page keeps several open over one map instance.
-Naming both axes as files builds one before the listener binds, which is what keeps a scripted run
-off the picker.
+A study is a `core::define::Definition`: an area (a city's viewport or a circle, and a margin, as
+the conductor keeps it) and a category, each named as the conductor names it. What the category
+says drives the billed half — its Google categories are the sweep's queries and its primary is the
+first tier's Places type; its keywords are what every competitor is scored on, each weighed by its
+search volume over the country. What only an expert can write — the demand model, the tier
+vocabulary, λ — is the trade file its `study` names. A definition is addressed by its SHA-256,
+because an area or a category can be redefined under the same name.
 
-The trade axis carries one extra point: none. A trade file is a function of a location, so no trade
-is that function's identity — the location's own attrset is already a study. `Payload::trade` is the
-one `Option` that says so, and everything behind it is everything that is billed. A city can
+The category axis carries one extra point: none. A trade file is a function of an area, so no
+category is that function's identity — the area's own attrset is already a study. `Payload::trade`
+is the one `Option` that says so, and everything behind it is everything that is billed. A city can
 therefore be looked at before any of the Places quota goes on it.
 
-The axes are `--trades` and `--locations` rather than two positionals: they are the same shape, so
-nothing about a bare pair of paths says which is which.
-
-What a pairing is *called* — `<trade>_-_<location>`, from the two stems — is the CLI's to say. The
-web crate keys on the stems and the pin file keys on the name, so neither has a second spelling of
-it to keep in step.
+gop's own page holds two axes of files, `--categories` and `--locations`, and picks a point on
+their product — one field per axis, both live at once, because a coordinate is known in either
+order; a separate Load spends the pair. Naming both as files builds one before the listener binds,
+which is what keeps a scripted run off the picker. What a study is *called* —
+`<study>·<CC>·<slug>` — is the definition's; the web crate keys the page on the stems and the pin
+file keys on the name, so neither has a second spelling of it to keep in step.
 
 The map answers where the people are. It does not answer how many are looking for the thing, which
 is what `searches` is for: a cell can be dense, affluent and uncontested and still sit under a trade
@@ -122,11 +125,12 @@ legend's ticks move with the view.
 
 ## Behind the conductor
 
-`serve --behind-conductor` serves no page. Every request but `/mfe/*` carries the conductor's
-assertion for exactly its method and path, checked against `PANEL_ASSERTION_KEYS`; reading needs
-`sa:placement:study:read`, anything else `sa:placement:study:spend`. A GET never spends: a pairing
-whose searches are not in the work dir opens on what the work dir holds, and its notice says how many
-are missing. "Pull latest", the POST, is the one thing that buys. Either reads the queries cache.
+`serve --behind-conductor` serves no page and holds no axis: it takes `--trades` and `--countries`
+and builds whatever definition the conductor's map hands in (`PUT /studies/{sha}`, then `GET`). Every
+request but `/mfe/*` carries the conductor's assertion for exactly its method and path, checked
+against `PANEL_ASSERTION_KEYS`; a pull needs `sa:placement:study:spend`, anything else
+`sa:placement:study:read`. Only a pull spends: a study whose answers are not in the work dir opens on
+what the work dir holds, and its notice says how many are missing. Either reads the queries cache.
 
 ## Invariants
 
@@ -139,10 +143,13 @@ are missing. "Pull latest", the POST, is the one thing that buys. Either reads t
   same mechanism for a plumber and a detailer, so the reviews→prominence curve is a fitted constant
   in `core::rank`, not an expression a study writes; what the study says is which queries it cares
   about and what each is worth.
-- **A trade may not name a city, and a location may not name a trade.** They are the two axes of a
+- **A trade may not name an area, and an area may not name a trade.** They are the two axes of a
   product, and a quantity that needs both is a quantity neither document can state honestly: it
   belongs in Rust, derived, or in the tool's own settings. The probe's bias radius and the POI
-  sweep's tiling (`sweep.root`, `sweep.depth`) are there for exactly this reason. The alternative is the same knob written out per pairing, drifting apart silently.
+  sweep's tiling (`sweep.zoom`, `sweep.depth`) are there for exactly this reason. The alternative is the same knob written out per pairing, drifting apart silently.
+- **What the category says is never restated by a trade.** Its Google categories are the sweep's
+  queries and the first tier's type, its keywords the terms; a trade file that writes any of them is
+  refused.
 - **Demand is a trade's word.** `model.demand` is what a trade says the grid means to it. Without
   one there is no demand surface, and nothing stands in for it: the layer is absent and the controls
   that read λ, a tier weight or a demand value are disabled. Population is not demand.
@@ -170,7 +177,9 @@ are missing. "Pull latest", the POST, is the one thing that buys. Either reads t
   map's re-ask, is the only thing that re-asks. Age is a caption and a changed tiling is a setting;
   neither is a trigger.
 - **A cache key covers everything its answer depends on**, so a changed input is a different file
-  rather than a stale one and nothing needs invalidating. A derived answer is cached only where it is
+  rather than a stale one and nothing needs invalidating. An answer is keyed on the ground it is
+  about — a tile of one Web-Mercator quadtree — never on the area that asked, so overlapping areas
+  share it. A derived answer is cached only where it is
   reproducible from what is kept: the grid extract keeps the archive's own rows and re-parses them,
   because caching the floats would need a round-trip no text format gives.
 - **What a run is about to spend is stated, never guessed at.** No API key can read what is left of
@@ -212,7 +221,7 @@ decision, and they are the difference between a map that informs one and a map t
 guess into authority. The worked examples are in `examples/`.
 
 - **Motorisation is estimated, not measured.** No 200 m source publishes households-with-a-car;
-  INSEE has it only at IRIS level. `_France.nix` infers it from the house/flat split
+  INSEE has it only at IRIS level. `countries/FR.nix` infers it from the house/flat split
   (`men_mais × 1.55 + men_coll × 0.85`) as a location layer, and the detailing trade's demand reads
   it. Directionally right, not a measurement.
 - **Most fine-grained cells are modelled.** ~80 % of INSEE 200 m cells have fewer than 11 fiscal

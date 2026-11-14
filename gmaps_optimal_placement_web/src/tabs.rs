@@ -5,12 +5,12 @@
 //! reads the next one into them; there is never a second `google.maps` instance.
 //!
 //! ```text
-//!   GET /studies.json   trades, locations: the two axes the CLI was given
+//!   GET /studies.json   categories, locations: the two axes the CLI was given
 //!                       open:              the pairing it was named, if it was named one
 //!        │
 //!   ┌────┴──── t ─→ Pool::Study    a field per axis, what and where; Load spends the pair
 //!   │  Picker                      ↑ also where a served product starts
-//!   │                              the trade field ends in NO_TRADE — the city, unpriced
+//!   │                              the category field ends in NO_TRADE — the city, unpriced
 //!   └───────── f ─→ Pool::Open     filter the open tabs, switch to one
 //!
 //!   s / `/` / Ctrl+K ─→ #find      a place, by name or address; a hit lands as a click there
@@ -23,7 +23,7 @@
 //! screen. Neither field loads anything on its own; Load spends the pair, and marks whichever
 //! field is still empty.
 //!
-//! [`NO_TRADE`] sits at the end of the trade field rather than at its head: a city on its own is the
+//! [`NO_TRADE`] sits at the end of the category field rather than at its head: a city on its own is the
 //! cheap question, not the usual one, and the highlight opens on whatever a field's first row is.
 //!
 //! This is the only picker: `serve` does not run `fzf` over a directory, because choosing the first
@@ -41,9 +41,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::map::State;
 
-/// The last row of the trade field: a location built from the statistical archive alone, which is
-/// every layer a trade did not add and not one billed call.
-pub const NO_TRADE: &str = "(no trade · grid only)";
+/// The last row of the category field: a location built from the statistical archive alone, which
+/// is every layer a trade did not add and not one billed call.
+pub const NO_TRADE: &str = "(no category · grid only)";
 
 /// Which set the picker is filtering, and so how many fields it puts up.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -252,10 +252,10 @@ pub fn Picker(state: State, pool: Pool) -> impl IntoView {
 							invalid=Signal::derive(move || tried.get() && trade.with(Option::is_none))
 						/>
 						<CommandList>
-							<CommandEmpty>"no such trade"</CommandEmpty>
+							<CommandEmpty>"no such category"</CommandEmpty>
 							{move || {
 								state
-									.trades
+									.categories
 									.get()
 									.into_iter()
 									.map(Some)

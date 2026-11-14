@@ -15,9 +15,10 @@ class Handle extends EventTarget {
 		this.#o = new Overlay(map, api, csrf, (type, detail) => this.dispatchEvent(new CustomEvent(type, { detail: JSON.parse(detail) })));
 	}
 
-	show(trade, locations) { return this.#o.show(trade, locations); }
+	show(def) { return this.#o.show(def === null ? null : JSON.stringify(def)); }
 	heat(layerId) { this.#o.heat(layerId); }
-	pressure(opts) { this.#o.pressure(opts === null ? null : JSON.stringify(opts)); }
+	tune(t) { this.#o.tune(JSON.stringify(t)); }
+	pressure(on) { this.#o.pressure(on); }
 	competitors(on) { this.#o.competitors(on); }
 	opacity(x) { this.#o.opacity(x); }
 	hideImputed(on) { this.#o.hideImputed(on); }

@@ -1,0 +1,8 @@
+{
+  "trade": 3,
+  "country": "FR",
+  "study": "car_detailing",
+  "keywords": ["lavage auto", "nettoyage voiture", "nettoyage intérieur voiture", "polissage carrosserie", "car detailing"],
+  "google_primary": { "id": "gcid:car_detailing_service", "name": "Service d'esthétique automobile" },
+  "google_additional": [{ "id": "gcid:car_wash", "name": "Station de lavage automobile" }]
+}

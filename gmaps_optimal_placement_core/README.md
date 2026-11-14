@@ -7,6 +7,9 @@ Grid geometry, reprojection and the expression language. No network, no filesyst
 - [`Grid`] — cells plus `IndexMap<String, Vec<f64>>` of whatever the source published. Sources fill
   it through [`Grid::push`], which fixes the column set from the first row and rejects any row that
   disagrees.
+- [`define`] — a study as a host hands it in: the conductor's area and category, named as the
+  conductor names them, addressed by the SHA-256 of their canonical form. The overlay and the server
+  both compute that id, so it lives here.
 - [`Expr`] — the arithmetic a study writes in TOML, over those column names. The callable surface is
   `max`, `min`, `clamp`, `sqrt`, `pow` and nothing else.
 - [`rank`] — five features off a business and a query, one Plackett–Luce likelihood over observed

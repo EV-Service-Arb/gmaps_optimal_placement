@@ -44,9 +44,12 @@ pub struct Trade {
 	pub demand_note: String,
 	pub demand: Vec<f64>,
 	pub tiers: Vec<TierOut>,
-	/// The study's queries and what each is worth. `w` is already scored against them; the what-if
-	/// needs them because the business it scores does not exist yet.
+	/// The category's keywords and what each is worth: its search volume over the largest. `w` is
+	/// already scored against them; the what-if needs them because the business it scores does not
+	/// exist yet.
 	pub terms: Vec<TermOut>,
+	/// Keywords the volume provider has no data for, so they weigh nothing and are left out.
+	pub unweighted: Vec<String>,
 	/// The inventory sweep's queries, most competitors on this map first.
 	pub queries: Vec<QueryOut>,
 	/// Where the probe stood, in the order `PoiOut::seen` is indexed by. Empty until a study has been
@@ -57,13 +60,13 @@ pub struct Trade {
 	pub searches: usize,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct TermOut {
 	pub text: String,
 	pub weight: f64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct QueryOut {
 	pub text: String,
 	/// Distinct competitors on the map it returned, over every tile. The queries overlap by design.

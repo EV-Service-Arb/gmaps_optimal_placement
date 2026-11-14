@@ -2308,6 +2308,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -4383,6 +4384,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 [[package]]
 name = "sa_alerts"
 version = "0.1.0"
+source = "git+https://github.com/EV-Service-Arb/site_conductor?branch=main#f1d4612d3e29120e30b07119e9501f355ec358d2"
 dependencies = [
  "jiff",
  "sa_auth",
@@ -4395,6 +4397,7 @@ dependencies = [
 [[package]]
 name = "sa_auth"
 version = "0.1.0"
+source = "git+https://github.com/EV-Service-Arb/site_conductor?branch=main#f1d4612d3e29120e30b07119e9501f355ec358d2"
 dependencies = [
  "base64 0.22.1",
  "concierge_iam",
@@ -4409,6 +4412,7 @@ dependencies = [
 [[package]]
 name = "sa_core"
 version = "0.1.0"
+source = "git+https://github.com/EV-Service-Arb/site_conductor?branch=main#f1d4612d3e29120e30b07119e9501f355ec358d2"
 dependencies = [
  "hex",
  "hmac",

@@ -2,13 +2,13 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use eyre::{Result, WrapErr, bail, ensure};
-use gmaps_optimal_placement_core::{grid::Bbox, payload::Poi};
+use gmaps_optimal_placement_core::{define::Frame, grid::Bbox, payload::Poi};
 use indexmap::IndexMap;
 use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::work::{Age, Kind, Need, Work};
+use crate::work::{Kind, Need, Work};
 
 pub const SEARCH_TEXT: &str = "https://places.googleapis.com/v1/places:searchText";
 /// What Google bills [`SEARCH_TEXT`] as.
@@ -21,29 +21,68 @@ const FIELDS: &str = "places.id,places.displayName,places.formattedAddress,place
 /// has more in it than it said.
 const CAP: usize = 60;
 
-/// How the inventory sweep cuts a frame. Every answer is cached under the exact tile it was asked
-/// for, so a query already swept keeps the root it was swept from until `--refresh`.
+/// How the inventory sweep cuts the ground: one Web-Mercator quadtree for every frame, so an answer
+/// is about a tile of ground rather than about whichever area asked, and two areas that overlap
+/// share what either bought.
 #[derive(Clone, Copy, Debug)]
 pub struct Tiling {
-	/// Tiles a side the frame starts as, before any query is asked.
-	pub root: u32,
+	/// The quadtree level a query is first asked at.
+	pub zoom: u32,
 	/// How many times a tile at the cap may be quartered. A query still at the cap there is reported
 	/// rather than passed off as the whole inventory.
 	pub depth: u32,
 }
 impl Tiling {
-	/// Over a city frame the floor is then a couple of kilometres.
+	/// Then the floor is under a kilometre.
 	pub const DEPTH: u32 = 3;
-	/// The whole frame saturates for any dense trade, so asking it buys a chain of calls to learn
-	/// that; answers from before the recursion are keyed on this grid.
-	pub const ROOT: u32 = 3;
+	/// ~7 km a side at 45°N: an agglomeration is a handful of tiles, and a small circle one or four.
+	pub const ZOOM: u32 = 12;
 }
 impl Default for Tiling {
 	fn default() -> Self {
 		Self {
-			root: Self::ROOT,
+			zoom: Self::ZOOM,
 			depth: Self::DEPTH,
 		}
+	}
+}
+
+/// One tile of the quadtree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Tile {
+	pub z: u32,
+	pub x: u32,
+	pub y: u32,
+}
+impl Tile {
+	/// Every tile at `z` that meets `bbox`.
+	pub fn covering(bbox: Bbox, z: u32) -> Vec<Self> {
+		let n = f64::from(1u32 << z);
+		let x = |lon: f64| (((lon + 180.) / 360. * n).floor() as u32).min((1 << z) - 1);
+		let y = |lat: f64| {
+			let r = lat.to_radians();
+			(((1. - (r.tan() + 1. / r.cos()).ln() / std::f64::consts::PI) / 2. * n).floor() as u32).min((1 << z) - 1)
+		};
+		let (x0, x1, y0, y1) = (x(bbox.lon[0]), x(bbox.lon[1]), y(bbox.lat[1]), y(bbox.lat[0]));
+		(y0..=y1).flat_map(|y| (x0..=x1).map(move |x| Self { z, x, y })).collect()
+	}
+
+	/// Corners rounded to 1e-7°, about a centimetre: the bbox is the cache key, and `sinh`/`atan` may
+	/// differ in the last bit between one libm and the next.
+	pub fn bbox(self) -> Bbox {
+		let n = f64::from(1u32 << self.z);
+		let r = |v: f64| (v * 1e7).round() / 1e7;
+		let lon = |x: u32| r(f64::from(x) / n * 360. - 180.);
+		let lat = |y: u32| r((std::f64::consts::PI * (1. - 2. * f64::from(y) / n)).sinh().atan().to_degrees());
+		Bbox {
+			lat: [lat(self.y + 1), lat(self.y)],
+			lon: [lon(self.x), lon(self.x + 1)],
+		}
+	}
+
+	fn children(self) -> [Self; 4] {
+		let (z, x, y) = (self.z + 1, self.x * 2, self.y * 2);
+		[Self { z, x, y }, Self { z, x: x + 1, y }, Self { z, x, y: y + 1 }, Self { z, x: x + 1, y: y + 1 }]
 	}
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -89,6 +128,9 @@ pub struct Tier {
 #[serde(deny_unknown_fields)]
 pub struct PoiConfig {
 	pub source: PoiSource,
+	/// The category's Google categories, by name: how the trade names itself. Never the trade
+	/// file's to write.
+	#[serde(skip)]
 	pub queries: Vec<String>,
 	/// One Places *type*, which is a coarser taxonomy than the Business Profile category the map
 	/// displays: there is no `house_cleaning_service`, and a third of the cleaning firms Google
@@ -194,30 +236,31 @@ pub fn find(work: &Work, bbox: Bbox, q: &str) -> Result<Option<([f64; 2], String
 	Ok(Some(([lat, lon], addr.to_owned())))
 }
 
-pub fn load(cfg: &PoiConfig, bbox: Bbox, what: &str, work: &Work) -> Result<Inventory> {
+pub fn load(cfg: &PoiConfig, frame: Frame, what: &str, work: &Work) -> Result<Inventory> {
 	// the free walk first, so what this is about to buy is on screen before it buys it. It reads the
 	// cache and nothing else, and a sweep is a tenth of a second against the grid scan behind it
-	let missing = sweep(cfg, bbox, false, work)?.missing;
+	let missing = sweep(cfg, frame, false, work)?.missing;
 	work.announce(what, Need::AtLeast(missing));
 	work.may_buy(missing)?;
 	work.forget(Kind::Inventory);
-	sweep(cfg, bbox, true, work)
+	sweep(cfg, frame, true, work)
 }
 
 /// The same sweep, restricted to what the work dir already holds. A pairing nobody ever harvested
 /// yields nothing, which is how a refit reads evidence without turning into a purchase.
-pub fn cached(cfg: &PoiConfig, bbox: Bbox, work: &Work) -> Result<Inventory> {
-	sweep(cfg, bbox, false, work)
+pub fn cached(cfg: &PoiConfig, frame: Frame, work: &Work) -> Result<Inventory> {
+	sweep(cfg, frame, false, work)
 }
 
-fn sweep(cfg: &PoiConfig, bbox: Bbox, buy: bool, work: &Work) -> Result<Inventory> {
+fn sweep(cfg: &PoiConfig, frame: Frame, buy: bool, work: &Work) -> Result<Inventory> {
 	let PoiSource::GooglePlaces = cfg.source;
 	let drop = cfg.drop.as_ref().map(MatchSpec::compile).transpose()?;
 	let tiers: Vec<(&Tier, Matcher)> = cfg.tiers.iter().map(|t| Ok((t, t.spec.compile()?))).collect::<Result<_>>()?;
 	ensure!(!tiers.is_empty(), "at least one [[poi.tier]] is needed to say what a competitor is");
 
-	let Tiling { root, depth } = work.tiling();
-	ensure!(root > 0, "the sweep's tiling needs at least one root tile a side");
+	ensure!(!cfg.queries.is_empty(), "the sweep has no query: a category names at least its primary Google category");
+	let Tiling { zoom, depth } = work.tiling();
+	let roots = Tile::covering(frame.bbox, zoom);
 	let mut found = Found {
 		calls: vec![(0, 0); depth as usize + 1],
 		..Found::default()
@@ -228,11 +271,7 @@ fn sweep(cfg: &PoiConfig, bbox: Bbox, buy: bool, work: &Work) -> Result<Inventor
 		// stopped this — a daily quota above all — a rerun picks up where it stopped and pays only for
 		// what is still missing
 		let typed = cfg.included_type.as_deref();
-		let swept = swept(work, q, typed, bbox, root)?;
-		if swept != root {
-			eprintln!("  {q:?}: on disk from {swept} root tiles a side rather than the configured {root}, and served from there until `--refresh`");
-		}
-		for tile in tiles(bbox, swept) {
+		for &tile in &roots {
 			descend(work, buy, q, typed, tile, 0, &mut found).wrap_err_with(|| format!("sweeping {q:?}: a rerun resumes from here, and re-asks nothing already answered"))?;
 		}
 		// new, not returned: the queries overlap by design, and what the eighth one adds over the seven
@@ -282,6 +321,10 @@ fn sweep(cfg: &PoiConfig, bbox: Bbox, buy: bool, work: &Work) -> Result<Inventor
 		let (Some(lat), Some(lng)) = (lat, lng) else {
 			bail!("Places result {name:?} has no location: {p}")
 		};
+		// a tile of the quadtree reaches past the frame, and what it found there is someone else's map
+		if !frame.contains(lat, lng) {
+			continue;
+		}
 		out.push(Poi {
 			id: id.clone(),
 			name: name.to_owned(),
@@ -319,55 +362,6 @@ fn sweep(cfg: &PoiConfig, bbox: Bbox, buy: bool, work: &Work) -> Result<Inventor
 	})
 }
 
-/// The root tiles a side `query`'s answers on disk are keyed on: one whose sweep is complete there,
-/// else one begun there for a rerun to finish, else the configured one — which is also the only one
-/// under `--refresh`.
-fn swept(work: &Work, query: &str, typed: Option<&str>, bbox: Bbox, root: u32) -> Result<u32> {
-	if work.refreshing() {
-		return Ok(root);
-	}
-	// a `Work` of its own, so what this reads to choose is not counted as what the map was served
-	let scratch = Work::at(work.path(), work.queries_cache().clone()).policy(Age::default(), work.tiling());
-	let mut begun = None;
-	for r in std::iter::once(root).chain(1..=ROOTS) {
-		let mut found = Found {
-			calls: vec![(0, 0); work.tiling().depth as usize + 1],
-			..Found::default()
-		};
-		for tile in tiles(bbox, r) {
-			descend(&scratch, false, query, typed, tile, 0, &mut found)?;
-		}
-		match (found.calls[0].0, found.missing) {
-			(0, _) => {}
-			(_, 0) => return Ok(r),
-			_ => {
-				begun.get_or_insert(r);
-			}
-		}
-	}
-	Ok(begun.unwrap_or(root))
-}
-
-/// shortcut: a frame swept from more root tiles a side than this is not recognised on disk, raise it if a setting goes past
-const ROOTS: u32 = 8;
-
-fn tiles(bbox: Bbox, root: u32) -> Vec<Bbox> {
-	let (dlat, dlon) = ((bbox.lat[1] - bbox.lat[0]) / f64::from(root), (bbox.lon[1] - bbox.lon[0]) / f64::from(root));
-	(0..root)
-		.flat_map(|i| {
-			(0..root).map(move |j| {
-				// the cache key is the body verbatim, so these expressions may not be re-associated
-				let (lat0, lon0) = (bbox.lat[0] + f64::from(i) * dlat, bbox.lon[0] + f64::from(j) * dlon);
-				let (lat1, lon1) = (bbox.lat[0] + f64::from(i + 1) * dlat, bbox.lon[0] + f64::from(j + 1) * dlon);
-				Bbox {
-					lat: [lat0, lat1],
-					lon: [lon0, lon1],
-				}
-			})
-		})
-		.collect()
-}
-
 /// The first page of `query` over `tile`, which is also its cache key.
 fn ask(query: &str, typed: Option<&str>, tile: Bbox) -> serde_json::Value {
 	// the cache key is the body verbatim, so a tile's corners may not be re-associated
@@ -392,8 +386,8 @@ fn ask(query: &str, typed: Option<&str>, tile: Bbox) -> serde_json::Value {
 ///
 /// Not a study's to state: the cap bites on competitor density, which is a fact about the trade and
 /// the ground together, and which no document knows before it asks.
-fn descend(work: &Work, buy: bool, query: &str, typed: Option<&str>, tile: Bbox, depth: u32, found: &mut Found) -> Result<()> {
-	let body = ask(query, typed, tile);
+fn descend(work: &Work, buy: bool, query: &str, typed: Option<&str>, tile: Tile, depth: u32, found: &mut Found) -> Result<()> {
+	let body = ask(query, typed, tile.bbox());
 	// asked here rather than inferred from an empty page: a tile nobody harvested and one Google
 	// returned nothing for read the same out of `search_text`, and only the first would cost anything
 	if work.refreshing() || work.cached(SEARCH_TEXT, &body)?.is_none() {
@@ -409,7 +403,7 @@ fn descend(work: &Work, buy: bool, query: &str, typed: Option<&str>, tile: Bbox,
 		return Ok(());
 	}
 	found.obs.push(Ranking {
-		from: Region::Tile(tile),
+		from: Region::Tile(tile.bbox()),
 		term: query.to_owned(),
 		ids: page.iter().map(|(id, ..)| id.clone()).collect(),
 	});
@@ -422,15 +416,12 @@ fn descend(work: &Work, buy: bool, query: &str, typed: Option<&str>, tile: Bbox,
 		return Ok(());
 	}
 	if depth == work.tiling().depth {
-		found.censored.push((query.to_owned(), tile));
+		found.censored.push((query.to_owned(), tile.bbox()));
 		return Ok(());
 	}
 	found.calls[depth as usize].1 += paged;
-	let (mid_lat, mid_lon) = ((tile.lat[0] + tile.lat[1]) / 2., (tile.lon[0] + tile.lon[1]) / 2.);
-	for lat in [[tile.lat[0], mid_lat], [mid_lat, tile.lat[1]]] {
-		for lon in [[tile.lon[0], mid_lon], [mid_lon, tile.lon[1]]] {
-			descend(work, buy, query, typed, Bbox { lat, lon }, depth + 1, found)?;
-		}
+	for child in tile.children() {
+		descend(work, buy, query, typed, child, depth + 1, found)?;
 	}
 	Ok(())
 }

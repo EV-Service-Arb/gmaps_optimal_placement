@@ -1,0 +1,11 @@
+{
+  "trade": 2,
+  "country": "FR",
+  "study": "cleaning",
+  "keywords": ["femme de ménage", "ménage à domicile", "nettoyage bureaux", "nettoyage fin de chantier", "nettoyage vitres"],
+  "google_primary": { "id": "gcid:house_cleaning_service", "name": "Service de ménage" },
+  "google_additional": [
+    { "id": "gcid:cleaners", "name": "Services de nettoyage" },
+    { "id": "gcid:window_cleaning_service", "name": "Entreprise de nettoyage de vitres" }
+  ]
+}

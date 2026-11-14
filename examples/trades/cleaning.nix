@@ -1,18 +1,12 @@
-/* Domestic and commercial cleaning, over whichever city is handed in. */
+/* Domestic and commercial cleaning, over whichever area is handed in. */
 loc:
+# the tier and drop vocabulary below is French
+assert loc.searches.language == "fr";
 {
   inherit (loc) area grid candidate country;
 
   poi = {
     source = "google_places";
-    queries = [
-      "femme de ménage"
-      "ménage à domicile"
-      "nettoyage de bureaux"
-      "nettoyage fin de chantier"
-      "nettoyage vitres"
-    ];
-
     # A cleaning firm is direct competition; a services-à-la-personne agency selling childcare and
     # gardening alongside the ménage hour is not who the search lands on.
     # First match wins, so this stays a list.
@@ -56,17 +50,7 @@ loc:
     lambda_m = 3000;
   };
 
-  # Not `poi.queries`: those name the trade the way the trade names itself, which is exactly the
-  # variation the name coefficient cannot be fitted on. No company is called "femme de ménage" and
-  # that is what the household types.
-  rank = {
-    nodes = 32;
-    term = [
-      { text = "femme de ménage"; weight = 1.0; }
-      { text = "nettoyage bureaux"; weight = 0.6; }
-      { text = "nettoyage fin de chantier"; weight = 0.3; }
-    ];
-  };
+  rank.nodes = 32;
 
   layer = loc.layer ++ [
     {

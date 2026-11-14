@@ -101,11 +101,7 @@ impl GoogleAds {
 impl SearchVolume for GoogleAds {
 	fn ideas(&self, seeds: &[String], place: &str, lang: &str, work: &Work) -> Result<Vec<Keyword>> {
 		ensure!(!seeds.is_empty(), "a group needs at least one seed");
-		let language = LANGUAGES
-			.iter()
-			.find(|(c, _)| *c == lang)
-			.map(|(_, id)| format!("languageConstants/{id}"))
-			.ok_or_else(|| eyre::eyre!("no languageConstants id known for {lang:?} — add it to LANGUAGES in searches/google_ads.rs"))?;
+		let language = language(lang)?;
 		let geo = self.geo_target(place, lang, work)?;
 		let body = serde_json::json!({
 			"keywordSeed": {"keywords": seeds},
@@ -117,31 +113,58 @@ impl SearchVolume for GoogleAds {
 		let refused = |res: &serde_json::Value| res.get("error").map(|e| format!("generateKeywordIdeas for {seeds:?}: {e}"));
 		let res = work.cached_post(Item::Ads(AdsRequest::KeywordIdeas), &url, &body, &self.headers()?, &refused)?.0;
 
-		let mut out = Vec::new();
-		for r in res["results"].as_array().into_iter().flatten() {
-			let Some(text) = r["text"].as_str() else { bail!("keyword idea without text: {r}") };
-			let volumes = r["keywordIdeaMetrics"]["monthlySearchVolumes"].as_array();
-			let monthly = volumes
-				.map(|v| {
-					v.iter()
-						.map(|m| {
-							let (Some(year), Some(name)) = (m["year"].as_str(), m["month"].as_str()) else {
-								bail!("monthly volume without year/month: {m}")
-							};
-							Ok(Month {
-								year: year.parse().wrap_err_with(|| format!("year {year:?}"))?,
-								month: month_number(name)?,
-								// the field is absent, not zero, when nobody searched
-								searches: m["monthlySearches"].as_str().map(str::parse).transpose()?.unwrap_or(0),
-							})
-						})
-						.collect::<Result<Vec<_>>>()
-				})
-				.transpose()?;
-			out.push(Keyword { text: text.to_owned(), monthly });
-		}
-		Ok(out)
+		parse(&res, "keywordIdeaMetrics")
 	}
+
+	fn volumes(&self, keywords: &[String], place: &str, lang: &str, work: &Work) -> Result<Vec<Keyword>> {
+		ensure!(!keywords.is_empty(), "no keyword to weigh");
+		let body = serde_json::json!({
+			"keywords": keywords,
+			"geoTargetConstants": [self.geo_target(place, lang, work)?],
+			"language": language(lang)?,
+			"keywordPlanNetwork": "GOOGLE_SEARCH",
+		});
+		let url = format!("{API}/customers/{}:generateKeywordHistoricalMetrics", self.customer_id);
+		let refused = |res: &serde_json::Value| res.get("error").map(|e| format!("generateKeywordHistoricalMetrics for {keywords:?}: {e}"));
+		let res = work.cached_post(Item::Ads(AdsRequest::HistoricalMetrics), &url, &body, &self.headers()?, &refused)?.0;
+		parse(&res, "keywordMetrics")
+	}
+}
+
+/// Both endpoints answer `results[]` of `{text, <metrics>: {monthlySearchVolumes}}`.
+fn parse(res: &serde_json::Value, metrics: &str) -> Result<Vec<Keyword>> {
+	let mut out = Vec::new();
+	for r in res["results"].as_array().into_iter().flatten() {
+		let Some(text) = r["text"].as_str() else { bail!("keyword result without text: {r}") };
+		let volumes = r[metrics]["monthlySearchVolumes"].as_array();
+		let monthly = volumes
+			.map(|v| {
+				v.iter()
+					.map(|m| {
+						let (Some(year), Some(name)) = (m["year"].as_str(), m["month"].as_str()) else {
+							bail!("monthly volume without year/month: {m}")
+						};
+						Ok(Month {
+							year: year.parse().wrap_err_with(|| format!("year {year:?}"))?,
+							month: month_number(name)?,
+							// the field is absent, not zero, when nobody searched
+							searches: m["monthlySearches"].as_str().map(str::parse).transpose()?.unwrap_or(0),
+						})
+					})
+					.collect::<Result<Vec<_>>>()
+			})
+			.transpose()?;
+		out.push(Keyword { text: text.to_owned(), monthly });
+	}
+	Ok(out)
+}
+
+fn language(lang: &str) -> Result<String> {
+	LANGUAGES
+		.iter()
+		.find(|(c, _)| *c == lang)
+		.map(|(_, id)| format!("languageConstants/{id}"))
+		.ok_or_else(|| eyre::eyre!("no languageConstants id known for {lang:?} — add it to LANGUAGES in searches/google_ads.rs"))
 }
 
 fn month_number(name: &str) -> Result<u8> {

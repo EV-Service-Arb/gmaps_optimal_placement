@@ -3,7 +3,8 @@ use std::{net::SocketAddr, path::PathBuf};
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use gmaps_optimal_placement::{
-	Study,
+	Base, Study,
+	core::define::{Category, Definition},
 	settings::{AppConfig, SettingsCommand, SettingsFlags},
 };
 use gmaps_optimal_placement_rank::{League, Observed, Ordering, fit, pooled};
@@ -23,24 +24,40 @@ struct Cli {
 	cmd: Cmd,
 }
 
-/// The two axes a study is a point on. Named rather than positional: the two are the same shape, so
-/// nothing about a bare pair of paths says which one is which. Either may be a single `*.nix`
-/// instead of a directory, which is how a scripted run names one without meeting a picker.
+/// The two axes a study is a point on, and the expert half each category names. Named rather than
+/// positional: the axes are the same shape, so nothing about a bare pair of paths says which one is
+/// which. Either may be a single file instead of a directory, which is how a scripted run names one
+/// without meeting a picker.
 #[derive(Clone, clap::Args)]
 struct Pair {
-	/// What is being sold: queries, tiering, the demand model, the ranking terms
-	#[arg(short, long, default_value = "examples/trades")]
-	trades: PathBuf,
+	/// What is being sold, as the conductor holds it: a trade in a country, its keywords and Google
+	/// categories, and the trade file that studies it (`*.json`)
+	#[arg(short, long, default_value = "examples/categories")]
+	categories: PathBuf,
 	/// Where: the frame, the statistics office behind it, the premises in mind
 	#[arg(short, long, default_value = "examples/locations")]
 	locations: PathBuf,
+	#[command(flatten)]
+	experts: Experts,
+}
+
+/// What only an expert writes, looked up by name: the trades a category's `study` names, and the
+/// country bases an area handed in at runtime stands on.
+#[derive(Clone, clap::Args)]
+struct Experts {
+	/// `<study>.nix` each: the demand model, the tier vocabulary, λ
+	#[arg(short, long, default_value = "examples/trades")]
+	trades: PathBuf,
+	/// `<ISO 3166-1 alpha-2>.nix` each: the grid, its columns and layers, the volume provider
+	#[arg(long, default_value = "examples/countries")]
+	countries: PathBuf,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
 	/// Where the people are: demand under the competitors, as a map served from here. The page picks
-	/// a trade and a city out of the two directories, a field per axis; naming both as files opens
-	/// the one tab, already built. The trade field also offers none, which serves the city off the
+	/// a category and a city out of the two directories, a field per axis; naming both as files opens
+	/// the one tab, already built. The category field also offers none, which serves the city off the
 	/// statistical archive alone and spends nothing
 	Serve {
 		#[command(flatten)]
@@ -55,7 +72,8 @@ enum Cmd {
 		#[arg(long)]
 		refresh: bool,
 		/// Serve the conductor instead of a page: every request but `/mfe/*` carries its assertion,
-		/// checked against the keys in `PANEL_ASSERTION_KEYS`, and only a POST spends
+		/// checked against the keys in `PANEL_ASSERTION_KEYS`, and only a pull spends. Studies are the
+		/// definitions it hands in, over `--trades` and `--countries`; the two axes are not read
 		#[arg(long, conflicts_with_all = ["open", "refresh"])]
 		behind_conductor: bool,
 	},
@@ -153,47 +171,68 @@ fn main() -> Result<()> {
 			refresh: _,
 			behind_conductor: _,
 		} => {
+			let addr = SocketAddr::from(([127, 0, 0, 1], port));
+			// the work dir rather than `work` itself: `Work` holds a `Cell`, and the server calls this
+			// from whichever blocking thread a request landed on. `--refresh` does not come along: it
+			// belongs to the run that asked for it, and a tab switch is not one — the page's own reload
+			// is. `--block-spend` does, because it is about the server and not about a run
+			let (dir, age, tiling) = (work.path().to_owned(), (&cfg.age).into(), (&cfg.sweep).into());
+			let worker = {
+				let (keys, cache) = (keys.clone(), cache.clone());
+				move |refresh: bool| -> Result<Work> {
+					eyre::ensure!(!(refresh && block_spend), "`--block-spend` buys nothing, so it re-asks nothing either");
+					Ok(Work::at(dir.clone(), cache.clone())
+						.policy(age, tiling)
+						.keys(keys.clone())
+						.refresh(refresh)
+						.block_spend(block_spend || !refresh))
+				}
+			};
+			let experts = at.experts.clone();
+			if behind {
+				let keys = std::env::var("PANEL_ASSERTION_KEYS").map_err(|e| eyre::eyre!("`--behind-conductor` checks every request against PANEL_ASSERTION_KEYS: {e}"))?;
+				let stems = |dir: &std::path::Path| -> Result<Vec<String>> { Ok(gmaps_optimal_placement::files(dir)?.iter().map(|p| gmaps_optimal_placement::stem(p).to_owned()).collect()) };
+				let catalog = serde_json::json!({"trades": stems(&experts.trades)?, "countries": stems(&experts.countries)?}).to_string();
+				let holds = {
+					let experts = experts.clone();
+					std::sync::Arc::new(move |def: &Definition| gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades).map(drop))
+				};
+				let build = std::sync::Arc::new(move |def: &Definition, refresh: bool| {
+					let payload = gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades)?.build(&worker(refresh)?)?;
+					Ok(serde_json::to_string(&payload)?)
+				});
+				return gmaps_optimal_placement_web::serve::serve(
+					addr,
+					gmaps_optimal_placement_web::serve::Mode::Conductor {
+						keys: keys.parse().map_err(|e| eyre::eyre!("PANEL_ASSERTION_KEYS: {e}"))?,
+						catalog,
+						studies: work.path().join("studies"),
+						holds,
+						build,
+					},
+				);
+			}
 			// the page picks out of the two directories, so `fzf` is not one of two pickers to learn. A
 			// pair named as files is built here instead: its statistics print, and a study that will not
 			// build fails before the listener binds
-			let (trades, locations) = (gmaps_optimal_placement::files(&at.trades)?, gmaps_optimal_placement::files(&at.locations)?);
-			let prebuilt = match (trades.as_slice(), locations.as_slice()) {
-				([trade], [location]) => {
-					let payload = gmaps_optimal_placement::load(Some(trade), location)?.build(&work)?;
+			let (categories, locations) = (gmaps_optimal_placement::files(&at.categories)?, gmaps_optimal_placement::files(&at.locations)?);
+			let prebuilt = match (categories.as_slice(), locations.as_slice()) {
+				([category], [location]) => {
+					let payload = study(Some(category), location, &experts)?.build(&work)?;
 					report(gmaps_optimal_placement::stats(&payload));
 					vec![(
-						Some(gmaps_optimal_placement::stem(trade).to_owned()),
+						Some(gmaps_optimal_placement::stem(category).to_owned()),
 						gmaps_optimal_placement::stem(location).to_owned(),
 						serde_json::to_string(&payload)?,
 					)]
 				}
 				_ => Vec::new(),
 			};
-			// the work dir rather than `work` itself: `Work` holds a `Cell`, and the server calls this
-			// from whichever blocking thread a tab's first request landed on. `--refresh` does not come
-			// along: it belongs to the run that asked for it, and a tab switch is not one — the page's own
-			// reload is. `--block-spend` does, because it is about the server and not about a run
-			let (dir, age, tiling) = (work.path().to_owned(), (&cfg.age).into(), (&cfg.sweep).into());
-			let mode = match behind {
-				true => gmaps_optimal_placement_web::serve::Mode::Conductor(
-					std::env::var("PANEL_ASSERTION_KEYS")
-						.map_err(|e| eyre::eyre!("`--behind-conductor` checks every request against PANEL_ASSERTION_KEYS: {e}"))?
-						.parse()
-						.map_err(|e| eyre::eyre!("PANEL_ASSERTION_KEYS: {e}"))?,
-				),
-				false => gmaps_optimal_placement_web::serve::Mode::Page {
-					key: keys
-						.first()
-						.ok_or_else(|| eyre::eyre!("the map loads Google's script with a key, and the config's `google_maps` lists none"))?
-						.clone(),
-					open,
-				},
-			};
 			let located = locations
 				.iter()
 				.map(|l| {
-					let s = gmaps_optimal_placement::load(None, l)?;
-					let b = s.area.bbox;
+					let s = study(None, l, &experts)?;
+					let b = s.area.frame().bbox;
 					Ok(gmaps_optimal_placement_web::serve::Location {
 						path: l.clone(),
 						bbox: [b.lon[0], b.lat[0], b.lon[1], b.lat[1]],
@@ -201,29 +240,42 @@ fn main() -> Result<()> {
 					})
 				})
 				.collect::<Result<Vec<_>>>()?;
+			let key = keys
+				.first()
+				.ok_or_else(|| eyre::eyre!("the map loads Google's script with a key, and the config's `google_maps` lists none"))?
+				.clone();
 			let build = std::sync::Arc::new({
-				let (dir, keys, cache) = (dir.clone(), keys.clone(), cache.clone());
-				move |trade: Option<&std::path::Path>, location: &std::path::Path, refresh: bool| {
-					eyre::ensure!(!(refresh && block_spend), "`--block-spend` buys nothing, so it re-asks nothing either");
-					let work = Work::at(dir.clone(), cache.clone())
-						.policy(age, tiling)
-						.keys(keys.clone())
-						.refresh(refresh)
-						.block_spend(block_spend || (behind && !refresh));
-					let payload = gmaps_optimal_placement::load(trade, location)?.build(&work)?;
+				let (experts, worker) = (experts.clone(), worker.clone());
+				move |category: Option<&std::path::Path>, location: &std::path::Path, refresh: bool| {
+					// gop's own page buys on a GET, as it always has; only behind the conductor does a GET read alone
+					let work = match refresh {
+						true => worker(true)?,
+						false => worker(false)?.block_spend(block_spend),
+					};
+					let payload = study(category, location, &experts)?.build(&work)?;
 					Ok(serde_json::to_string(&payload)?)
 				}
 			});
 			let find = std::sync::Arc::new(move |location: &std::path::Path, q: &str| {
-				let frame = gmaps_optimal_placement::load(None, location)?.area.bbox;
-				let work = Work::at(dir.clone(), cache.clone()).policy(age, tiling).keys(keys.clone()).block_spend(block_spend || behind);
-				gmaps_optimal_placement_sources::poi::find(&work, frame, q)
+				let frame = study(None, location, &experts)?.area.frame().bbox;
+				gmaps_optimal_placement_sources::poi::find(&worker(false)?.block_spend(block_spend), frame, q)
 			});
-			gmaps_optimal_placement_web::serve::serve(trades, located, prebuilt, build, find, SocketAddr::from(([127, 0, 0, 1], port)), mode)
+			gmaps_optimal_placement_web::serve::serve(
+				addr,
+				gmaps_optimal_placement_web::serve::Mode::Page {
+					key,
+					open,
+					categories,
+					locations: located,
+					prebuilt,
+					build,
+					find,
+				},
+			)
 		}
 		Cmd::Probe { at, dry_run, refresh: _ } => {
-			let (trade, location) = (gmaps_optimal_placement::pick(&at.trades)?, gmaps_optimal_placement::pick(&at.locations)?);
-			gmaps_optimal_placement::load(Some(&trade), &location)?.probe(&work, dry_run)?;
+			let (category, location) = (gmaps_optimal_placement::pick(&at.categories)?, gmaps_optimal_placement::pick(&at.locations)?);
+			study(Some(&category), &location, &at.experts)?.probe(&work, dry_run)?;
 			Ok(())
 		}
 		Cmd::Fit { at } => {
@@ -247,8 +299,8 @@ fn main() -> Result<()> {
 			write(out.unwrap_or_else(|| work.path().join("out").join(format!("{}.html", compiled.name()))), &compiled.render()?)
 		}
 		Cmd::Searches { at, out } => {
-			let (trade, location) = (gmaps_optimal_placement::pick(&at.trades)?, gmaps_optimal_placement::pick(&at.locations)?);
-			let payload = gmaps_optimal_placement::load(Some(&trade), &location)?.searches(&work)?;
+			let (category, location) = (gmaps_optimal_placement::pick(&at.categories)?, gmaps_optimal_placement::pick(&at.locations)?);
+			let payload = study(Some(&category), &location, &at.experts)?.searches(&work)?;
 			report(gmaps_optimal_placement::search_stats(&payload));
 			let html = gmaps_optimal_placement::render::render_searches(&payload)?;
 			write(out.unwrap_or_else(|| work.path().join("out").join(format!("{}-searches.html", payload.name))), &html)
@@ -256,15 +308,38 @@ fn main() -> Result<()> {
 	}
 }
 
-/// Every pairing of the two axes that has been harvested, and what it collected. No picker: how
-/// Google ranks is one mechanism, so every harvested pairing contributes. The studies come back
-/// alongside, filtered to the ones that said something.
+/// Every study that has been harvested, and what it collected: the two axes' product, and every
+/// definition the conductor ever handed in. No picker: how Google ranks is one mechanism, so every
+/// harvested study contributes. The studies come back alongside, filtered to the ones that said
+/// something.
 fn harvest(at: &Pair, work: &Work) -> Result<(Vec<Study>, Vec<Observed>)> {
-	let (trades, locations) = (gmaps_optimal_placement::files(&at.trades)?, gmaps_optimal_placement::files(&at.locations)?);
-	let studies = trades
-		.iter()
-		.flat_map(|t| locations.iter().map(move |l| gmaps_optimal_placement::load(Some(t), l)))
-		.collect::<Result<Vec<_>>>()?;
+	let (categories, locations) = (gmaps_optimal_placement::files(&at.categories)?, gmaps_optimal_placement::files(&at.locations)?);
+	let mut studies = Vec::new();
+	for c in &categories {
+		let category: Category = read(c)?;
+		for l in &locations {
+			let area = gmaps_optimal_placement::location_area(l)?;
+			if area.country() == category.country {
+				let def = Definition {
+					area,
+					category: Some(category.clone()),
+				};
+				studies.push(gmaps_optimal_placement::load(&def, Base::Location(l), &at.experts.trades)?);
+			}
+		}
+	}
+	let defined = work.path().join("studies");
+	if defined.is_dir() {
+		for e in std::fs::read_dir(&defined)? {
+			let path = e?.path();
+			if path.extension().is_some_and(|x| x == "json") {
+				let def: Definition = read(&path)?;
+				if def.category.is_some() {
+					studies.push(gmaps_optimal_placement::load(&def, Base::Country(&at.experts.country(&def)?), &at.experts.trades)?);
+				}
+			}
+		}
+	}
 	let (mut kept, mut observed) = (Vec::new(), Vec::new());
 	for s in studies {
 		if let Some(o) = s.observations(work)? {
@@ -272,8 +347,36 @@ fn harvest(at: &Pair, work: &Work) -> Result<(Vec<Study>, Vec<Observed>)> {
 			observed.push(o);
 		}
 	}
-	eyre::ensure!(!observed.is_empty(), "nothing under {} × {} has ever been harvested", at.trades.display(), at.locations.display());
+	eyre::ensure!(
+		!observed.is_empty(),
+		"nothing under {} × {}, nor any study the conductor defined, has ever been harvested",
+		at.categories.display(),
+		at.locations.display()
+	);
 	Ok((kept, observed))
+}
+
+/// A category file over a location file, or the location alone.
+fn study(category: Option<&std::path::Path>, location: &std::path::Path, experts: &Experts) -> Result<Study> {
+	let def = Definition {
+		area: gmaps_optimal_placement::location_area(location)?,
+		category: category.map(read).transpose()?,
+	};
+	gmaps_optimal_placement::load(&def, Base::Location(location), &experts.trades)
+}
+
+impl Experts {
+	/// The base an area in `def`'s country stands on.
+	fn country(&self, def: &Definition) -> Result<PathBuf> {
+		let path = self.countries.join(format!("{}.nix", def.area.country()));
+		eyre::ensure!(path.is_file(), "no country base for {} under {}", def.area.country(), self.countries.display());
+		Ok(path)
+	}
+}
+
+fn read<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T> {
+	let text = std::fs::read_to_string(path).map_err(|e| eyre::eyre!("reading {}: {e}", path.display()))?;
+	serde_json::from_str(&text).map_err(|e| eyre::eyre!("parsing {}: {e}", path.display()))
 }
 
 fn write(out: PathBuf, html: &str) -> Result<()> {
