@@ -21,7 +21,11 @@ use std::{
 };
 
 use eyre::{Result, WrapErr, bail};
-use sa_core::queries_cache::{Claim, ClaimBody, Key, Put, Scheme, Stored, under};
+use sa_core::{
+	prices::Item,
+	queries_cache::{Claim, ClaimBody, Key, Put, Scheme, Stored, under},
+	usage::{Bill, Billed},
+};
 use sha2::{Digest, Sha256};
 
 /// What an answer is about, which is what says how old it may get before the map says so.
@@ -384,6 +388,7 @@ impl Work {
 	/// entry; today they do not, because they differ in the body as well.
 	pub fn cached_post(
 		&self,
+		item: Item,
 		url: &str,
 		body: &serde_json::Value,
 		headers: &[(&str, &str)],
@@ -424,7 +429,11 @@ impl Work {
 		}
 		let (answer, text) = bought?;
 		if let QueriesCache::Conductor(_) = self.cache {
-			let put = serde_json::to_vec(&Put { answer: answer.clone(), request })?;
+			let put = serde_json::to_vec(&Put {
+				answer: answer.clone(),
+				request,
+				bought: Some(Billed { item, bill: Bill::Ours }),
+			})?;
 			match self.ask_cache("PUT", &under(Scheme::Gop, key), &put)? {
 				(204, _) => {}
 				(status, text) => bail!("the queries cache refused a paid answer: {status}: {text}"),
@@ -647,8 +656,11 @@ mod tests {
 		let dst = work.post_path(key).unwrap();
 		fs::write(&dst, r#"{"places":[]}"#).unwrap();
 
-		assert_eq!(work.cached_post(crate::poi::SEARCH_TEXT, &hit, &[], &|_| None).unwrap().0, serde_json::json!({"places": []}));
-		let e = work.cached_post(crate::poi::SEARCH_TEXT, &miss, &[], &|_| None).unwrap_err();
+		assert_eq!(
+			work.cached_post(crate::poi::SEARCH, crate::poi::SEARCH_TEXT, &hit, &[], &|_| None).unwrap().0,
+			serde_json::json!({"places": []})
+		);
+		let e = work.cached_post(crate::poi::SEARCH, crate::poi::SEARCH_TEXT, &miss, &[], &|_| None).unwrap_err();
 		assert!(e.downcast_ref::<Blocked>().is_some(), "{e:#}");
 		assert_eq!(work.billed(), 0);
 		fs::remove_dir_all(&dir).unwrap();

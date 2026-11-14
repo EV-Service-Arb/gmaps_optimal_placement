@@ -4,6 +4,7 @@
 use std::cell::OnceCell;
 
 use eyre::{Result, WrapErr, bail, ensure};
+use sa_core::prices::{AdsRequest, Item};
 
 use super::{Keyword, Month, SearchVolume, env};
 use crate::work::Work;
@@ -75,6 +76,7 @@ impl GoogleAds {
 		let auth = format!("Bearer {}", self.access_token()?);
 		let res = work
 			.cached_post(
+				Item::Ads(AdsRequest::Location),
 				&format!("{API}/geoTargetConstants:suggest"),
 				&body,
 				&[("Authorization", &auth), ("developer-token", &self.developer_token)],
@@ -113,7 +115,7 @@ impl SearchVolume for GoogleAds {
 		});
 		let url = format!("{API}/customers/{}:generateKeywordIdeas", self.customer_id);
 		let refused = |res: &serde_json::Value| res.get("error").map(|e| format!("generateKeywordIdeas for {seeds:?}: {e}"));
-		let res = work.cached_post(&url, &body, &self.headers()?, &refused)?.0;
+		let res = work.cached_post(Item::Ads(AdsRequest::KeywordIdeas), &url, &body, &self.headers()?, &refused)?.0;
 
 		let mut out = Vec::new();
 		for r in res["results"].as_array().into_iter().flatten() {

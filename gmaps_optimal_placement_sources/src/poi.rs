@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::work::{Age, Kind, Need, Work};
 
 pub const SEARCH_TEXT: &str = "https://places.googleapis.com/v1/places:searchText";
+/// What Google bills [`SEARCH_TEXT`] as.
+pub const SEARCH: sa_core::prices::Item = sa_core::prices::Item::Places(sa_core::prices::PlacesRequest::Search);
 /// Enterprise SKU: `rating`, `websiteUri` and `nationalPhoneNumber` each pull the mask up a tier.
 /// The map displays all three.
 const FIELDS: &str = "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,\
@@ -149,7 +151,7 @@ pub fn search_text(work: &Work, buy: bool, body: &serde_json::Value, mask: &str,
 			body["pageToken"] = serde_json::Value::String(t.clone());
 		}
 		let (res, at) = match buy {
-			true => work.cached_post(SEARCH_TEXT, &body, &[("X-Goog-FieldMask", mask)], &|_| None)?,
+			true => work.cached_post(SEARCH, SEARCH_TEXT, &body, &[("X-Goog-FieldMask", mask)], &|_| None)?,
 			false => match work.cached(SEARCH_TEXT, &body)? {
 				Some(hit) => hit,
 				None => break,
@@ -180,7 +182,7 @@ pub fn find(work: &Work, bbox: Bbox, q: &str) -> Result<Option<([f64; 2], String
 		"high": {"latitude": bbox.lat[1], "longitude": bbox.lon[1]},
 	});
 	let body = serde_json::json!({"textQuery": q, "pageSize": 1, "locationBias": {"rectangle": rect}});
-	let (res, _) = work.cached_post(SEARCH_TEXT, &body, &[("X-Goog-FieldMask", "places.location,places.formattedAddress")], &|_| None)?;
+	let (res, _) = work.cached_post(SEARCH, SEARCH_TEXT, &body, &[("X-Goog-FieldMask", "places.location,places.formattedAddress")], &|_| None)?;
 	if let Some(e) = res.get("error") {
 		bail!("Places text search {q:?}: {e}");
 	}

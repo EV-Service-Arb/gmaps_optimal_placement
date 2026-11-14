@@ -3,7 +3,7 @@
 
 use gmaps_optimal_placement_sources::{
 	Work,
-	poi::SEARCH_TEXT,
+	poi::{SEARCH, SEARCH_TEXT},
 	work::{Blocked, QueriesCache},
 };
 use sha2::{Digest, Sha256};
@@ -22,8 +22,8 @@ fn an_unreachable_cache_serves_the_mirror_and_buys_nothing() {
 	std::fs::create_dir_all(&mirror).unwrap();
 	std::fs::write(mirror.join(format!("{key}.json")), r#"{"places":[]}"#).unwrap();
 
-	assert_eq!(work.cached_post(SEARCH_TEXT, &kept, &[], &|_| None).unwrap().0, serde_json::json!({"places": []}));
-	let e = work.cached_post(SEARCH_TEXT, &missing, &[], &|_| None).unwrap_err();
+	assert_eq!(work.cached_post(SEARCH, SEARCH_TEXT, &kept, &[], &|_| None).unwrap().0, serde_json::json!({"places": []}));
+	let e = work.cached_post(SEARCH, SEARCH_TEXT, &missing, &[], &|_| None).unwrap_err();
 	assert!(e.downcast_ref::<Blocked>().is_none() && format!("{e:#}").contains("queries cache"), "{e:#}");
 	assert_eq!(work.billed(), 0);
 	std::fs::remove_dir_all(&dir).unwrap();

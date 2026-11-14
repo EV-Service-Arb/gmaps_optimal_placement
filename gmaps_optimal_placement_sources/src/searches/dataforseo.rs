@@ -30,6 +30,7 @@ impl SearchVolume for DataForSeo {
 		};
 		let res = work
 			.cached_post(
+				sa_core::prices::Item::DataForSeo(sa_core::prices::DataForSeoTask::KeywordsForKeywords),
 				"https://api.dataforseo.com/v3/keywords_data/google_ads/keywords_for_keywords/live",
 				&body,
 				&[("Authorization", self.auth.as_str())],
