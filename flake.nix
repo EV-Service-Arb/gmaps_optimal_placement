@@ -73,14 +73,13 @@
             target/wasm32-unknown-unknown/debug/gmaps_optimal_placement_web.wasm
         '';
 
-        # The module the conductor imports: the overlay wasm, its bindgen glue and `overlay.js`, which
-        # is the only thing a host names. Served from `target/site/mfe` as `/mfe/*`.
+        # The module the conductor imports: the overlay wasm and its bindgen glue, whose `.d.ts` is the
+        # host's types. Served from `target/site/mfe` as `/mfe/*`.
         overlay = ''
           cargo build -p gmaps_optimal_placement_overlay --lib --target wasm32-unknown-unknown --features export
           mkdir -p target/site/mfe
           wasm-bindgen --target web --out-dir target/site/mfe --out-name gmaps_optimal_placement_overlay \
             target/wasm32-unknown-unknown/debug/gmaps_optimal_placement_overlay.wasm
-          cp gmaps_optimal_placement_overlay/src/overlay.js target/site/mfe/overlay.js
         '';
 
         # The smoke test asserts Clermont's numbers, so it takes no study: `smoke.js` and
@@ -188,7 +187,7 @@
                                             the query groups of one pairing. each axis is picked through fzf
             nix run .#misc <country> <tally>  which towns in a country to write a study about at all:
                                             pool | building | parcel per --per column, --floor to skip hamlets
-            nix run .#conductor -- --port <p> [-t ..] [--countries ..]  serve the conductor: /mfe/overlay.js and
+            nix run .#conductor -- --port <p> [-t ..] [--countries ..]  serve the conductor: /mfe/ (the overlay) and
                                             the studies it defines, behind its assertion (PANEL_ASSERTION_KEYS);
                                             only a pull spends
             nix run .#study                 serve the Clermont map and assert it in headless Chromium
@@ -241,7 +240,6 @@
               wasm-bindgen --target web --out-dir target/site/mfe --out-name gmaps_optimal_placement_overlay \
                 target/wasm32-unknown-unknown/release/gmaps_optimal_placement_overlay.wasm
               wasm-opt -Oz target/site/mfe/gmaps_optimal_placement_overlay_bg.wasm -o target/site/mfe/gmaps_optimal_placement_overlay_bg.wasm
-              cp gmaps_optimal_placement_overlay/src/overlay.js target/site/mfe/overlay.js
               runHook postBuild
             '';
 

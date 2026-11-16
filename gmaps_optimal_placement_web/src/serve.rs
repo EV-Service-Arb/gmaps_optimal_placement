@@ -9,8 +9,8 @@
 //! Building a study is the CLI's job, so it arrives as a closure: the web crate never learns what a
 //! `.nix` file is, nor that a trade is a function of an area.
 //!
-//! Behind the conductor there is no page: the conductor's own map imports `/mfe/overlay.js`, which is
-//! open, and every other request is an operation of [`crate::studies`]' table, behind the
+//! Behind the conductor there is no page: the conductor's own map imports the overlay under `/mfe/`,
+//! which is open, and every other request is an operation of [`crate::studies`]' table, behind the
 //! conductor's assertion for exactly itself.
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 
@@ -72,7 +72,7 @@ pub fn serve(addr: SocketAddr, mode: Mode) -> Result<()> {
 	let (pkg, mfe) = (root.join("pkg"), root.join("mfe"));
 	let built = match &mode {
 		Mode::Page { .. } => pkg.join("gmaps_optimal_placement_web.js"),
-		Mode::Conductor(_) => mfe.join("overlay.js"),
+		Mode::Conductor(_) => mfe.join("gmaps_optimal_placement_overlay.js"),
 	};
 	eyre::ensure!(built.exists(), "no client build at {} — nix's `open`/`conductor` apps build it", built.display());
 

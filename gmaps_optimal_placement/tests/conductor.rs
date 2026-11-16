@@ -56,7 +56,7 @@ impl Served {
 			format!(r#"{{ age = {{ communes = "1y"; inventory = "1w"; ordering = "1y"; }}; sweep = {{ depth = 3; zoom = 12; }}; queries_cache = "local"; {google} }}"#),
 		)
 		.unwrap();
-		std::fs::write(dir.join("site/mfe/overlay.js"), "export async function overlay() {}").unwrap();
+		std::fs::write(dir.join("site/mfe/gmaps_optimal_placement_overlay.js"), "export default async function init() {}").unwrap();
 		std::fs::write(dir.join("countries/FR.nix"), format!("import {}", root().join("examples/countries/FR.nix").display())).unwrap();
 		for t in ["never_asked", "never_asked_either"] {
 			std::fs::write(
@@ -100,7 +100,7 @@ impl Served {
 		let child = cmd.spawn().unwrap();
 		let mut served = Self { child, dir, port, panel };
 		for _ in 0..240 {
-			if served.get("/mfe/overlay.js", None).0 == 200 {
+			if served.get("/mfe/gmaps_optimal_placement_overlay.js", None).0 == 200 {
 				return served;
 			}
 			if let Some(exit) = served.child.try_wait().unwrap() {
@@ -227,7 +227,7 @@ fn behind_the_conductor_only_an_assertion_gets_in() {
 		serde_json::from_str::<serde_json::Value>(&body).unwrap(),
 		serde_json::json!({"trades": ["never_asked", "never_asked_either"], "countries": ["FR"]})
 	);
-	assert_eq!(s.get("/mfe/overlay.js", None).0, 200, "the module is open");
+	assert_eq!(s.get("/mfe/gmaps_optimal_placement_overlay.js", None).0, 200, "the module is open");
 }
 
 /// A definition is addressed by its own hash, defining one buys nothing, and only a pull may spend.

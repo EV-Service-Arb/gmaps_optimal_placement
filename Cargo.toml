@@ -60,6 +60,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 strum = { version = "0.28", features = ["derive"] }
+# the overlay's TS types, in wasm-bindgen's .d.ts
+tsify = "0.5"
 smart-default = "0.7"
 ureq = "3"
 # the CLI's own settings, and `Timeframe` for the cache ages. Only the top crate depends on it:

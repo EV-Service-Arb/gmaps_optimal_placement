@@ -45,7 +45,7 @@ of those documents, never to the code.
    │ gmaps_optimal_placement_rank     │   │ gmaps_optimal_placement_overlay│
    │   Observed · Strategy · Strength │   │   Scene: heat · field · dots  │
    │   Adam, k-fold, the league table │   │   paint.js: the canvases      │
-   └──────────────────────────────────┘   │   overlay.js: /mfe, any host  │
+   └──────────────────────────────────┘   │   /mfe: any host, typed .d.ts │
                                           └────────┬──────────────────────┘
                                                    ▼
                           gop's own map · the conductor's map · one <name>-searches.html
@@ -107,7 +107,8 @@ What is painted over a map is `gmaps_optimal_placement_overlay`'s, and there is 
 `map_core.js` keeps what is gop's page alone — the map instance, the pins, the pan. The pattern is
 `v_utils::lwc`'s.
 
-The conductor imports `/mfe/overlay.js` onto a `google.maps.Map` it owns: the map, its styles and
+The conductor imports the overlay from `/mfe/` (wasm-bindgen's module; its `.d.ts`, generated from
+the Rust types, is the host's types) onto a `google.maps.Map` it owns: the map, its styles and
 its own markers stay the host's. The module comes from the same build as the payloads it reads, so
 `Model::try_new` checks their weights against the `rank::COEF` it was linked with.
 

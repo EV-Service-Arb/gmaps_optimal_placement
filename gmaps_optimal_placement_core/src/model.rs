@@ -864,6 +864,7 @@ pub fn haze(p: f64) -> f64 {
 /// A Google category, as Google files it — not as the study's `tier` rules read it. The tiers are
 /// the study's argument about what competes; this is the evidence they were argued from, and the
 /// two disagreeing is worth being able to see.
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Category {
 	/// Places `primaryType`, which the colour is keyed by.
@@ -909,8 +910,9 @@ pub fn categories(trade: &Trade) -> Vec<Category> {
 	out
 }
 
-/// What a panel shows of the payload on the map, as gop's map and the overlay's `data` event both
-/// read it. Static: nothing here moves with the view or the sliders.
+/// What a panel shows of the payload on the map, as gop's map and the overlay's host both read
+/// it. Static: nothing here moves with the view or the sliders.
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Summary {
 	pub name: String,
@@ -921,6 +923,7 @@ pub struct Summary {
 	pub trade: Option<TradeSummary>,
 }
 
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct LayerRow {
 	pub id: String,
@@ -929,6 +932,7 @@ pub struct LayerRow {
 	pub trade: bool,
 }
 
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TradeSummary {
 	pub lambda_m: f64,
@@ -940,6 +944,7 @@ pub struct TradeSummary {
 	pub searches: usize,
 }
 
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TierRow {
 	pub name: String,

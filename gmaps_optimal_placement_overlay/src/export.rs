@@ -1,5 +1,5 @@
-//! What `overlay.js` wraps: the one study a host asked for, fetched and cached, painted
-//! through [`Scene`], and told back as events. Nothing here throws for a data problem — a payload
+//! What a host page imports: the one study it asked for, fetched and cached, painted through
+//! [`Scene`], and told back through its three callbacks. Nothing here throws for a data problem — a payload
 //! that does not arrive, does not parse or does not build a model is a `notice`.
 //!
 //! Every event describes what is on the map now, so none carries a key: a `show` overtaken by a later
@@ -15,16 +15,70 @@ use std::{
 use gmaps_optimal_placement_core::{
 	Model, Payload,
 	model::{HAZE, LEVELS, LayerRef, LayerSpec, Summary, TierState, TradeLayer, categories, fmt, haze, layer_id, ramp},
+	payload::Scale,
 };
 use js_sys::{Function, Promise};
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
+use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
 use crate::Scene;
 
-type Event = (&'static str, String);
+/// What a host is told, each through its own callback.
+enum Event {
+	Data(Option<Summary>),
+	Legend(Legend),
+	Notice(Notice),
+}
+
+/// What is drawn in view. `cells` 0, `levels` null and `in_view` 0 are each a layer that draws
+/// nothing.
+#[derive(Clone, PartialEq, Serialize, Tsify)]
+pub struct Legend {
+	heat: Option<Heat>,
+	pressure: Option<Pressure>,
+	competitors: Option<Competitors>,
+}
+
+#[derive(Clone, PartialEq, Serialize, Tsify)]
+pub struct Heat {
+	/// A `Summary.layers[].id`.
+	id: String,
+	name: String,
+	note: String,
+	scale: Scale,
+	stops: Vec<String>,
+	cells: usize,
+	ticks: Option<Vec<String>>,
+	/// The competitor a coverage layer is about.
+	focus: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Serialize, Tsify)]
+pub struct Pressure {
+	stops: Vec<String>,
+	note: String,
+	levels: Option<Vec<Level>>,
+}
+
+#[derive(Clone, PartialEq, Serialize, Tsify)]
+pub struct Level {
+	q: f64,
+	value: String,
+}
+
+#[derive(Clone, PartialEq, Serialize, Tsify)]
+pub struct Competitors {
+	in_view: usize,
+}
+
+/// Why the map is less than asked; a null `text` clears it.
+#[derive(Serialize, Tsify)]
+pub struct Notice {
+	text: Option<String>,
+	missing: Option<usize>,
+}
 type Hooks = (Closure<dyn Fn(f64, f64, f64, f64)>, Closure<dyn Fn(usize)>);
 
 #[wasm_bindgen]
@@ -36,7 +90,9 @@ struct Inner {
 	scene: Scene,
 	api: String,
 	csrf: Function,
-	emit: Function,
+	on_data: Function,
+	on_legend: Function,
+	on_notice: Function,
 	/// By definition id. A study once fetched is not fetched again this page session but by a pull.
 	cache: HashMap<String, Rc<Model>>,
 	/// The latest `show`; an older one still landing only fills the cache.
@@ -55,30 +111,39 @@ struct Inner {
 	/// At `tune`. Moves only with `tune` and the model, never with the view.
 	press: Vec<f64>,
 	unmet: Vec<f64>,
-	legend: String,
+	legend: Option<Legend>,
 	/// Kept alive while attached: `paint.js` calls them on settle and on a dot's click.
 	hooks: Option<Hooks>,
 }
 
 /// `tune()`'s argument. A null is the payload's own; a tier left out keeps its own weight and shows.
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, Tsify)]
 #[serde(deny_unknown_fields)]
-struct Tune {
+pub struct Tune {
 	lambda_m: Option<f64>,
 	tiers: Option<HashMap<String, TierTune>>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Tsify)]
 #[serde(deny_unknown_fields)]
-struct TierTune {
+pub struct TierTune {
 	weight: f64,
 	show: bool,
 }
 
 #[wasm_bindgen]
 impl Overlay {
+	/// Over the host's map; `api` is where placement's operations are, `csrf` the token a pull
+	/// carries.
 	#[wasm_bindgen(constructor)]
-	pub fn new(map: JsValue, api: String, csrf: Function, emit: Function) -> Overlay {
+	pub fn new(
+		#[wasm_bindgen(unchecked_param_type = "google.maps.Map")] map: JsValue,
+		api: String,
+		#[wasm_bindgen(unchecked_param_type = "() => string")] csrf: Function,
+		#[wasm_bindgen(unchecked_param_type = "(data: Summary | null) => void")] on_data: Function,
+		#[wasm_bindgen(unchecked_param_type = "(legend: Legend) => void")] on_legend: Function,
+		#[wasm_bindgen(unchecked_param_type = "(notice: Notice) => void")] on_notice: Function,
+	) -> Overlay {
 		let inner = Rc::new_cyclic(|me: &Weak<RefCell<Inner>>| {
 			let (v, p) = (me.clone(), me.clone());
 			let on_view = Closure::<dyn Fn(f64, f64, f64, f64)>::new(move |w, s, e, n| {
@@ -100,7 +165,9 @@ impl Overlay {
 				scene,
 				api,
 				csrf,
-				emit,
+				on_data,
+				on_legend,
+				on_notice,
 				cache: HashMap::new(),
 				generation: 0,
 				shown: None,
@@ -114,7 +181,7 @@ impl Overlay {
 				hide_imputed: false,
 				press: Vec::new(),
 				unmet: Vec::new(),
-				legend: String::new(),
+				legend: None,
 				hooks: Some((on_view, on_poi)),
 			})
 		});
@@ -123,6 +190,7 @@ impl Overlay {
 
 	/// The study the host defined, by its id, or none to take it off the map. Resolves once it has
 	/// landed or been noticed; never spends.
+	#[wasm_bindgen(unchecked_return_type = "Promise<void>")]
 	pub fn show(&self, id: Option<String>) -> Promise {
 		let inner = self.inner.clone();
 		future_to_promise(async move {
@@ -148,7 +216,7 @@ impl Overlay {
 		})
 	}
 
-	/// The heat layer by its `data.layers` id, or none. An id the shown study lacks is the host's mistake.
+	/// The heat layer by its `Summary.layers` id, or none. An id the shown study lacks is the host's mistake.
 	pub fn heat(&self, id: Option<String>) -> Result<(), JsError> {
 		if let Some(id) = &id
 			&& !self.inner.borrow().model.as_ref().is_some_and(|m| m.layers().iter().any(|l| layer_id(&l.name) == *id))
@@ -162,8 +230,9 @@ impl Overlay {
 		Ok(())
 	}
 
-	/// `t` is `tune()`'s argument as JSON. A tier the shown study lacks is the host's mistake.
-	pub fn tune(&self, t: String) -> Result<(), JsError> {
+	/// A tier the shown study lacks is the host's mistake.
+	pub fn tune(&self, #[wasm_bindgen(unchecked_param_type = "Tune")] t: JsValue) -> Result<(), JsError> {
+		let t = String::from(js_sys::JSON::stringify(&t).map_err(|e| JsError::new(&format!("tune: {e:?}")))?);
 		let tune: Tune = serde_json::from_str(&t).map_err(|e| JsError::new(&format!("tune({t}): {e}")))?;
 		if let (Some(m), Some(tiers)) = (&self.inner.borrow().model, &tune.tiers) {
 			let known: Vec<String> = m.tier_states().into_iter().map(|s| s.name).collect();
@@ -210,6 +279,7 @@ impl Overlay {
 
 	/// Asks Google again for everything the shown study is built from, and repaints. Rejects only
 	/// when a request got no response at all.
+	#[wasm_bindgen(unchecked_return_type = "Promise<void>")]
 	pub fn pull(&self) -> Promise {
 		let inner = self.inner.clone();
 		future_to_promise(async move {
@@ -288,7 +358,10 @@ async fn land(inner: &Rc<RefCell<Inner>>, id: &str, req: gloo_net::http::Request
 impl Inner {
 	fn notice(&mut self, text: Option<&str>, missing: Option<usize>) -> Event {
 		self.noticed = text.is_some();
-		("notice", json!({"text": text, "missing": missing}).to_string())
+		Event::Notice(Notice {
+			text: text.map(str::to_owned),
+			missing,
+		})
 	}
 
 	/// The shown study, out of the cache and onto the map.
@@ -312,12 +385,8 @@ impl Inner {
 		}
 		self.recompute();
 		self.place_dots();
-		let data = match &self.model {
-			Some(m) => serde_json::to_string(&Summary::of(m)).expect("a summary serialises"),
-			None => "null".to_owned(),
-		};
-		let mut out = vec![("data", data)];
-		self.legend.clear(); // a new study's legend is said even when it reads the same
+		let mut out = vec![Event::Data(self.model.as_ref().map(|m| Summary::of(m)))];
+		self.legend = None; // a new study's legend is said even when it reads the same
 		out.extend(self.repaint());
 		out
 	}
@@ -372,7 +441,11 @@ impl Inner {
 			self.scene.heat(None);
 			self.scene.field(None);
 			self.scene.draw();
-			return self.say(json!({"heat": null, "pressure": null, "competitors": null}));
+			return self.say(Legend {
+				heat: None,
+				pressure: None,
+				competitors: None,
+			});
 		};
 		let spec: Option<LayerSpec> = m.layers().into_iter().find(|l| Some(layer_id(&l.name)) == self.heat);
 		let values: Vec<f64> = match spec.as_ref().map(|s| s.source) {
@@ -395,21 +468,26 @@ impl Inner {
 			let focus = matches!(s.source, LayerRef::Trade(TradeLayer::Share | TradeLayer::Seen))
 				.then(|| Some(m.payload.trade.as_ref()?.pois.get(self.focus)?.poi.name.clone()))
 				.flatten();
-			json!({
-				"id": layer_id(&s.name), "name": s.name, "note": s.note,
-				"scale": if s.linear { "linear" } else { "percentile" },
-				"stops": (0..=10).map(|q| { let c = ramp(q as f64 / 10.); format!("rgb({:.0},{:.0},{:.0})", c[0], c[1], c[2]) }).collect::<Vec<_>>(),
-				"cells": cells,
-				"ticks": (cells > 0).then(|| ticks.map(fmt)),
-				"focus": focus,
-			})
+			Heat {
+				id: layer_id(&s.name),
+				name: s.name,
+				note: s.note,
+				scale: if s.linear { Scale::Linear } else { Scale::Percentile },
+				stops: (0..=10)
+					.map(|q| {
+						let c = ramp(q as f64 / 10.);
+						format!("rgb({:.0},{:.0},{:.0})", c[0], c[1], c[2])
+					})
+					.collect(),
+				cells,
+				ticks: (cells > 0).then(|| ticks.map(fmt).to_vec()),
+				focus,
+			}
 		});
-		let pressure = (self.field && traded).then(|| {
-			json!({
-				"stops": (0..=4).map(|q| format!("rgba({},{},{},{:.3})", HAZE[0], HAZE[1], HAZE[2], haze(q as f64 / 4.))).collect::<Vec<_>>(),
-				"note": "Competitor pressure, Σ weight × exp(−distance/λ), as a percentile among the cells in view.",
-				"levels": drawn.levels.map(|l| LEVELS.iter().zip(l).map(|(q, v)| json!({"q": q, "value": fmt(v)})).collect::<Vec<_>>()),
-			})
+		let pressure = (self.field && traded).then(|| Pressure {
+			stops: (0..=4).map(|q| format!("rgba({},{},{},{:.3})", HAZE[0], HAZE[1], HAZE[2], haze(q as f64 / 4.))).collect(),
+			note: "Competitor pressure, Σ weight × exp(−distance/λ), as a percentile among the cells in view.".to_owned(),
+			levels: drawn.levels.map(|l| LEVELS.iter().zip(l).map(|(&q, v)| Level { q, value: fmt(v) }).collect()),
 		});
 		let competitors = (self.dots && traded).then(|| {
 			let shown = self.tiers(&m);
@@ -419,19 +497,18 @@ impl Inner {
 				.iter()
 				.filter(|p| shown.iter().any(|s| s.show && s.name == p.poi.tier) && self.scene.sees(p.poi.lat, p.poi.lng))
 				.count();
-			json!({"in_view": in_view})
+			Competitors { in_view }
 		});
-		self.say(json!({"heat": heat, "pressure": pressure, "competitors": competitors}))
+		self.say(Legend { heat, pressure, competitors })
 	}
 
 	/// The legend, unless it reads as the last one did.
-	fn say(&mut self, legend: serde_json::Value) -> Vec<Event> {
-		let legend = legend.to_string();
-		match legend == self.legend {
+	fn say(&mut self, legend: Legend) -> Vec<Event> {
+		match self.legend.as_ref() == Some(&legend) {
 			true => Vec::new(),
 			false => {
-				self.legend = legend.clone();
-				vec![("legend", legend)]
+				self.legend = Some(legend.clone());
+				vec![Event::Legend(legend)]
 			}
 		}
 	}
@@ -444,9 +521,17 @@ fn run(inner: &Rc<RefCell<Inner>>, f: impl FnOnce(&mut Inner) -> Vec<Event>) {
 }
 
 fn emit(inner: &Rc<RefCell<Inner>>, events: Vec<Event>) {
-	let emit = inner.borrow().emit.clone();
-	for (kind, detail) in events {
-		emit.call2(&JsValue::NULL, &JsValue::from_str(kind), &JsValue::from_str(&detail))
-			.expect("dispatchEvent reports a listener's throw rather than raising it");
+	for e in events {
+		let (on, json) = {
+			let i = inner.borrow();
+			match &e {
+				Event::Data(d) => (i.on_data.clone(), serde_json::to_string(d)),
+				Event::Legend(l) => (i.on_legend.clone(), serde_json::to_string(l)),
+				Event::Notice(n) => (i.on_notice.clone(), serde_json::to_string(n)),
+			}
+		};
+		// through JSON, so a `None` reaches the host as the `null` its type says
+		let detail = js_sys::JSON::parse(&json.expect("what is told serialises")).expect("serde_json writes JSON");
+		on.call1(&JsValue::NULL, &detail).expect("a host's callback does not throw");
 	}
 }

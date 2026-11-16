@@ -60,12 +60,14 @@ pub struct Trade {
 	pub searches: usize,
 }
 
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct TermOut {
 	pub text: String,
 	pub weight: f64,
 }
 
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct QueryOut {
 	pub text: String,
@@ -118,7 +120,8 @@ pub struct Poi {
 	pub fetched_s: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, JsonSchema, Serialize)]
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scale {
 	/// Rank, not magnitude — these quantities are heavy-tailed and a linear ramp shows one hot pixel.
