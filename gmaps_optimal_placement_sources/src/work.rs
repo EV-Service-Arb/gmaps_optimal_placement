@@ -21,6 +21,7 @@ use std::{
 };
 
 use eyre::{Result, WrapErr, bail};
+use gmaps_optimal_placement_core::define::Unaffordable;
 use sa_core::{
 	prices::Item,
 	queries_cache::{Claim, ClaimBody, Key, Put, Scheme, Stored, under},
@@ -200,6 +201,8 @@ pub struct Work {
 	refresh: bool,
 	/// Buy what the work dir has no answer for; off, every such paid question is refused.
 	spend: bool,
+	/// Places searches this run may buy at most; `None` is whatever the sweep needs.
+	budget: Option<usize>,
 	/// Age of every cached answer this run served, by kind.
 	served: RefCell<Vec<(Kind, Duration)>>,
 	/// Places keys in the order they are spent, each its own project's quota, beside the name of the
@@ -221,6 +224,7 @@ impl Work {
 			tiling: crate::poi::Tiling::default(),
 			refresh: false,
 			spend: false,
+			budget: None,
 			served: RefCell::default(),
 			keys: Vec::new(),
 			spent: RefCell::default(),
@@ -259,6 +263,11 @@ impl Work {
 		self
 	}
 
+	pub fn budget(mut self, searches: Option<usize>) -> Self {
+		self.budget = searches;
+		self
+	}
+
 	/// Whether an answer already on disk will be bought again — which is what a preflight has to
 	/// count, and the read-only walk that counts it is deliberately not affected.
 	pub fn refreshing(&self) -> bool {
@@ -273,7 +282,7 @@ impl Work {
 		&self.cache
 	}
 
-	/// Cache misses since this `Work` was made — the calls a run actually paid for.
+	/// Places searches bought since this `Work` was made: what a budget is spent in.
 	pub fn billed(&self) -> usize {
 		self.billed.get()
 	}
@@ -326,11 +335,15 @@ impl Work {
 		}
 	}
 
-	/// Refused here, before the first request, when this run buys nothing and `missing` is not zero.
+	/// Refused here, before the first request, when this run buys nothing and `missing` is not zero,
+	/// or when `missing` searches are past the budget.
 	pub(crate) fn may_buy(&self, missing: usize) -> Result<()> {
-		match !self.spend && missing > 0 {
-			true => Err(Blocked { missing }.into()),
-			false => Ok(()),
+		if !self.spend && missing > 0 {
+			return Err(Blocked { missing }.into());
+		}
+		match self.budget {
+			Some(budget) if missing > budget => Err(Unaffordable { need: missing, budget }.into()),
+			_ => Ok(()),
 		}
 	}
 
@@ -404,6 +417,13 @@ impl Work {
 		if !self.spend {
 			return Err(Blocked { missing: 1 }.into());
 		}
+		// before the claim: a claim granted is a search this run has undertaken to buy
+		if url == crate::poi::SEARCH_TEXT
+			&& let Some(budget) = self.budget
+			&& self.billed.get() >= budget
+		{
+			return Err(Unaffordable { need: budget + 1, budget }.into());
+		}
 		let canonical = serde_json::to_string(body)?;
 		let request = format!("{url}\n{canonical}");
 		let key = Key(Sha256::digest(request.as_bytes()).into());
@@ -458,8 +478,13 @@ impl Work {
 	/// answer, and its text. What is paid for and not an answer is kept beside `dst`.
 	fn buy(&self, url: &str, canonical: &str, headers: &[(&str, &str)], refused: &dyn Fn(&serde_json::Value) -> Option<String>, dst: &Path) -> Result<(serde_json::Value, String)> {
 		let places = url == crate::poi::SEARCH_TEXT;
+		#[cfg(debug_assertions)] // a test stands a stub in for Google; a release build only ever asks Google
+		let stub = std::env::var_os("GOP_PLACES_STUB").filter(|_| places).map(|s| s.into_string().expect("GOP_PLACES_STUB is a URL"));
+		#[cfg(not(debug_assertions))]
+		let stub: Option<String> = None;
+		let to = stub.as_deref().unwrap_or(url);
 		let (status, text) = loop {
-			let mut req = self.agent.post(url).header("Content-Type", "application/json");
+			let mut req = self.agent.post(to).header("Content-Type", "application/json");
 			for (k, v) in headers {
 				req = req.header(*k, *v);
 			}
@@ -474,7 +499,7 @@ impl Work {
 				};
 				req = req.header("X-Goog-Api-Key", key);
 			}
-			let mut res = req.send(canonical.as_bytes()).wrap_err_with(|| format!("POST {url}"))?;
+			let mut res = req.send(canonical.as_bytes()).wrap_err_with(|| format!("POST {to}"))?;
 			let status = res.status();
 			let mut text = String::new();
 			res.body_mut().as_reader().read_to_string(&mut text)?;
@@ -497,7 +522,9 @@ impl Work {
 		if !status.is_success() {
 			bail!("POST {url} -> {status}\n{}", text.trim());
 		}
-		self.billed.set(self.billed.get() + 1);
+		if places {
+			self.billed.set(self.billed.get() + 1);
+		}
 		// billed already, so kept beside the cache rather than in it, where it would answer for the request forever
 		let kept = dst.with_extension("rejected");
 		let json: serde_json::Value = match serde_json::from_str(&text) {

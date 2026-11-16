@@ -197,9 +197,17 @@ fn main() -> Result<()> {
 					let experts = experts.clone();
 					std::sync::Arc::new(move |def: &Definition| gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades).map(drop))
 				};
-				let build = std::sync::Arc::new(move |def: &Definition, refresh: bool| {
-					let payload = gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades)?.build(&worker(refresh)?)?;
-					Ok(serde_json::to_string(&payload)?)
+				let build = std::sync::Arc::new(move |def: &Definition, budget: Option<usize>| -> (usize, Result<String>) {
+					let work = match worker(budget.is_some()) {
+						Ok(w) => w.budget(budget),
+						Err(e) => return (0, Err(e)),
+					};
+					let built = (|| {
+						Ok(serde_json::to_string(
+							&gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades)?.build(&work)?,
+						)?)
+					})();
+					(work.billed(), built)
 				});
 				return gmaps_optimal_placement_web::serve::serve(
 					addr,

@@ -16,7 +16,9 @@
 //!   GET  /trades.json            Read   {trades, countries}: what a category may be studied by, and where
 //!   PUT  /studies/{sha}          Read   a Definition; 400 unless sha = its id, or it does not hold
 //!   GET  /studies/{sha}          Read   the payload, built once; never spends
-//!   POST /studies/{sha}/pull     Spend  the payload, built again buying what the work dir lacks
+//!   POST /studies/{sha}/pull     Spend  ?budget=<n>: the payload, built again buying at most n Places
+//!                                       searches; 402 {need, budget} when the sweep needs more.
+//!                                       Every answer carries x-billed: the searches it bought
 //! ```
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 
@@ -29,7 +31,7 @@ use axum::{
 	routing::{get, post},
 };
 use eyre::{Result, WrapErr};
-use gmaps_optimal_placement_core::define::Definition;
+use gmaps_optimal_placement_core::define::{Definition, Unaffordable};
 use leptos::prelude::*;
 
 /// A category file and a location, to the serialised `Payload` of pairing them, re-asking every
@@ -41,9 +43,11 @@ pub type Build = Arc<dyn Fn(Option<&std::path::Path>, &std::path::Path, bool) ->
 /// CLI's for the same reason `Build` is, and because what it may spend is the CLI's to say.
 pub type Find = Arc<dyn Fn(&std::path::Path, &str) -> Result<Option<([f64; 2], String)>> + Send + Sync>;
 
-/// A definition, to the serialised `Payload` of building it, buying what the work dir lacks when told
-/// to. `Err` before anything is read when the definition does not hold.
-pub type Built = Arc<dyn Fn(&Definition, bool) -> Result<String> + Send + Sync>;
+/// A definition, to the serialised `Payload` of building it, and the Places searches that bought —
+/// counted whether it built or not, because they are paid either way. A pull's budget buys what the
+/// work dir lacks; without one nothing is bought. `Err` before anything is read when the definition
+/// does not hold.
+pub type Built = Arc<dyn Fn(&Definition, Option<usize>) -> (usize, Result<String>) + Send + Sync>;
 
 /// Whether a definition holds — its trade is served, its country has a base, the trade takes it —
 /// without building it.
@@ -247,15 +251,25 @@ fn conductor_api(catalog: String, studies: PathBuf, holds: Holds, build: Built) 
 			"/studies/{sha}",
 			get(move |UrlPath(sha): UrlPath<String>| {
 				let (dir, slot, build) = (get_dir.clone(), get_slot(&sha), get_build.clone());
-				async move { study(&dir, &sha, slot, build, false).await }
+				async move {
+					let (billed, built) = study(&dir, &sha, slot, build, None).await;
+					assert_eq!(billed, 0, "a GET is built with no budget");
+					built.map(json)
+				}
 			})
 			.put(move |UrlPath(sha): UrlPath<String>, body: axum::body::Bytes| define(put_dir.clone(), holds.clone(), sha, body)),
 		)
 		.route(
 			"/studies/{sha}/pull",
-			post(move |UrlPath(sha): UrlPath<String>| {
+			post(move |UrlPath(sha): UrlPath<String>, pull: Result<Query<Pull>, axum::extract::rejection::QueryRejection>| {
 				let (dir, slot, build) = (pull_dir.clone(), pull_slot(&sha), pull_build.clone());
-				async move { study(&dir, &sha, slot, build, true).await }
+				async move {
+					let (billed, built) = match pull {
+						Ok(Query(Pull { budget })) => study(&dir, &sha, slot, build, Some(budget)).await,
+						Err(e) => (0, Err(e.into_response())),
+					};
+					([(axum::http::HeaderName::from_static("x-billed"), billed.to_string())], built.map(json))
+				}
 			}),
 		)
 }
@@ -283,35 +297,54 @@ async fn define(dir: PathBuf, holds: Holds, sha: String, body: axum::body::Bytes
 	Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(serde::Deserialize)]
+struct Pull {
+	budget: usize,
+}
+
 /// Built on the first GET and kept. A pull re-asks Google everything it is built from, and that
 /// answer goes to the puller alone: one stopped part-way by the day's quota is a map with no
-/// competitors, while the work dir now holds every answer it paid for, so the next GET builds from that.
-async fn study(dir: &std::path::Path, sha: &str, slot: Slot, build: Built, pull: bool) -> Result<([(axum::http::HeaderName, &'static str); 1], axum::body::Bytes), (StatusCode, String)> {
+/// competitors, while the work dir now holds every answer it paid for, so the next GET builds from
+/// that. Beside it, the Places searches bought, which is all a pull is charged on.
+async fn study(dir: &std::path::Path, sha: &str, slot: Slot, build: Built, budget: Option<usize>) -> (usize, Result<axum::body::Bytes, Response>) {
 	let path = dir.join(format!("{sha}.json"));
 	let mut slot = slot.lock().await;
-	if pull {
+	if budget.is_some() {
 		*slot = None;
 	}
 	if let Some(built) = &*slot {
-		return Ok(json(built.clone()));
+		return (0, Ok(built.clone()));
 	}
-	let def: Definition = match std::fs::read(&path) {
-		Ok(b) => serde_json::from_slice(&b).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{} is not a definition: {e}", path.display())))?,
-		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err((StatusCode::NOT_FOUND, format!("no study {sha} was defined here: PUT it first"))),
-		Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("reading {}: {e}", path.display()))),
+	let def: Definition = match std::fs::read(&path).map(|b| serde_json::from_slice(&b)) {
+		Ok(Ok(def)) => def,
+		Ok(Err(e)) =>
+			return (
+				0,
+				Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{} is not a definition: {e}", path.display())).into_response()),
+			),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (0, Err((StatusCode::NOT_FOUND, format!("no study {sha} was defined here: PUT it first")).into_response())),
+		Err(e) => return (0, Err((StatusCode::INTERNAL_SERVER_ERROR, format!("reading {}: {e}", path.display())).into_response())),
 	};
 	let name = def.name();
-	let built = tokio::task::spawn_blocking(move || build(&def, pull).map(axum::body::Bytes::from))
+	// a panicked build took what it bought with it, and no answer is better than an x-billed that guesses
+	let (billed, built) = tokio::task::spawn_blocking(move || build(&def, budget))
 		.await
-		.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("building {name}: {e}")))?
-		.map_err(|e| {
+		.unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
+	let built = match built {
+		Ok(b) => axum::body::Bytes::from(b),
+		Err(e) => {
 			eprintln!("building {name}: {e:?}");
-			(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
-		})?;
-	if !pull {
+			let refused = match e.downcast_ref::<Unaffordable>() {
+				Some(u) => (StatusCode::PAYMENT_REQUIRED, json(serde_json::to_string(u).expect("two integers serialise"))).into_response(),
+				None => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+			};
+			return (billed, Err(refused));
+		}
+	};
+	if budget.is_none() {
 		*slot = Some(built.clone());
 	}
-	Ok(json(built))
+	(billed, Ok(built))
 }
 
 /// Every request but the overlay build carries the conductor's assertion for exactly its method and

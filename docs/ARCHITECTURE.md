@@ -132,6 +132,12 @@ against `PANEL_ASSERTION_KEYS`; a pull needs `sa:placement:study:spend`, anythin
 `sa:placement:study:read`. Only a pull spends: a study whose answers are not in the work dir opens on
 what the work dir holds, and its notice says how many are missing. Either reads the queries cache.
 
+The conductor charges the person per Places search, so a pull names what it may buy
+(`?budget=<n>`, required) and is held to it at every search: a sweep the free walk counts past it
+is refused before the first with `402 {need, budget}`, and one that outgrows its count is stopped
+at the budget with the same. Every answer to a pull, refusals and failures included, carries
+`x-billed`: the searches it bought, which is what the person is charged.
+
 ## Invariants
 
 - **Reprojection is exact or the build fails.** A silently shifted grid is the one bug that looks
