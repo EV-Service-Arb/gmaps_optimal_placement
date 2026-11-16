@@ -12,9 +12,12 @@
 //! that a trade fills are `None` for it. What is left is what the statistical archive publishes,
 //! which is the whole of the free half: a city can be looked at before a single Places call is spent
 //! on it.
-use gmaps_optimal_placement_core::define::{Area, Category};
 pub use gmaps_optimal_placement_core::payload::{Candidate, Scale};
 use gmaps_optimal_placement_sources::{GridSource, PoiConfig};
+use sa_core::{
+	gbp::Country,
+	placement::{Area, Category},
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -30,8 +33,8 @@ pub struct Study {
 	pub category: Option<Category>,
 	/// The definition's, handed through the trade untouched.
 	pub area: Area,
-	/// ISO 3166-1 alpha-2 of the country the frame is in.
-	pub country: String,
+	/// The country the frame is in, whose language its searches are asked in.
+	pub country: Country,
 	pub grid: GridSpec,
 	/// The trade's three, absent together on a location opened without one.
 	#[serde(default)]
@@ -126,10 +129,9 @@ pub struct Searches {
 	/// runtime has none. DataForSEO's `location_name` format is the same string.
 	#[serde(default)]
 	pub place: Option<String>,
-	/// ISO-639-1.
-	pub language: String,
 	/// The trade's, so a location states the provider and the place and nothing else. `searches`
-	/// refuses an empty set rather than charting one.
+	/// refuses an empty set rather than charting one. Each filters one expansion of the category's
+	/// keywords: what a customer types is the category's to say, not a trade's.
 	#[serde(default, rename = "group")]
 	pub groups: Vec<Group>,
 }
@@ -139,8 +141,6 @@ pub struct Searches {
 #[serde(deny_unknown_fields)]
 pub struct Group {
 	pub name: String,
-	/// What the provider expands semantically around.
-	pub seed: Vec<String>,
 	/// Case-insensitive regex over the expansion. Omitted keeps all of it.
 	#[serde(default, rename = "match")]
 	pub pattern: Option<String>,

@@ -2,13 +2,16 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use eyre::{Result, WrapErr, bail, ensure};
-use gmaps_optimal_placement_core::{define::Frame, grid::Bbox, payload::Poi};
+use gmaps_optimal_placement_core::{grid::Bbox, payload::Poi};
 use indexmap::IndexMap;
 use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::work::{Kind, Need, Work};
+use crate::{
+	Frame,
+	work::{Kind, Need, Work},
+};
 
 pub const SEARCH_TEXT: &str = "https://places.googleapis.com/v1/places:searchText";
 /// What Google bills [`SEARCH_TEXT`] as.

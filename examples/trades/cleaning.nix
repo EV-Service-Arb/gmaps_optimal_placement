@@ -1,7 +1,7 @@
 /* Domestic and commercial cleaning, over whichever area is handed in. */
 loc:
 # the tier and drop vocabulary below is French
-assert loc.searches.language == "fr";
+assert loc.country == "FR";
 {
   inherit (loc) area grid candidate country;
 
@@ -87,19 +87,16 @@ assert loc.searches.language == "fr";
     group = [
       {
         name = "ménage";
-        seed = [ "femme de ménage" "ménage à domicile" ];
         match = "ménage|menage|repassage|aide ménagère|aide menagere|domicile";
         drop = "emploi|salaire|recrutement|\\bjobs?\\b|\\bcdi\\b|\\bcdd\\b|formation|stage|indeed|pôle emploi|pole emploi|france travail|smic|convention collective|fiche de paie|devenir";
       }
       {
         name = "nettoyage pro";
-        seed = [ "entreprise de nettoyage" "nettoyage de bureaux" ];
         match = "entreprise|société|societe|bureau|professionnel|industriel|copropriété|copropriete|immeuble|parties communes|chantier|locaux|local";
         drop = "emploi|salaire|recrutement|\\bjobs?\\b|formation|stage|franchise|création|creation";
       }
       {
         name = "spécialisé";
-        seed = [ "nettoyage vitres" "nettoyage canapé" ];
         match = "vitre|vitrerie|canapé|canape|moquette|tapis|matelas|fauteuil|toiture|façade|facade|démoussage|demoussage|karcher|kärcher";
       }
     ];

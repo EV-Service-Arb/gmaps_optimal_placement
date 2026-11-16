@@ -6,6 +6,8 @@ pub mod map;
 pub mod pins;
 #[cfg(feature = "ssr")]
 pub mod serve;
+#[cfg(feature = "ssr")]
+pub mod studies;
 pub mod tabs;
 
 #[cfg(feature = "hydrate")]

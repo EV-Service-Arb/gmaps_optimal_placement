@@ -51,7 +51,7 @@ of those documents, never to the code.
                           gop's own map · the conductor's map · one <name>-searches.html
 ```
 
-A study is a `core::define::Definition`: an area (a city's viewport or a circle, and a margin, as
+A study is an `sa_core::placement::Definition`: an area (a city's viewport or a circle, and a margin, as
 the conductor keeps it) and a category, each named as the conductor names it. What the category
 says drives the billed half — its Google categories are the sweep's queries and its primary is the
 first tier's Places type; its keywords are what every competitor is scored on, each weighed by its
@@ -64,12 +64,15 @@ category is that function's identity — the area's own attrset is already a stu
 is the one `Option` that says so, and everything behind it is everything that is billed. A city can
 therefore be looked at before any of the Places quota goes on it.
 
-gop's own page holds two axes of files, `--categories` and `--locations`, and picks a point on
-their product — one field per axis, both live at once, because a coordinate is known in either
-order; a separate Load spends the pair. Naming both as files builds one before the listener binds,
-which is what keeps a scripted run off the picker. What a study is *called* —
-`<study>·<CC>·<slug>` — is the definition's; the web crate keys the page on the stems and the pin
-file keys on the name, so neither has a second spelling of it to keep in step.
+gop's own page holds two axes, the conductor's categories and `--locations` (files), and picks a
+point on their product — one field per axis, both live at once, because a coordinate is known in
+either order; a separate Load spends the pair. A category is the latest the conductor handed in
+(the definitions under the work dir's `studies/`): gop never reads the conductor, and a copy of a
+category kept beside the trades would drift from it. Naming one of each (`-c <key>`, a location
+file) builds it before the listener binds, which is what keeps a scripted run off the picker. What
+a study is *called* — `<study>·<CC>·<slug>` — is the definition's; the web crate keys the page on
+the category's key and the location's stem and the pin file keys on the name, so neither has a
+second spelling of it to keep in step.
 
 The map answers where the people are. It does not answer how many are looking for the thing, which
 is what `searches` is for: a cell can be dense, affluent and uncontested and still sit under a trade
@@ -126,16 +129,22 @@ legend's ticks move with the view.
 ## Behind the conductor
 
 `serve --behind-conductor` serves no page and holds no axis: it takes `--trades` and `--countries`
-and builds whatever definition the conductor's map hands in (`PUT /studies/{sha}`, then `GET`). Every
-request but `/mfe/*` carries the conductor's assertion for exactly its method and path, checked
-against `PANEL_ASSERTION_KEYS`; a pull needs `sa:placement:study:spend`, anything else
-`sa:placement:study:read`. Only a pull spends: a study whose answers are not in the work dir opens on
-what the work dir holds, and its notice says how many are missing. Either reads the queries cache.
+and builds whatever definition the conductor hands in (`PUT /studies/{sha}`, then `GET`). Its
+operations are one `ev_lib::api` table (`web::studies`): the router and the document
+(`/openapi.json`, which the conductor's catalog pulls; committed as `docs/openapi.json` by
+`nix run .#gen`) both come from it, each row's gate is an `sa_auth::Gate` naming the permission it
+opens for, and a refusal is `{code, error}`. Every request but `/mfe/*` carries the conductor's
+assertion for exactly its method and path, checked against `PANEL_ASSERTION_KEYS`; a pull needs
+`sa:placement:study:spend`, anything else `sa:placement:study:read`. Only a pull spends, and its
+`x-spends` says what: `placement.search`, what the person is charged, beside the volume providers'
+metered calls — not `places.search`, which is what placement pays Google. A study whose answers
+are not in the work dir opens on what the work dir holds, and its notice says how many are
+missing. Either reads the queries cache.
 
 The conductor charges the person per Places search, so a pull names what it may buy
 (`?budget=<n>`, required) and is held to it at every search: a sweep the free walk counts past it
-is refused before the first with `402 {need, budget}`, and one that outgrows its count is stopped
-at the budget with the same. Every answer to a pull, refusals and failures included, carries
+is refused `unaffordable` (402) before the first, and one that outgrows its count is stopped at the
+budget with the same. Every answer to a pull that ran, refusals and failures included, carries
 `x-billed`: the searches it bought, which is what the person is charged.
 
 A pull re-asks every answer written before it began — unless one before it did not end whole, in
@@ -221,8 +230,9 @@ without pretending the set is compile-time known.
 They agree on the string that names a place, because DataForSEO's `location_name` format *is*
 Google's `canonicalName`. Switching provider is a one-word study edit.
 
-Grouping is by essence, not by string: a study names seeds, the provider expands them semantically,
-a regex filters that expansion and the survivors sum into one line. The expansion is fuzzy, so every
+Grouping is by essence, not by string: the category's keywords are the seeds, the provider expands
+them semantically, each of the trade's groups is a regex over that one expansion, and its survivors
+sum into one line. The expansion is fuzzy, so every
 member and its own series survives into the page — a sum you cannot audit is a sum you cannot argue
 with. A keyword the provider has no data for is excluded from the sum, never zero-filled.
 

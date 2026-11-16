@@ -21,7 +21,7 @@ use std::{
 };
 
 use eyre::{Result, WrapErr, bail};
-use gmaps_optimal_placement_core::define::Unaffordable;
+use gmaps_optimal_placement_core::Unaffordable;
 use sa_core::{
 	prices::Item,
 	queries_cache::{Claim, ClaimBody, Key, Put, Scheme, Stored, under},

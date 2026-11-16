@@ -4,11 +4,11 @@ use clap::{Parser, Subcommand};
 use eyre::Result;
 use gmaps_optimal_placement::{
 	Base, Study,
-	core::define::{Category, Definition},
 	settings::{AppConfig, SettingsCommand, SettingsFlags},
 };
 use gmaps_optimal_placement_rank::{League, Observed, Ordering, fit, pooled};
-use gmaps_optimal_placement_sources::{Work, work::QueriesCache};
+use gmaps_optimal_placement_sources::{Frame, Work, work::QueriesCache};
+use sa_core::placement::{Category, Definition};
 
 #[derive(Parser)]
 #[command(about = "Paint a study's demand model over the competitors already on the ground")]
@@ -24,17 +24,17 @@ struct Cli {
 	cmd: Cmd,
 }
 
-/// The two axes a study is a point on, and the expert half each category names. Named rather than
-/// positional: the axes are the same shape, so nothing about a bare pair of paths says which one is
-/// which. Either may be a single file instead of a directory, which is how a scripted run names one
-/// without meeting a picker.
+/// The two axes a study is a point on, and the expert half each category names. The categories are
+/// the conductor's, as the definitions it handed in carry them; the locations are files. Naming one
+/// of each is how a scripted run gets past the picker.
 #[derive(Clone, clap::Args)]
 struct Pair {
-	/// What is being sold, as the conductor holds it: a trade in a country, its keywords and Google
-	/// categories, and the trade file that studies it (`*.json`)
-	#[arg(short, long, default_value = "examples/categories")]
-	categories: PathBuf,
-	/// Where: the frame, the statistics office behind it, the premises in mind
+	/// One of the conductor's categories, by its key as the picker shows it (`<study>·<CC> (trade
+	/// <id>)`); without it, every category a definition in the work dir carries
+	#[arg(short, long)]
+	category: Option<String>,
+	/// Where: the frame, the statistics office behind it, the premises in mind; a file or a
+	/// directory of them
 	#[arg(short, long, default_value = "examples/locations")]
 	locations: PathBuf,
 	#[command(flatten)]
@@ -130,6 +130,9 @@ enum Cmd {
 	/// Print the study document's JSON schema. What the tool's own settings look like is `config
 	/// schema` — a study is the question, the settings are what asking it costs
 	Schema,
+	/// Print the document of what `serve --behind-conductor` answers, as the conductor's catalog
+	/// pulls it. `nix run .#gen` keeps `docs/openapi.json` this
+	Openapi,
 	/// The tool's own settings: write defaults, diff against them, and generate the JSON Schema /
 	/// Nix module an editor reads
 	Config {
@@ -144,6 +147,10 @@ fn main() -> Result<()> {
 	if let Cmd::Config { cmd } = cli.cmd {
 		// never returns
 		AppConfig::handle_settings_command(cmd, cli.settings);
+	}
+	if let Cmd::Openapi = cli.cmd {
+		println!("{}", serde_json::to_string_pretty(&gmaps_optimal_placement_web::studies::document())?);
+		return Ok(());
 	}
 	let cfg = AppConfig::try_build(cli.settings)?;
 	let refresh = matches!(cli.cmd, Cmd::Serve { refresh, .. } | Cmd::Probe { refresh, .. } if refresh);
@@ -160,6 +167,7 @@ fn main() -> Result<()> {
 		.spend(spend && !behind);
 	match cli.cmd {
 		Cmd::Config { .. } => unreachable!("handled above, and `handle_settings_command` exits"),
+		Cmd::Openapi => unreachable!("printed above, before the settings it does not need"),
 		Cmd::Schema => {
 			println!("{}", serde_json::to_string_pretty(&schemars::schema_for!(gmaps_optimal_placement::Study))?);
 			Ok(())
@@ -192,12 +200,15 @@ fn main() -> Result<()> {
 			if behind {
 				let keys = std::env::var("PANEL_ASSERTION_KEYS").map_err(|e| eyre::eyre!("`--behind-conductor` checks every request against PANEL_ASSERTION_KEYS: {e}"))?;
 				let stems = |dir: &std::path::Path| -> Result<Vec<String>> { Ok(gmaps_optimal_placement::files(dir)?.iter().map(|p| gmaps_optimal_placement::stem(p).to_owned()).collect()) };
-				let catalog = serde_json::json!({"trades": stems(&experts.trades)?, "countries": stems(&experts.countries)?}).to_string();
+				let served = gmaps_optimal_placement_web::studies::Served {
+					trades: stems(&experts.trades)?,
+					countries: stems(&experts.countries)?.iter().map(|c| c.parse()).collect::<Result<_, _>>()?,
+				};
 				let holds = {
 					let experts = experts.clone();
 					std::sync::Arc::new(move |def: &Definition| gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades).map(drop))
 				};
-				let build = std::sync::Arc::new(move |def: &Definition, pull: Option<gmaps_optimal_placement_web::serve::Pull>| -> (usize, Result<String>) {
+				let build = std::sync::Arc::new(move |def: &Definition, pull: Option<gmaps_optimal_placement_web::studies::Pull>| -> (usize, Result<String>) {
 					let work = match worker(pull.as_ref().map(|p| p.since)) {
 						Ok(w) => w.budget(pull.map(|p| p.budget)),
 						Err(e) => return (0, Err(e)),
@@ -211,28 +222,24 @@ fn main() -> Result<()> {
 				});
 				return gmaps_optimal_placement_web::serve::serve(
 					addr,
-					gmaps_optimal_placement_web::serve::Mode::Conductor {
-						keys: keys.parse().map_err(|e| eyre::eyre!("PANEL_ASSERTION_KEYS: {e}"))?,
-						catalog,
-						studies: work.path().join("studies"),
+					gmaps_optimal_placement_web::serve::Mode::Conductor(gmaps_optimal_placement_web::studies::Studies::new(
+						keys.parse().map_err(|e| eyre::eyre!("PANEL_ASSERTION_KEYS: {e}"))?,
+						served,
+						work.path().join("studies"),
 						holds,
 						build,
-					},
+					)),
 				);
 			}
 			// the page picks out of the two directories, so `fzf` is not one of two pickers to learn. A
 			// pair named as files is built here instead: its statistics print, and a study that will not
 			// build fails before the listener binds
-			let (categories, locations) = (gmaps_optimal_placement::files(&at.categories)?, gmaps_optimal_placement::files(&at.locations)?);
+			let (categories, locations) = (categories(&at, &work)?, gmaps_optimal_placement::files(&at.locations)?);
 			let prebuilt = match (categories.as_slice(), locations.as_slice()) {
-				([category], [location]) => {
+				([(key, category)], [location]) => {
 					let payload = study(Some(category), location, &experts)?.build(&work)?;
 					report(gmaps_optimal_placement::stats(&payload));
-					vec![(
-						Some(gmaps_optimal_placement::stem(category).to_owned()),
-						gmaps_optimal_placement::stem(location).to_owned(),
-						serde_json::to_string(&payload)?,
-					)]
+					vec![(Some(key.clone()), gmaps_optimal_placement::stem(location).to_owned(), serde_json::to_string(&payload)?)]
 				}
 				_ => Vec::new(),
 			};
@@ -240,7 +247,7 @@ fn main() -> Result<()> {
 				.iter()
 				.map(|l| {
 					let s = study(None, l, &experts)?;
-					let b = s.area.frame().bbox;
+					let b = Frame::from(&s.area).bbox;
 					Ok(gmaps_optimal_placement_web::serve::Location {
 						path: l.clone(),
 						bbox: [b.lon[0], b.lat[0], b.lon[1], b.lat[1]],
@@ -257,7 +264,7 @@ fn main() -> Result<()> {
 				.clone();
 			let build = std::sync::Arc::new({
 				let (experts, worker) = (experts.clone(), worker.clone());
-				move |category: Option<&std::path::Path>, location: &std::path::Path, refresh: bool| {
+				move |category: Option<&Category>, location: &std::path::Path, refresh: bool| {
 					// gop's own page buys on a GET, as it always has; only behind the conductor does a GET read alone
 					let work = match refresh {
 						true => worker(Some(std::time::SystemTime::now()))?,
@@ -268,7 +275,7 @@ fn main() -> Result<()> {
 				}
 			});
 			let find = std::sync::Arc::new(move |location: &std::path::Path, q: &str| {
-				let frame = study(None, location, &experts)?.area.frame().bbox;
+				let frame = Frame::from(&study(None, location, &experts)?.area).bbox;
 				gmaps_optimal_placement_sources::poi::find(&worker(None)?.spend(spend), frame, q)
 			});
 			gmaps_optimal_placement_web::serve::serve(
@@ -285,7 +292,7 @@ fn main() -> Result<()> {
 			)
 		}
 		Cmd::Probe { at, dry_run, refresh: _ } => {
-			let (category, location) = (gmaps_optimal_placement::pick(&at.categories)?, gmaps_optimal_placement::pick(&at.locations)?);
+			let (category, location) = picked(&at, &work)?;
 			study(Some(&category), &location, &at.experts)?.probe(&work, dry_run)?;
 			Ok(())
 		}
@@ -310,7 +317,7 @@ fn main() -> Result<()> {
 			write(out.unwrap_or_else(|| work.path().join("out").join(format!("{}.html", compiled.name()))), &compiled.render()?)
 		}
 		Cmd::Searches { at, out } => {
-			let (category, location) = (gmaps_optimal_placement::pick(&at.categories)?, gmaps_optimal_placement::pick(&at.locations)?);
+			let (category, location) = picked(&at, &work)?;
 			let payload = study(Some(&category), &location, &at.experts)?.searches(&work, &cfg.google.iter().filter_map(|a| a.provides.ads.as_ref().map(Into::into)).collect::<Vec<_>>())?;
 			report(gmaps_optimal_placement::search_stats(&payload));
 			let html = gmaps_optimal_placement::render::render_searches(&payload)?;
@@ -324,10 +331,9 @@ fn main() -> Result<()> {
 /// harvested study contributes. The studies come back alongside, filtered to the ones that said
 /// something.
 fn harvest(at: &Pair, work: &Work) -> Result<(Vec<Study>, Vec<Observed>)> {
-	let (categories, locations) = (gmaps_optimal_placement::files(&at.categories)?, gmaps_optimal_placement::files(&at.locations)?);
+	let (categories, locations) = (categories(at, work)?, gmaps_optimal_placement::files(&at.locations)?);
 	let mut studies = Vec::new();
-	for c in &categories {
-		let category: Category = read(c)?;
+	for (_, category) in &categories {
 		for l in &locations {
 			let area = gmaps_optimal_placement::location_area(l)?;
 			if area.country() == category.country {
@@ -360,18 +366,61 @@ fn harvest(at: &Pair, work: &Work) -> Result<(Vec<Study>, Vec<Observed>)> {
 	}
 	eyre::ensure!(
 		!observed.is_empty(),
-		"nothing under {} × {}, nor any study the conductor defined, has ever been harvested",
-		at.categories.display(),
+		"no category over {}, nor any study the conductor defined, has ever been harvested",
 		at.locations.display()
 	);
 	Ok((kept, observed))
 }
 
-/// A category file over a location file, or the location alone.
-fn study(category: Option<&std::path::Path>, location: &std::path::Path, experts: &Experts) -> Result<Study> {
+/// The latest of each of the conductor's categories, as the definitions it handed in carry them,
+/// keyed as the picker shows them. gop never reads the conductor, and a copy kept beside the trades
+/// would be one more place a category drifts from it.
+fn categories(at: &Pair, work: &Work) -> Result<Vec<(String, Category)>> {
+	let dir = work.path().join("studies");
+	let mut latest: Vec<(std::time::SystemTime, Category)> = Vec::new();
+	// no directory is a work dir the conductor has never handed a study
+	if dir.is_dir() {
+		for e in std::fs::read_dir(&dir)? {
+			let path = e?.path();
+			if path.extension().is_none_or(|x| x != "json") {
+				continue;
+			}
+			let Some(c) = read::<Definition>(&path)?.category else { continue };
+			let at = std::fs::metadata(&path)?.modified()?;
+			match latest.iter_mut().find(|(_, o)| (o.trade, o.country) == (c.trade, c.country)) {
+				Some(slot) if slot.0 < at => *slot = (at, c),
+				Some(_) => {}
+				None => latest.push((at, c)),
+			}
+		}
+	}
+	let mut keyed: Vec<(String, Category)> = latest.into_iter().map(|(_, c)| (format!("{}·{} (trade {})", c.study, c.country, c.trade), c)).collect();
+	keyed.sort_by(|a, b| a.0.cmp(&b.0));
+	let Some(k) = &at.category else { return Ok(keyed) };
+	let one: Vec<_> = keyed.iter().filter(|(o, _)| o == k).cloned().collect();
+	eyre::ensure!(
+		!one.is_empty(),
+		"no definition under {} carries category {k:?}; they carry {:?}",
+		dir.display(),
+		keyed.iter().map(|(o, _)| o).collect::<Vec<_>>()
+	);
+	Ok(one)
+}
+
+/// One category and one location, for a one-artifact subcommand.
+fn picked(at: &Pair, work: &Work) -> Result<(Category, PathBuf)> {
+	let categories = categories(at, work)?;
+	let locations = gmaps_optimal_placement::files(&at.locations)?;
+	let c = gmaps_optimal_placement::pick(&categories.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), "category")?;
+	let l = gmaps_optimal_placement::pick(&locations.iter().map(|p| gmaps_optimal_placement::stem(p)).collect::<Vec<_>>(), "location")?;
+	Ok((categories[c].1.clone(), locations[l].clone()))
+}
+
+/// A category over a location file, or the location alone.
+fn study(category: Option<&Category>, location: &std::path::Path, experts: &Experts) -> Result<Study> {
 	let def = Definition {
 		area: gmaps_optimal_placement::location_area(location)?,
-		category: category.map(read).transpose()?,
+		category: category.cloned(),
 	};
 	gmaps_optimal_placement::load(&def, Base::Location(location), &experts.trades)
 }

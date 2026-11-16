@@ -45,6 +45,10 @@ ssr = [
     "dep:axum",
     "dep:leptos_axum",
     "dep:sa_auth",
+    "dep:sa_core",
+    "dep:schemars",
+    "dep:strum",
+    "ev_lib/api",
     "dep:tokio",
     "dep:tower-http",
     "dep:xdg",
@@ -66,9 +70,12 @@ gmaps_optimal_placement_overlay = { workspace = true, optional = true }
 js-sys = { workspace = true, optional = true }
 leptos.workspace = true
 leptos_axum = { workspace = true, optional = true }
-sa_auth = { workspace = true, optional = true }
+sa_auth = { workspace = true, features = ["axum"], optional = true }
+sa_core = { workspace = true, features = ["api"], optional = true }
+schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
+strum = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
@@ -77,6 +84,7 @@ web-sys = { workspace = true, optional = true }
 xdg = { workspace = true, optional = true }
 
 [build-dependencies]
+ev_lib = { workspace = true, features = ["api_docs"] }
 ev_lib_classes.workspace = true
 
 [lints]

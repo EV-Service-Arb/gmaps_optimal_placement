@@ -16,8 +16,12 @@ use std::{
 };
 
 use base64::Engine;
-use gmaps_optimal_placement::core::define::{Area, Category, Definition, Gcid, LatLng};
 use sa_auth::{Assertion, Principal, Service, Signer, Study, User};
+use sa_core::{
+	gbp::Country,
+	geo::LatLng,
+	placement::{Area, Category, Definition, Gcid},
+};
 
 fn root() -> &'static Path {
 	Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("crate lives in the workspace")
@@ -117,7 +121,7 @@ fn sign(panel: &Signer, method: &str, path: &str, held: &[Study]) -> String {
 	panel.sign(&Assertion {
 		aud: Service::Placement,
 		principal: Principal::User(User {
-			sub: "0192".into(),
+			sub: "0192a7c4-1f2e-7d3b-9c4a-5e6f7a8b9c0d".into(),
 			email: "op@example.com".into(),
 			email_verified: true,
 			name: "Op".into(),
@@ -139,6 +143,9 @@ impl Served {
 		let mut req = ureq::http::Request::builder().method(method).uri(format!("http://127.0.0.1:{}{path}", self.port));
 		if let Some(a) = assertion {
 			req = req.header(sa_auth::HEADER, a);
+		}
+		if body.is_some() {
+			req = req.header("content-type", "application/json");
 		}
 		match agent.run(req.body(body.unwrap_or_default().as_bytes().to_vec()).unwrap()) {
 			Ok(mut r) => (r.status().as_u16(), r.body_mut().read_to_string().unwrap()),
@@ -171,14 +178,14 @@ fn definition(study: Option<&str>) -> Definition {
 	Definition {
 		area: Area::Circle {
 			slug: format!("clermont-centre-{}", std::process::id()),
-			country: "FR".into(),
+			country: Country::FR,
 			center: LatLng { lat: 45.78, lng: 3.07 },
 			radius_m: 1000.,
 			margin_m: 200.,
 		},
 		category: study.map(|s| Category {
 			trade: 1,
-			country: "FR".into(),
+			country: Country::FR,
 			study: s.into(),
 			keywords: vec![format!("gmaps_optimal_placement {s}")],
 			google_primary: Gcid {
@@ -266,8 +273,10 @@ fn a_definition_that_does_not_hold_is_refused_on_put() {
 	let s = Served::start("holds", None);
 	let def = definition(Some("not_a_trade"));
 	let (status, text) = s.signed("PUT", &format!("/studies/{}", def.id()), &[Study::Read], Some(&serde_json::to_string(&def).unwrap()));
-	assert_eq!(status, 400);
-	assert!(text.contains("not_a_trade"), "{text}");
+	assert_eq!(status, 422, "{text}");
+	let refused: serde_json::Value = serde_json::from_str(&text).unwrap();
+	assert_eq!(refused["code"], "unstudied", "{text}");
+	assert!(refused["error"].as_str().unwrap().contains("not_a_trade"), "{text}");
 
 	let bare = definition(None);
 	let at = format!("/studies/{}", bare.id());
@@ -334,13 +343,17 @@ impl Stub {
 	}
 }
 
-/// `study` defined on `s` under a Places query of its own, at its path.
-fn defined(s: &Served, study: &str) -> String {
+/// `study` defined on `s` under a Places query of its own: its path, and the searches its sweep
+/// counts it lacks, as a read's notice says.
+fn defined(s: &Served, study: &str) -> (String, usize) {
 	let def = definition(Some(study));
 	let at = format!("/studies/{}", def.id());
 	let (status, text) = s.signed("PUT", &at, &[Study::Read], Some(&serde_json::to_string(&def).unwrap()));
 	assert_eq!(status, 204, "{text}");
-	at
+	let (status, text) = s.signed("GET", &at, &[Study::Read], None);
+	assert_eq!(status, 200, "{text}");
+	let missing = serde_json::from_str::<serde_json::Value>(&text).unwrap()["notice"]["missing"].as_u64().unwrap();
+	(at, missing as usize)
 }
 
 /// A pull says up front how many searches it may buy, and one that needs more is refused before the
@@ -349,17 +362,16 @@ fn defined(s: &Served, study: &str) -> String {
 fn a_pull_buys_within_its_budget_and_says_what_it_bought() {
 	let places = Stub::start(false);
 	let s = Served::start("budget", Some(&places));
-	let at = defined(&s, "never_asked");
+	let (at, need) = defined(&s, "never_asked");
+	assert!(need > 0, "nothing is held yet");
 
 	for malformed in ["", "?budget=-1"] {
 		let (status, billed, text) = s.pull(&at, malformed);
-		assert_eq!((status, billed), (400, Some(0)), "a budget is named, never assumed: {text}");
+		assert_eq!((status, billed), (400, None), "a budget is named, never assumed, and a pull not run bought nothing: {text}");
 	}
 	let (status, billed, text) = s.pull(&at, "?budget=0");
 	assert_eq!((status, billed), (402, Some(0)), "{text}");
-	let refused: serde_json::Value = serde_json::from_str(&text).unwrap();
-	let need = refused["need"].as_u64().unwrap() as usize;
-	assert!(need > 0 && refused["budget"] == 0, "{text}");
+	assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap()["code"], "unaffordable", "{text}");
 	assert_eq!(places.served(), 0, "refused before the first search");
 
 	let (status, billed, text) = s.pull(&at, &format!("?budget={need}"));
@@ -375,9 +387,7 @@ fn a_pull_buys_within_its_budget_and_says_what_it_bought() {
 fn a_pull_never_buys_past_its_budget_and_a_retry_buys_only_the_rest() {
 	let places = Stub::start(true);
 	let s = Served::start("over_budget", Some(&places));
-	let at = defined(&s, "never_asked");
-
-	let need = serde_json::from_str::<serde_json::Value>(&s.pull(&at, "?budget=0").2).unwrap()["need"].as_u64().unwrap() as usize;
+	let (at, need) = defined(&s, "never_asked");
 	let (status, billed, text) = s.pull(&at, &format!("?budget={need}"));
 	assert_eq!(status, 402, "the first answer's second page is one search more than was counted: {text}");
 	assert_eq!((billed, places.served()), (Some(need), need), "bought up to the budget and charged for it: {text}");

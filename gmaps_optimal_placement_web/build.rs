@@ -9,6 +9,7 @@ fn main() {
 	if std::env::var_os("CARGO_FEATURE_SSR").is_none() {
 		return;
 	}
+	ev_lib::api::docs::write();
 	let src = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("src");
 	let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 	println!("cargo:rerun-if-changed={}", src.display());

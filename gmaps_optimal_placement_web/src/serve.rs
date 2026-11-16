@@ -10,94 +10,61 @@
 //! `.nix` file is, nor that a trade is a function of an area.
 //!
 //! Behind the conductor there is no page: the conductor's own map imports `/mfe/overlay.js`, which is
-//! open, and every other request carries the conductor's assertion for exactly itself.
-//!
-//! ```text
-//!   GET  /trades.json            Read   {trades, countries}: what a category may be studied by, and where
-//!   PUT  /studies/{sha}          Read   a Definition; 400 unless sha = its id, or it does not hold
-//!   GET  /studies/{sha}          Read   the payload, built once; never spends
-//!   POST /studies/{sha}/pull     Spend  ?budget=<n>: the payload, built again buying at most n Places
-//!                                       searches; 402 {need, budget} when the sweep needs more.
-//!                                       Every answer carries x-billed: the searches it bought.
-//!                                       After one that did not end 2xx, buys only what it did not
-//! ```
-use std::{
-	collections::HashMap,
-	net::SocketAddr,
-	path::PathBuf,
-	sync::Arc,
-	time::{SystemTime, UNIX_EPOCH},
-};
+//! open, and every other request is an operation of [`crate::studies`]' table, behind the
+//! conductor's assertion for exactly itself.
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{
 	Router,
-	extract::{Path as UrlPath, Query, Request, State},
-	http::{Method, StatusCode},
-	middleware::Next,
-	response::{IntoResponse, Response},
-	routing::{get, post},
+	extract::{Path as UrlPath, Query},
+	http::StatusCode,
+	routing::get,
 };
 use eyre::{Result, WrapErr};
-use gmaps_optimal_placement_core::define::{Definition, Unaffordable};
 use leptos::prelude::*;
+use sa_core::{gbp::Country, placement::Category};
 
-/// A category file and a location, to the serialised `Payload` of pairing them, re-asking every
+/// A category and a location file, to the serialised `Payload` of pairing them, re-asking every
 /// answer it is built from when told to. No category is a location on its own, which is the half of
 /// the product that costs nothing to build.
-pub type Build = Arc<dyn Fn(Option<&std::path::Path>, &std::path::Path, bool) -> Result<String> + Send + Sync>;
+pub type Build = Arc<dyn Fn(Option<&Category>, &std::path::Path, bool) -> Result<String> + Send + Sync>;
 
 /// A location and a search, to the one place it names there: `[lat, lon]` and Google's address. The
 /// CLI's for the same reason `Build` is, and because what it may spend is the CLI's to say.
 pub type Find = Arc<dyn Fn(&std::path::Path, &str) -> Result<Option<([f64; 2], String)>> + Send + Sync>;
 
-/// A definition, to the serialised `Payload` of building it, and the Places searches that bought —
-/// counted whether it built or not, because they are paid either way. A pull's budget buys what the
-/// work dir lacks; without one nothing is bought. `Err` before anything is read when the definition
-/// does not hold.
-pub type Built = Arc<dyn Fn(&Definition, Option<Pull>) -> (usize, Result<String>) + Send + Sync>;
-
-/// Whether a definition holds — its trade is served, its country has a base, the trade takes it —
-/// without building it.
-pub type Holds = Arc<dyn Fn(&Definition) -> Result<()> + Send + Sync>;
-
 type Slot = Arc<tokio::sync::Mutex<Option<axum::body::Bytes>>>;
 
 /// One slot per pairing, so two tabs asking at once read the 87 MB archive once between them. Keyed
-/// by the two stems rather than by the study's name: what a pairing is called is the CLI's to say,
-/// and a second spelling of it here is a second thing to keep in step with the pin file.
+/// by the category's key and the location's stem rather than by the study's name: what a pairing is
+/// called is the CLI's to say, and a second spelling of it here is a second thing to keep in step
+/// with the pin file.
 type Key = (Option<String>, String);
-type Pool = Arc<HashMap<Key, (Option<PathBuf>, PathBuf, Slot)>>;
+type Pool = Arc<HashMap<Key, (Option<Category>, PathBuf, Slot)>>;
 
 /// One served location: its file, and what the page places it on a map by.
 pub struct Location {
 	pub path: PathBuf,
 	/// West, south, east, north.
 	pub bbox: [f64; 4],
-	/// ISO 3166-1 alpha-2.
-	pub country: String,
+	pub country: Country,
 }
 
 pub enum Mode {
-	/// gop's own page. `key` is the one the browser loads Google's script with; `prebuilt` is
-	/// `(category stem, location stem, payload)` — whatever the CLI already paid for.
+	/// gop's own page. `key` is the one the browser loads Google's script with; `categories` the
+	/// conductor's, by the key the picker shows; `prebuilt` is `(category key, location stem,
+	/// payload)` — whatever the CLI already paid for.
 	Page {
 		key: String,
 		open: bool,
-		categories: Vec<PathBuf>,
+		categories: Vec<(String, Category)>,
 		locations: Vec<Location>,
 		prebuilt: Vec<(Option<String>, String, String)>,
 		build: Build,
 		find: Find,
 	},
-	/// Behind the conductor, which signs every request it forwards with one of `keys`. `catalog` is
-	/// `/trades.json`'s body; `studies` the directory every definition handed in is kept under.
-	Conductor {
-		keys: sa_auth::Keys,
-		catalog: String,
-		studies: PathBuf,
-		holds: Holds,
-		build: Built,
-	},
+	/// Behind the conductor.
+	Conductor(crate::studies::Studies),
 }
 
 pub fn serve(addr: SocketAddr, mode: Mode) -> Result<()> {
@@ -105,7 +72,7 @@ pub fn serve(addr: SocketAddr, mode: Mode) -> Result<()> {
 	let (pkg, mfe) = (root.join("pkg"), root.join("mfe"));
 	let built = match &mode {
 		Mode::Page { .. } => pkg.join("gmaps_optimal_placement_web.js"),
-		Mode::Conductor { .. } => mfe.join("overlay.js"),
+		Mode::Conductor(_) => mfe.join("overlay.js"),
 	};
 	eyre::ensure!(built.exists(), "no client build at {} — nix's `open`/`conductor` apps build it", built.display());
 
@@ -144,17 +111,8 @@ pub fn serve(addr: SocketAddr, mode: Mode) -> Result<()> {
 			let page = page.fallback(get(leptos_axum::render_app_to_stream(shell))).with_state(options);
 			(api.nest_service("/mfe", tower_http::services::ServeDir::new(mfe)).merge(page), open, title)
 		}
-		Mode::Conductor {
-			keys,
-			catalog,
-			studies,
-			holds,
-			build,
-		} => {
-			std::fs::create_dir_all(&studies).wrap_err_with(|| format!("creating {}", studies.display()))?;
-			let api = conductor_api(catalog, studies, holds, build)
-				.layer(axum::middleware::from_fn_with_state(Arc::new(keys), guard))
-				.nest_service("/mfe", tower_http::services::ServeDir::new(mfe));
+		Mode::Conductor(studies) => {
+			let api = crate::studies::router(studies)?.nest_service("/mfe", tower_http::services::ServeDir::new(mfe));
 			(api, false, "studies behind the conductor".to_owned())
 		}
 	};
@@ -177,15 +135,10 @@ pub fn serve(addr: SocketAddr, mode: Mode) -> Result<()> {
 
 /// The page's product: `/studies.json`, `/payload/{category}/{location}`, `/place/{location}` and
 /// `/find/{location}`.
-fn page_api(categories: Vec<PathBuf>, locations: Vec<Location>, prebuilt: Vec<(Option<String>, String, String)>, build: Build, find: Find) -> Result<(Router, String)> {
-	eyre::ensure!(
-		!categories.is_empty() && !locations.is_empty(),
-		"the product of {} categories and {} locations is empty",
-		categories.len(),
-		locations.len()
-	);
+fn page_api(categories: Vec<(String, Category)>, locations: Vec<Location>, prebuilt: Vec<(Option<String>, String, String)>, build: Build, find: Find) -> Result<(Router, String)> {
+	eyre::ensure!(!locations.is_empty(), "no location to serve");
 	let stem = |p: &PathBuf| -> String { p.file_stem().expect("a study file has a stem").to_string_lossy().into_owned() };
-	let category_stems: Vec<String> = categories.iter().map(stem).collect();
+	let category_stems: Vec<String> = categories.iter().map(|(k, _)| k.clone()).collect();
 	let location_stems: Vec<String> = locations.iter().map(|l| stem(&l.path)).collect();
 
 	// every location twice over: crossed with each category, and on its own
@@ -197,8 +150,7 @@ fn page_api(categories: Vec<PathBuf>, locations: Vec<Location>, prebuilt: Vec<(O
 			bare.chain(
 				categories
 					.iter()
-					.zip(&category_stems)
-					.map(move |(c, cs)| ((Some(cs.clone()), ls.clone()), (Some(c.clone()), l.path.clone(), Slot::default()))),
+					.map(move |(cs, c)| ((Some(cs.clone()), ls.clone()), (Some(c.clone()), l.path.clone(), Slot::default()))),
 			)
 		})
 		.collect();
@@ -243,186 +195,6 @@ fn page_api(categories: Vec<PathBuf>, locations: Vec<Location>, prebuilt: Vec<(O
 	Ok((api, title))
 }
 
-/// What the conductor's map reads. A definition is kept on disk once handed in, so a restart serves
-/// it again and `fit` can read what it collected; its payload is kept in memory once built.
-fn conductor_api(catalog: String, studies: PathBuf, holds: Holds, build: Built) -> Router {
-	// shortcut: unbounded, one payload per area × category any operator opened; an LRU when the process grows
-	let built: Arc<std::sync::Mutex<HashMap<String, Slot>>> = Arc::default();
-	let slot = move |sha: &str| -> Slot { built.lock().expect("no holder panics").entry(sha.to_owned()).or_default().clone() };
-	let (put_dir, get_dir, pull_dir) = (studies.clone(), studies.clone(), studies);
-	let (get_slot, pull_slot) = (slot.clone(), slot);
-	let (get_build, pull_build) = (build.clone(), build);
-	Router::new()
-		.route("/trades.json", get(move || std::future::ready(json(catalog.clone()))))
-		.route(
-			"/studies/{sha}",
-			get(move |UrlPath(sha): UrlPath<String>| {
-				let (dir, slot, build) = (get_dir.clone(), get_slot(&sha), get_build.clone());
-				async move {
-					let (billed, built) = study(&dir, &sha, slot, build, None).await;
-					assert_eq!(billed, 0, "a GET is built with no budget");
-					built.map(json)
-				}
-			})
-			.put(move |UrlPath(sha): UrlPath<String>, body: axum::body::Bytes| define(put_dir.clone(), holds.clone(), sha, body)),
-		)
-		.route(
-			"/studies/{sha}/pull",
-			post(move |UrlPath(sha): UrlPath<String>, pull: Result<Query<Budget>, axum::extract::rejection::QueryRejection>| {
-				let (dir, slot, build) = (pull_dir.clone(), pull_slot(&sha), pull_build.clone());
-				async move {
-					let (billed, built) = match pull {
-						Ok(Query(Budget { budget })) => study(&dir, &sha, slot, build, Some(budget)).await,
-						Err(e) => (0, Err(e.into_response())),
-					};
-					([(axum::http::HeaderName::from_static("x-billed"), billed.to_string())], built.map(json))
-				}
-			}),
-		)
-}
-
-/// A definition, checked against the key it was put under and against what is served, and kept.
-async fn define(dir: PathBuf, holds: Holds, sha: String, body: axum::body::Bytes) -> Result<StatusCode, (StatusCode, String)> {
-	let bad = |e: String| (StatusCode::BAD_REQUEST, e);
-	let def: Definition = serde_json::from_slice(&body).map_err(|e| bad(format!("not a definition: {e}")))?;
-	let id = def.id();
-	if id != sha {
-		return Err(bad(format!("the definition's id is {id}, not {sha}")));
-	}
-	let canonical = serde_json::to_vec(&def.clone().canonical()).expect("a definition serialises");
-	let path = dir.join(format!("{sha}.json"));
-	tokio::task::spawn_blocking(move || {
-		holds(&def).map_err(|e| bad(format!("{e:#}")))?;
-		// renamed into place: a reader never sees half a definition
-		let part = path.with_extension("part");
-		std::fs::write(&part, &canonical)
-			.and_then(|()| std::fs::rename(&part, &path))
-			.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("keeping {}: {e}", path.display())))
-	})
-	.await
-	.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("checking {sha}: {e}")))??;
-	Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(serde::Deserialize)]
-struct Budget {
-	budget: usize,
-}
-
-/// What a pull may buy, and the answers it re-asks: those written before `since`.
-pub struct Pull {
-	/// Places searches.
-	pub budget: usize,
-	pub since: SystemTime,
-}
-
-/// When the first pull of a study since its last whole one began, kept beside its definition until
-/// one ends whole: a pull that stops part-way, or never ends, has paid for what it already bought.
-fn began(resume: &std::path::Path) -> std::io::Result<SystemTime> {
-	match std::fs::read_to_string(resume) {
-		Ok(s) => s
-			.parse()
-			.map(|ns: u64| UNIX_EPOCH + std::time::Duration::from_nanos(ns))
-			.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{} is not nanoseconds: {e}", resume.display()))),
-		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-			let now = SystemTime::now();
-			let part = resume.with_extension("resume.part");
-			std::fs::write(&part, now.duration_since(UNIX_EPOCH).expect("the clock is past 1970").as_nanos().to_string())?;
-			std::fs::rename(&part, resume)?;
-			Ok(now)
-		}
-		Err(e) => Err(e),
-	}
-}
-
-/// Built on the first GET and kept. A pull re-asks Google everything it is built from, and that
-/// answer goes to the puller alone: one stopped part-way by the day's quota is a map with no
-/// competitors, while the work dir now holds every answer it paid for, so the next GET builds from
-/// that, and the next pull buys only what this one did not. Beside it, the Places searches bought,
-/// which is all a pull is charged on.
-async fn study(dir: &std::path::Path, sha: &str, slot: Slot, build: Built, budget: Option<usize>) -> (usize, Result<axum::body::Bytes, Response>) {
-	let path = dir.join(format!("{sha}.json"));
-	let mut slot = slot.lock().await;
-	if budget.is_some() {
-		*slot = None;
-	}
-	if let Some(built) = &*slot {
-		return (0, Ok(built.clone()));
-	}
-	let def: Definition = match std::fs::read(&path).map(|b| serde_json::from_slice(&b)) {
-		Ok(Ok(def)) => def,
-		Ok(Err(e)) =>
-			return (
-				0,
-				Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{} is not a definition: {e}", path.display())).into_response()),
-			),
-		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (0, Err((StatusCode::NOT_FOUND, format!("no study {sha} was defined here: PUT it first")).into_response())),
-		Err(e) => return (0, Err((StatusCode::INTERNAL_SERVER_ERROR, format!("reading {}: {e}", path.display())).into_response())),
-	};
-	let name = def.name();
-	let resume = dir.join(format!("{sha}.resume"));
-	let pull = match budget.map(|budget| began(&resume).map(|since| Pull { budget, since })).transpose() {
-		Ok(pull) => pull,
-		Err(e) => return (0, Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{}: {e}", resume.display())).into_response())),
-	};
-	// a panicked build took what it bought with it, and no answer is better than an x-billed that guesses
-	let (billed, built) = tokio::task::spawn_blocking(move || build(&def, pull))
-		.await
-		.unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
-	let built = match built {
-		Ok(b) => axum::body::Bytes::from(b),
-		Err(e) => {
-			eprintln!("building {name}: {e:?}");
-			let refused = match e.downcast_ref::<Unaffordable>() {
-				Some(u) => (StatusCode::PAYMENT_REQUIRED, json(serde_json::to_string(u).expect("two integers serialise"))).into_response(),
-				None => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
-			};
-			return (billed, Err(refused));
-		}
-	};
-	match budget {
-		None => *slot = Some(built.clone()),
-		Some(_) =>
-			if let Err(e) = std::fs::remove_file(&resume) {
-				return (
-					billed,
-					Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{} outlived a whole pull: {e}", resume.display())).into_response()),
-				);
-			},
-	}
-	(billed, Ok(built))
-}
-
-/// Every request but the overlay build carries the conductor's assertion for exactly its method and
-/// path, made for a person who may read studies — and, for a pull, spend on them. A PUT defines a
-/// study and buys nothing.
-async fn guard(State(keys): State<Arc<sa_auth::Keys>>, req: Request, next: Next) -> Response {
-	let path = req.uri().path();
-	if path.starts_with("/mfe/") {
-		return next.run(req).await;
-	}
-	let Some(token) = req.headers().get(sa_auth::HEADER) else {
-		return (StatusCode::UNAUTHORIZED, format!("no {} on {path}", sa_auth::HEADER)).into_response();
-	};
-	let Ok(token) = token.to_str() else {
-		return (StatusCode::UNAUTHORIZED, format!("{} is not ASCII", sa_auth::HEADER)).into_response();
-	};
-	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("the clock is past 1970").as_secs() as i64;
-	let assertion = match sa_auth::verify(&keys, token, sa_auth::Service::Placement, req.method().as_str(), path, None, now) {
-		Ok(a) => a,
-		Err(e) => return (StatusCode::UNAUTHORIZED, format!("{}: {e}", sa_auth::HEADER)).into_response(),
-	};
-	let need = match *req.method() == Method::POST && path.ends_with("/pull") {
-		true => sa_auth::Study::Spend,
-		false => sa_auth::Study::Read,
-	};
-	match assertion.principal {
-		sa_auth::Principal::User(u) if u.permissions.may(need) => next.run(req).await,
-		sa_auth::Principal::User(u) => (StatusCode::FORBIDDEN, format!("{} does not hold {}", u.email, need.as_str())).into_response(),
-		other => (StatusCode::FORBIDDEN, format!("studies are a person's to read, not {other:?}'s")).into_response(),
-	}
-}
-
 /// Built on the first tab that asks for it, and kept until one asks for it again, which re-asks Google
 /// everything it is built from. That answer goes to the asking tab alone: a refresh stopped part-way
 /// by the day's quota is a map with no competitors on it, while the work dir under it now holds
@@ -441,10 +213,10 @@ async fn payload(pool: Pool, build: Build, at: Key, refresh: bool) -> Result<([(
 	}
 	let (trade, location) = (trade.clone(), location.clone());
 	let shown = match &trade {
-		Some(t) => format!("{} x {}", t.display(), location.display()),
+		Some(t) => format!("{}·{} x {}", t.study, t.country, location.display()),
 		None => location.display().to_string(),
 	};
-	let built = tokio::task::spawn_blocking(move || build(trade.as_deref(), &location, refresh).map(axum::body::Bytes::from))
+	let built = tokio::task::spawn_blocking(move || build(trade.as_ref(), &location, refresh).map(axum::body::Bytes::from))
 		.await
 		.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("building {shown}: {e}")))?
 		// the chain and not `{e:?}`: the backtrace belongs in this terminal, and a page that hands

@@ -1,7 +1,7 @@
 /* Car detailing and washing, over whichever area is handed in. */
 loc:
 # the tier and drop vocabulary below is French
-assert loc.searches.language == "fr";
+assert loc.country == "FR";
 {
   inherit (loc) area grid candidate country column layer;
 
@@ -53,13 +53,11 @@ assert loc.searches.language == "fr";
     group = [
       {
         name = "detailing";
-        seed = [ "car detailing" "esthétique automobile" ];
         match = "detail|esthetique|esthétique|polissage|céramique|ceramique|\\bppf\\b|covering";
         drop = "emploi|salaire|formation|stage|jobs";
       }
       {
         name = "lavage";
-        seed = [ "lavage auto" "station de lavage" ];
         match = "lavage|wash|karcher|kärcher";
       }
     ];

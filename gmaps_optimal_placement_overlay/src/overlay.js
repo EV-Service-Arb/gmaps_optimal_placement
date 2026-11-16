@@ -15,7 +15,7 @@ class Handle extends EventTarget {
 		this.#o = new Overlay(map, api, csrf, (type, detail) => this.dispatchEvent(new CustomEvent(type, { detail: JSON.parse(detail) })));
 	}
 
-	show(def) { return this.#o.show(def === null ? null : JSON.stringify(def)); }
+	show(id) { return this.#o.show(id); }
 	heat(layerId) { this.#o.heat(layerId); }
 	tune(t) { this.#o.tune(JSON.stringify(t)); }
 	pressure(on) { this.#o.pressure(on); }

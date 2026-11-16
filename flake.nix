@@ -110,7 +110,7 @@
             node examples/smoke.js "http://localhost:${toString port}/"
           '';
         };
-        # `open [-c <categories>] [-l <locations>]` — build the client, serve, open a browser. The axes
+        # `open [-c <category>] [-l <locations>]` — build the client, serve, open a browser. The axes
         # are the binary's own flags; everything here does is build the client and hold the port.
         # Paths are read from the repository root, which is where the defaults live.
         open = pkgs.writeShellApplication {
@@ -137,7 +137,7 @@
             exec cargo run -p gmaps_optimal_placement -- serve --behind-conductor "$@"
           '';
         };
-        # `searches [-c <categories>] [-l <locations>]` — build the volume chart, serve it, open it.
+        # `searches [-c <category>] [-l <locations>]` — build the volume chart, serve it, open it.
         searches = pkgs.writeShellApplication {
           name = "open-searches";
           runtimeInputs = with pkgs; [ rust git pkg-config openssl mold python3 psmisc xdg-utils nix fzf ];
@@ -165,16 +165,26 @@
           '';
         };
 
+        # `gen` — what is derived from the code and committed: the document the conductor's catalog pulls.
+        gen = pkgs.writeShellApplication {
+          name = "gen";
+          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold tailwindcss_4 ];
+          text = ''
+            cd "$(git rev-parse --show-toplevel)"
+            cargo run -q -p gmaps_optimal_placement -- openapi > docs/openapi.json
+          '';
+        };
+
         help = pkgs.writeShellApplication {
           name = "help";
           text = ''
             cat <<'EOF'
-            nix run .#open -- [-c <categories>] [-l <locations>]  serve the map on :${toString port} and open it
-                                            (Ctrl-C to stop). the two directories (default
-                                            examples/categories examples/locations) are all this takes —
+            nix run .#open -- [-c <category>] [-l <locations>]  serve the map on :${toString port} and open it
+                                            (Ctrl-C to stop). the categories the conductor handed in and
+                                            the locations (default examples/locations) are all this takes —
                                             the page picks the pairing, category and city side by side,
                                             and `t` opens another as a tab over the same map
-            nix run .#searches -- [-c <categories>] [-l <locations>]  open the monthly search-volume chart for
+            nix run .#searches -- [-c <category>] [-l <locations>]  open the monthly search-volume chart for
                                             the query groups of one pairing. each axis is picked through fzf
             nix run .#misc <country> <tally>  which towns in a country to write a study about at all:
                                             pool | building | parcel per --per column, --floor to skip hamlets
@@ -182,10 +192,11 @@
                                             the studies it defines, behind its assertion (PANEL_ASSERTION_KEYS);
                                             only a pull spends
             nix run .#study                 serve the Clermont map and assert it in headless Chromium
+            nix run .#gen                   write docs/openapi.json, the document behind the conductor
             nix run .#help                  this
             cached archives and API responses live under $XDG_CACHE_HOME/gmaps_optimal_placement;
             promoted candidates live under $XDG_DATA_HOME/gmaps_optimal_placement
-            a study is a category over an area. examples/categories/<c>.json names the trade that
+            a study is a category over an area. the conductor's category names the trade that
             studies it; examples/trades/<t>.nix is a function of the area's attrset;
             examples/locations/<l>.nix carries area, candidate and searches.place over
             examples/countries/<CC>.nix. together they evaluate to what `gmaps_optimal_placement schema`
@@ -202,6 +213,7 @@
           conductor = { type = "app"; program = pkgs.lib.getExe conductor; };
           searches = { type = "app"; program = pkgs.lib.getExe searches; };
           misc = { type = "app"; program = pkgs.lib.getExe misc; };
+          gen = { type = "app"; program = pkgs.lib.getExe gen; };
           help = { type = "app"; program = pkgs.lib.getExe help; };
         };
 

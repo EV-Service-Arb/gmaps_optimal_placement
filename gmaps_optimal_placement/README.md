@@ -1,20 +1,21 @@
 CLI and the study document.
 
-Every command takes the same two axes, each a directory or a single file: `-c` categories (`*.json`,
-a `core::define::Category` each) and `-l` locations (`*.nix`), over `-t` trades and `--countries`
-country bases looked up by name. A directory is the whole axis: the page picks out of it, `fzf`
-picks out of it, `fit` takes all of it — and every definition the conductor ever handed in.
+Every command takes the same two axes: the conductor's categories, as the definitions it handed in
+carry them (the latest of each, `-c <key>` to name one), and `-l` locations (`*.nix`, a directory or
+a single file), over `-t` trades and `--countries` country bases looked up by name. A whole axis is
+what the page picks out of, `fzf` picks out of, and `fit` takes all of — with every definition the
+conductor ever handed in.
 
 ```sh
-gmaps_optimal_placement serve    -c <categories> -l <locations> [--port 8731] [--open]
+gmaps_optimal_placement serve    [-c <category>] -l <locations> [--port 8731] [--open]
 gmaps_optimal_placement serve    --behind-conductor -t <trades> --countries <dir>
-gmaps_optimal_placement searches -c <categories> -l <locations> [-o searches.html]
-gmaps_optimal_placement probe    -c <categories> -l <locations> [--dry-run]  # ask Google, from equal-demand nodes
-gmaps_optimal_placement fit      -c <categories> -l <locations>              # refit rank::COEF over every ordering cached
+gmaps_optimal_placement searches [-c <category>] -l <locations> [-o searches.html]
+gmaps_optimal_placement probe    [-c <category>] -l <locations> [--dry-run]  # ask Google, from equal-demand nodes
+gmaps_optimal_placement fit      [-c <category>] -l <locations>              # refit rank::COEF over every ordering cached
 gmaps_optimal_placement schema                    # JSON schema for the study document
 ```
 
-The study is [`Study`]: a `core::define::Definition` — an area and a category — with the trade the
+The study is [`Study`]: an `sa_core::placement::Definition` — an area and a category — with the trade the
 category names applied to the area, evaluating to a grid source, what a competitor is, and how demand
 follows from the columns that source publishes. [`load`] is where they meet: the category's Google
 categories become the sweep's queries and the first tier's Places type, and a trade that writes
@@ -28,7 +29,8 @@ not a zero.
 under the area's own name. `serve` offers it as the last row of the category field.
 
 An optional `searches` block names groups of queries. [`fold`] is the half of that command that is
-ours: the provider expands seeds semantically, a regex keeps or drops each member, and the survivors
+ours: the provider expands the category's keywords semantically, each group's regex keeps or drops
+each member of that one expansion, and the survivors
 sum into one line of [`SearchPayload`] — with their own series alongside, so the sum can be audited.
 
 The category's keywords are the terms the study is about, each worth its search volume over the

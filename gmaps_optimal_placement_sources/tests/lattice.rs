@@ -1,15 +1,13 @@
 //! Two areas that overlap share every answer either bought: the sweep asks tiles of one quadtree,
 //! never tiles of the area that asked, so a second area over the same ground pays only for the
 //! ground the first did not cover.
-use gmaps_optimal_placement_core::{
-	define::{Area, LatLng},
-	grid::Bbox,
-};
+use gmaps_optimal_placement_core::grid::Bbox;
 use gmaps_optimal_placement_sources::{
-	Work,
+	Frame, Work,
 	poi::{self, PoiConfig, SEARCH_TEXT, Tile, Tiling},
 	work::{Age, QueriesCache},
 };
+use sa_core::{gbp::Country, geo::LatLng, placement::Area};
 use sha2::{Digest, Sha256};
 
 const ZOOM: u32 = 12;
@@ -34,7 +32,7 @@ fn answer(dir: &std::path::Path, tile: Tile, places: serde_json::Value) {
 fn circle(slug: &str, lat: f64, lng: f64) -> Area {
 	Area::Circle {
 		slug: slug.into(),
-		country: "FR".into(),
+		country: Country::FR,
 		center: LatLng { lat, lng },
 		radius_m: 4000.,
 		margin_m: 0.,
@@ -56,11 +54,11 @@ fn an_overlapping_area_pays_only_for_new_ground() {
 	let work = Work::at(&dir, QueriesCache::Local).policy(Age::default(), Tiling { zoom: ZOOM, depth: 3 });
 
 	let (first, second) = (circle("a", 45.77, 3.08), circle("b", 45.77, 3.16));
-	let (a, b) = (Tile::covering(first.frame().bbox, ZOOM), Tile::covering(second.frame().bbox, ZOOM));
+	let (a, b) = (Tile::covering(Frame::from(&first).bbox, ZOOM), Tile::covering(Frame::from(&second).bbox, ZOOM));
 	let shared = b.iter().filter(|t| a.contains(t)).count();
 	assert!(shared > 0 && shared < b.len(), "the two circles overlap on part of the lattice: {a:?} vs {b:?}");
 
-	assert_eq!(poi::cached(&cfg, first.frame(), &work).unwrap().missing, a.len(), "nothing is on disk yet");
+	assert_eq!(poi::cached(&cfg, Frame::from(&first), &work).unwrap().missing, a.len(), "nothing is on disk yet");
 	for &t in &a {
 		let places = match t == a[0] {
 			true =>
@@ -69,14 +67,14 @@ fn an_overlapping_area_pays_only_for_new_ground() {
 		};
 		answer(&dir, t, places);
 	}
-	assert_eq!(poi::cached(&cfg, first.frame(), &work).unwrap().missing, 0, "the first area is answered in full");
+	assert_eq!(poi::cached(&cfg, Frame::from(&first), &work).unwrap().missing, 0, "the first area is answered in full");
 	assert_eq!(
-		poi::cached(&cfg, second.frame(), &work).unwrap().missing,
+		poi::cached(&cfg, Frame::from(&second), &work).unwrap().missing,
 		b.len() - shared,
 		"the second pays only for what the first did not ask"
 	);
 	assert!(
-		poi::cached(&cfg, first.frame(), &work).unwrap().pois.is_empty(),
+		poi::cached(&cfg, Frame::from(&first), &work).unwrap().pois.is_empty(),
 		"a competitor in a corner of a tile, outside the circle, is not on the circle's map"
 	);
 	std::fs::remove_dir_all(&dir).unwrap();

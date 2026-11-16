@@ -11,7 +11,6 @@ use eyre::{Result, WrapErr, bail, ensure};
 pub use gmaps_optimal_placement_core as core;
 use gmaps_optimal_placement_core::{
 	Expr, LayerOut, Notice, PoiOut, Scale, TierOut,
-	define::{Area, Category, Definition},
 	rank::{self, Biz, Feats, Rank},
 };
 pub use gmaps_optimal_placement_core::{Payload, payload};
@@ -19,9 +18,10 @@ pub use gmaps_optimal_placement_core::{Payload, payload};
 pub use gmaps_optimal_placement_misc as misc;
 use gmaps_optimal_placement_rank::Observed;
 pub use gmaps_optimal_placement_sources as sources;
-use gmaps_optimal_placement_sources::{Keyword, Ranking, Work, grid, poi, probe, searches};
+use gmaps_optimal_placement_sources::{Frame, Keyword, Ranking, Work, grid, poi, probe, searches};
 use indexmap::IndexMap;
 use regex::Regex;
+use sa_core::placement::{Area, Category, Definition};
 use serde::Serialize;
 
 use crate::config::Group;
@@ -69,7 +69,7 @@ impl Study {
 	/// Fails on the first expression that does not hold against the source's columns, before any
 	/// POI call is made.
 	pub fn cells(&self, work: &Work) -> Result<Cells> {
-		let frame = self.area.frame();
+		let frame = Frame::from(&self.area);
 		let mut grid = grid::load(self.grid.source, self.grid.vintage, frame.bbox, work)?;
 		grid.retain(|c| {
 			let (lon, lat) = c.ring.iter().fold((0., 0.), |(x, y), p| (x + p[0] / 4., y + p[1] / 4.));
@@ -149,7 +149,7 @@ impl Study {
 	pub fn observations(&self, work: &Work) -> Result<Option<Observed>> {
 		let cells = self.cells(work)?;
 		let (poi, _, _) = self.trade()?;
-		let inv = poi::cached(poi, self.area.frame(), work)?;
+		let inv = poi::cached(poi, Frame::from(&self.area), work)?;
 		let mut obs = inv.obs;
 		let probed = probe::cached(work, &probe::plan(&at(&self.nodes(&cells)?), &self.terms()?, self.radius_m()?))?;
 		eprintln!("{}: {} orderings from the inventory sweep, {} from the probe", self.name, obs.len(), probed.len());
@@ -183,7 +183,7 @@ impl Study {
 	/// from its edge on average — which is the distance the coefficient is identified over. Not a
 	/// study's to state: it needs the frame and the node count, and those sit on opposite axes.
 	fn radius_m(&self) -> Result<f64> {
-		Ok((self.area.frame().area_m2() / self.trade()?.2.nodes as f64 / std::f64::consts::PI).sqrt())
+		Ok((Frame::from(&self.area).area_m2() / self.trade()?.2.nodes as f64 / std::f64::consts::PI).sqrt())
 	}
 
 	fn nodes(&self, cells: &Cells) -> Result<Vec<rank::Node>> {
@@ -223,7 +223,7 @@ impl Study {
 			// a half-written trade is not a location, and `trade()` says which block is missing
 			_ => {
 				let (poi_cfg, _, _) = self.trade()?;
-				let frame = self.area.frame();
+				let frame = Frame::from(&self.area);
 				let terms = self.weigh()?;
 				match poi::load(poi_cfg, frame, &self.name, work) {
 					Ok(inv) => (Some(self.billed(&cells, &place, inv, terms, work)?), None),
@@ -280,8 +280,8 @@ impl Study {
 		layers.extend(cells.layers);
 		Ok(Payload {
 			name: self.name.clone(),
-			center: self.area.center(),
-			zoom: self.area.zoom(),
+			center: Frame::from(&self.area).center,
+			zoom: Frame::from(&self.area).zoom(),
 			ring,
 			imputed: cells.grid.cells.iter().map(|c| u8::from(c.imputed)).collect(),
 			place,
@@ -370,12 +370,20 @@ impl Study {
 		ensure!(!cfg.groups.is_empty(), "searches declares no group");
 		let place = cfg.place.as_ref().ok_or_else(|| eyre::eyre!("{} names no `searches.place` to chart volume over", self.name))?;
 		let provider = searches::provider(&cfg.provider, ads)?;
+		let seeds = &self.category()?.keywords;
+		let mut ideas: Vec<Keyword> = Vec::new();
+		for chunk in seeds.chunks(searches::SEEDS) {
+			for k in provider.ideas(chunk, place, self.country.lang(), work)? {
+				if !ideas.iter().any(|i| i.text == k.text) {
+					ideas.push(k);
+				}
+			}
+		}
+		eprintln!("{}: {} ideas around the category's {} keywords", self.name, ideas.len(), seeds.len());
 		let (mut months, mut groups) = (Vec::new(), Vec::<GroupOut>::new());
 		for g in &cfg.groups {
 			ensure!(!groups.iter().any(|o| o.name == g.name), "two searches.group are both named {:?}", g.name);
-			let ideas = provider.ideas(&g.seed, place, &cfg.language, work)?;
-			eprintln!("{}: {} ideas around {:?}", g.name, ideas.len(), g.seed);
-			let (axis, out) = fold(g, ideas)?;
+			let (axis, out) = fold(g, ideas.clone())?;
 			match groups.first() {
 				None => months = axis,
 				Some(first) => ensure!(months == axis, "group {:?} covers {axis:?}, group {:?} covers {months:?}", g.name, first.name),
@@ -469,35 +477,29 @@ pub fn stem(p: &Path) -> &str {
 	p.file_stem().and_then(|s| s.to_str()).expect("a study path is UTF-8 with a stem")
 }
 
-/// One of an axis, for a one-artifact subcommand. A directory is offered through `fzf`; a file is
-/// itself, so a scripted run never opens a picker. `serve` does not come here — the page it serves
-/// has a picker of its own, and two pickers over one directory is one too many.
-pub fn pick(path: &Path) -> Result<PathBuf> {
-	let found = files(path)?;
-	if let [only] = found.as_slice() {
-		return Ok(only.clone());
+/// One of an axis, by its label, for a one-artifact subcommand: through `fzf` unless there is only
+/// one, so a scripted run that names one never opens a picker. `serve` does not come here — the page
+/// it serves has a picker of its own, and two pickers over one axis is one too many.
+pub fn pick(labels: &[&str], what: &str) -> Result<usize> {
+	ensure!(!labels.is_empty(), "no {what} to pick from");
+	if labels.len() == 1 {
+		return Ok(0);
 	}
-	let stems: Vec<&str> = found.iter().map(|p| stem(p)).collect();
-
 	let mut fzf = std::process::Command::new("fzf")
 		.arg("--prompt")
-		.arg(format!("{}> ", path.file_name().unwrap_or(path.as_os_str()).to_string_lossy()))
+		.arg(format!("{what}> "))
 		.stdin(std::process::Stdio::piped())
 		.stdout(std::process::Stdio::piped())
 		.spawn()
-		.wrap_err("spawning `fzf` — choosing among a directory needs it on PATH")?;
+		.wrap_err("spawning `fzf` — choosing among several needs it on PATH")?;
 	let mut sink = fzf.stdin.take().expect("stdin is piped");
-	std::io::Write::write_all(&mut sink, stems.join("\n").as_bytes())?;
+	std::io::Write::write_all(&mut sink, labels.join("\n").as_bytes())?;
 	drop(sink);
 	let out = fzf.wait_with_output()?;
 
 	let picked = std::str::from_utf8(&out.stdout)?.trim();
-	ensure!(!picked.is_empty(), "nothing picked out of {}", path.display());
-	let i = stems
-		.iter()
-		.position(|o| *o == picked)
-		.ok_or_else(|| eyre::eyre!("fzf returned {picked:?}, which is nothing under {}", path.display()))?;
-	Ok(found[i].clone())
+	ensure!(!picked.is_empty(), "no {what} picked");
+	labels.iter().position(|o| *o == picked).ok_or_else(|| eyre::eyre!("fzf returned {picked:?}, which is no {what}"))
 }
 
 /// What an area's attrset is built from: a location file, which carries its own frame and premises,
@@ -569,7 +571,8 @@ pub fn load(def: &Definition, base: Base, trades: &Path) -> Result<Study> {
 			study.name,
 			c.study
 		);
-		first.spec.types = vec![c.google_primary.places_type().to_owned()];
+		// the Places type of the same name, which Places returns only for the categories its own taxonomy has
+		first.spec.types = vec![c.google_primary.id.strip_prefix("gcid:").expect("checked by `Definition::check`").to_owned()];
 		poi.queries = std::iter::once(&c.google_primary).chain(&c.google_additional).map(|g| g.name.clone()).collect();
 	}
 	study.category = def.category.clone();

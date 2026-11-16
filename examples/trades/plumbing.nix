@@ -1,7 +1,7 @@
 /* Plumbing and heating, over whichever area is handed in. */
 loc:
 # the tier and drop vocabulary below is French
-assert loc.searches.language == "fr";
+assert loc.country == "FR";
 {
   inherit (loc) area grid candidate country layer;
 
@@ -58,24 +58,21 @@ assert loc.searches.language == "fr";
   };
 
   # Nobody searches "chauffagiste" and everybody searches "chauffage" (see niches/plumbing/Aquafix),
-  # so the heating group is seeded on the trade word and matched on the layman's.
+  # so the heating group matches the layman's word as well as the trade's.
   searches = loc.searches // {
     group = [
       {
         name = "plomberie";
-        seed = [ "plombier" "plombier chauffagiste" ];
         match = "plombier|plomberie|sanitaire|fuite|canalisation|débouchage|debouchage|chauffe-eau|chauffe eau|\\bwc\\b|robinet";
         drop = "emploi|salaire|formation|stage|jobs|apprentissage";
       }
       {
         name = "chauffage";
-        seed = [ "chauffagiste" "installation chauffage" ];
         match = "chauffage|chaudière|chaudiere|chauffagiste|pompe à chaleur|pompe a chaleur|\\bpac\\b|radiateur";
         drop = "emploi|salaire|formation|stage|jobs|apprentissage";
       }
       {
         name = "urgence";
-        seed = [ "dépannage plomberie" "plombier urgence" ];
         match = "urgence|urgent|dépannage|depannage|24h|24/24|nuit|dimanche";
       }
     ];

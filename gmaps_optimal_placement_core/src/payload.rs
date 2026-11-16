@@ -5,7 +5,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct Payload {
 	pub name: String,
 	pub center: [f64; 2],
@@ -25,7 +25,7 @@ pub struct Payload {
 	pub notice: Option<Notice>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct Notice {
 	pub text: String,
 	/// Searches the work dir is missing and nobody bought — at least this many. Set when that is
@@ -36,7 +36,7 @@ pub struct Notice {
 /// The half of a payload a trade decides, and the whole of the half that is billed. One `Option`
 /// rather than eight, because a demand surface with no competitors under it is not a state this
 /// tool has anything to say about.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct Trade {
 	/// Catchment decay, metres. The map's opening slider position.
 	pub lambda_m: f64,
@@ -60,20 +60,20 @@ pub struct Trade {
 	pub searches: usize,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct TermOut {
 	pub text: String,
 	pub weight: f64,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct QueryOut {
 	pub text: String,
 	/// Distinct competitors on the map it returned, over every tile. The queries overlap by design.
 	pub hits: usize,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct LayerOut {
 	pub name: String,
 	pub note: String,
@@ -81,13 +81,13 @@ pub struct LayerOut {
 	pub values: Vec<f64>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct TierOut {
 	pub name: String,
 	pub weight: f64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct PoiOut {
 	#[serde(flatten)]
 	pub poi: Poi,
@@ -99,7 +99,7 @@ pub struct PoiOut {
 }
 
 /// Whoever is already selling the service. The inventory that produces one is `gmaps_optimal_placement_sources`.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct Poi {
 	pub id: String,
 	pub name: String,

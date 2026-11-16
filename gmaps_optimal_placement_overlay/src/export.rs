@@ -1,4 +1,4 @@
-//! What `overlay.js` wraps: the one study a host asked for, defined, fetched and cached, painted
+//! What `overlay.js` wraps: the one study a host asked for, fetched and cached, painted
 //! through [`Scene`], and told back as events. Nothing here throws for a data problem — a payload
 //! that does not arrive, does not parse or does not build a model is a `notice`.
 //!
@@ -8,13 +8,12 @@
 //! Events are emitted with no borrow held: a host listener may call straight back in.
 use std::{
 	cell::RefCell,
-	collections::{HashMap, HashSet},
+	collections::HashMap,
 	rc::{Rc, Weak},
 };
 
 use gmaps_optimal_placement_core::{
 	Model, Payload,
-	define::Definition,
 	model::{HAZE, LEVELS, LayerRef, LayerSpec, Summary, TierState, TradeLayer, categories, fmt, haze, layer_id, ramp},
 };
 use js_sys::{Function, Promise};
@@ -40,8 +39,6 @@ struct Inner {
 	emit: Function,
 	/// By definition id. A study once fetched is not fetched again this page session but by a pull.
 	cache: HashMap<String, Rc<Model>>,
-	/// Ids PUT this page session.
-	defined: HashSet<String>,
 	/// The latest `show`; an older one still landing only fills the cache.
 	generation: u32,
 	shown: Option<String>,
@@ -105,7 +102,6 @@ impl Overlay {
 				csrf,
 				emit,
 				cache: HashMap::new(),
-				defined: HashSet::new(),
 				generation: 0,
 				shown: None,
 				model: None,
@@ -125,29 +121,20 @@ impl Overlay {
 		Overlay { inner }
 	}
 
-	/// `def` is a Definition as JSON, or none to take the study off the map. Resolves once it has
-	/// landed or been noticed; never spends. A definition that does not parse or hold is the host's
-	/// mistake, and rejects.
-	pub fn show(&self, def: Option<String>) -> Result<Promise, JsError> {
-		let def = def
-			.map(|d| {
-				let def: Definition = serde_json::from_str(&d).map_err(|e| JsError::new(&format!("show({d}): {e}")))?;
-				def.check().map_err(|e| JsError::new(&format!("show({d}): {e:#}")))?;
-				Ok::<_, JsError>(def)
-			})
-			.transpose()?;
+	/// The study the host defined, by its id, or none to take it off the map. Resolves once it has
+	/// landed or been noticed; never spends.
+	pub fn show(&self, id: Option<String>) -> Promise {
 		let inner = self.inner.clone();
-		Ok(future_to_promise(async move {
-			let id = def.as_ref().map(Definition::id);
+		future_to_promise(async move {
 			let generation = {
 				let mut i = inner.borrow_mut();
 				i.generation += 1;
 				i.shown = id.clone();
 				i.generation
 			};
-			if let (Some(def), Some(id)) = (&def, &id)
+			if let Some(id) = &id
 				&& !inner.borrow().cache.contains_key(id)
-				&& let Err(e) = fetch(&inner, def, id).await
+				&& let Err(e) = fetch(&inner, id).await
 			{
 				let ev = inner.borrow_mut().notice(Some(&e), None);
 				if inner.borrow().generation == generation {
@@ -158,7 +145,7 @@ impl Overlay {
 				run(&inner, Inner::apply);
 			}
 			Ok(JsValue::UNDEFINED)
-		}))
+		})
 	}
 
 	/// The heat layer by its `data.layers` id, or none. An id the shown study lacks is the host's mistake.
@@ -246,30 +233,10 @@ impl Overlay {
 	}
 }
 
-/// PUT the definition once per session, then GET it into the cache. `Err` is a request that got no
-/// response; every other failure is a notice.
-async fn fetch(inner: &Rc<RefCell<Inner>>, def: &Definition, id: &str) -> Result<(), String> {
-	let (api, defined) = {
-		let i = inner.borrow();
-		(i.api.clone(), i.defined.contains(id))
-	};
-	let url = format!("{api}/studies/{id}");
-	if !defined {
-		let body = serde_json::to_string(&def.clone().canonical()).expect("a definition serialises");
-		let req = gloo_net::http::Request::put(&url)
-			.header("x-sa-csrf", &csrf(inner)?)
-			.header("content-type", "application/json")
-			.body(body)
-			.map_err(|e| format!("{url}: {e}"))?;
-		let res = req.send().await.map_err(|e| format!("{url}: {e}"))?;
-		if !res.ok() {
-			let text = res.text().await.map_err(|e| format!("{url}: {e}"))?;
-			let ev = inner.borrow_mut().notice(Some(&format!("{} {}: {text}", res.status(), res.status_text())), None);
-			emit(inner, vec![ev]);
-			return Ok(());
-		}
-		inner.borrow_mut().defined.insert(id.to_owned());
-	}
+/// GET the study into the cache. `Err` is a request that got no response; every other failure is a
+/// notice.
+async fn fetch(inner: &Rc<RefCell<Inner>>, id: &str) -> Result<(), String> {
+	let url = format!("{}/studies/{id}", inner.borrow().api);
 	land(inner, id, gloo_net::http::Request::get(&url), false).await
 }
 

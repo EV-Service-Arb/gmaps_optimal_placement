@@ -10,11 +10,11 @@ and the competitor dots. Two consumers, one paint path:
 and `paint.js` projects and fills, because that needs `fromLatLngToDivPixel` every frame. The heat is
 warm and sequential; blue is the pressure field's alone, and the dots are coloured by Google category.
 
-`overlay(map, {api, csrf})` resolves to an `EventTarget` over one study at a time, the
-`core::define::Definition` a host hands to `show`:
+`overlay(map, {api, csrf})` resolves to an `EventTarget` over one study at a time: the id of an
+`sa_core::placement::Definition` the host has PUT (the conductor's server does), handed to `show`:
 
 ```text
-show(def | null)    PUT {api}/studies/{id} once a session, then GET; never spends; throws on a bad def
+show(id | null)     GET {api}/studies/{id}; never spends
 heat(id | null)     a `data.layers[].id`
 tune({lambda_m, tiers: {name: {weight, show}}})   null = the payload's own
 pressure(on) · competitors(on) · opacity(x) · hideImputed(on)
