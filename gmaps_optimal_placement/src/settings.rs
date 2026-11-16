@@ -16,7 +16,7 @@ pub struct AppConfig {
 	pub age: Age,
 	#[settings(flatten)]
 	pub sweep: Sweep,
-	/// Keys the Places searches are bought with, free ones first. Each is its own project's daily
+	/// Keys the Places searches are bought with, free-quota ones first. Each is its own project's daily
 	/// quota and billing; the browser map loads with the most preferred one.
 	#[serde(default)]
 	#[settings(skip)]
@@ -32,14 +32,14 @@ pub struct MapsKey {
 	pub key: String,
 	/// The conductor's Google account its project bills to: what a search bought on it is counted against.
 	pub account: String,
-	/// The project spends trial credit rather than money. Set by hand: a key cannot read its project's billing.
-	pub free: bool,
+	/// Spends a limited free quota (trial credit, a demo project's allowance), not money; set by hand, as a key cannot read its billing.
+	pub free_quota: bool,
 }
 
 impl From<&AppConfig> for Vec<(String, String)> {
 	fn from(cfg: &AppConfig) -> Self {
 		let mut keys = cfg.google_maps.clone();
-		keys.sort_by_key(|k| !k.free); // stable, so config order breaks ties
+		keys.sort_by_key(|k| !k.free_quota); // stable, so config order breaks ties
 		keys.into_iter().map(|k| (k.account, k.key)).collect()
 	}
 }

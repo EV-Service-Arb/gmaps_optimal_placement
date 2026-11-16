@@ -98,7 +98,7 @@
             XDG_DATA_HOME="$(mktemp -d)"
             export XDG_DATA_HOME
             cargo build -p gmaps_optimal_placement # a cold compile outlasts any wait for the port
-            cargo run -p gmaps_optimal_placement -- --block-spend serve --port ${toString port} & # a smoke run spends nothing
+            cargo run -p gmaps_optimal_placement -- serve --port ${toString port} &
             server=$!
             trap 'kill $server 2>/dev/null || true; rm -rf "$XDG_DATA_HOME"' EXIT
             up=
@@ -125,8 +125,8 @@
         };
         # `conductor --port <p> [-t <trades>] [--countries <dir>]` — the conductor's peer: the overlay
         # module and the API behind its assertion, no page. Run from this checkout; needs
-        # PANEL_ASSERTION_KEYS, the config's keys for whatever "Pull latest" buys, and the volume
-        # provider's credentials to weigh a category's keywords.
+        # PANEL_ASSERTION_KEYS, and the config's keys for what "Pull latest" buys under
+        # `--spend-real-quota-i-am-certain` (without it a pull is refused).
         conductor = pkgs.writeShellApplication {
           name = "conductor";
           runtimeInputs = with pkgs; [ rust git pkg-config openssl mold nix wasm-bindgen-cli tailwindcss_4 ];

@@ -385,7 +385,7 @@ struct Search {
 	q: String,
 }
 
-/// `null` when Google names nothing. A refusal — `--block-spend` above all — is the eyre chain, which
+/// `null` when Google names nothing. A refusal — a server started without `--spend-real-quota-i-am-certain` above all — is the eyre chain, which
 /// the place field shows.
 async fn find(pool: Pool, find: Find, location: String, q: String) -> Result<([(axum::http::HeaderName, &'static str); 1], String), (StatusCode, String)> {
 	let Some((_, path, _)) = pool.get(&(None, location.clone())) else {

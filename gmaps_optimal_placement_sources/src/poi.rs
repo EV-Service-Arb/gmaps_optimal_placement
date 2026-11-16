@@ -217,7 +217,7 @@ pub fn search_text(work: &Work, buy: bool, body: &serde_json::Value, mask: &str,
 
 /// The one place a search for `q` names, biased to `bbox` so a bare street address resolves in the
 /// frame it was typed over: `[lat, lon]` and Google's address for it. Cached like every Places
-/// answer, so `--block-spend` serves an address already looked up and refuses a new one.
+/// answer, so a run that does not spend serves an address already looked up and refuses a new one.
 pub fn find(work: &Work, bbox: Bbox, q: &str) -> Result<Option<([f64; 2], String)>> {
 	let rect = serde_json::json!({
 		"low":  {"latitude": bbox.lat[0], "longitude": bbox.lon[0]},

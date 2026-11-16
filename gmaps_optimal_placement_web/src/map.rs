@@ -1163,7 +1163,7 @@ mod imp {
 		address: String,
 	}
 
-	/// Asked of the server, because what a search may spend is `--block-spend`'s to say. Searched in
+	/// Asked of the server, because what a search may spend is `--spend-real-quota-i-am-certain`'s to say. Searched in
 	/// the open tab's frame, which is also what keeps the answer's cache key the same next time.
 	pub fn find(s: State, q: String) {
 		let Some(location) = s.tabs.with_untracked(|t| t.get(s.active.get_untracked()).map(|t| t.at.1.clone())) else {

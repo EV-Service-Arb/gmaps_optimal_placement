@@ -198,8 +198,8 @@ pub struct Work {
 	/// Re-ask every billed request and overwrite what it answered. The only thing that spends on a
 	/// question already answered; age alone never does.
 	refresh: bool,
-	/// Refuse every paid question the work dir has no answer for.
-	block_spend: bool,
+	/// Buy what the work dir has no answer for; off, every such paid question is refused.
+	spend: bool,
 	/// Age of every cached answer this run served, by kind.
 	served: RefCell<Vec<(Kind, Duration)>>,
 	/// Google Maps keys in the order they are spent, each its own project's quota, beside the conductor's
@@ -220,7 +220,7 @@ impl Work {
 			age: Age::default(),
 			tiling: crate::poi::Tiling::default(),
 			refresh: false,
-			block_spend: false,
+			spend: false,
 			served: RefCell::default(),
 			keys: Vec::new(),
 			spent: RefCell::default(),
@@ -254,8 +254,8 @@ impl Work {
 		self
 	}
 
-	pub fn block_spend(mut self, yes: bool) -> Self {
-		self.block_spend = yes;
+	pub fn spend(mut self, yes: bool) -> Self {
+		self.spend = yes;
 		self
 	}
 
@@ -321,14 +321,14 @@ impl Work {
 	pub(crate) fn announce(&self, what: &str, need: Need) {
 		match need {
 			Need::Exact(0) | Need::AtLeast(0) => eprintln!("{what}: answered in full from the work dir, nothing to buy"),
-			_ if self.block_spend => eprintln!("{what}: {need} searches are not in the work dir, and `--block-spend` refuses them"),
+			_ if !self.spend => eprintln!("{what}: {need} searches are not in the work dir, and without `--spend-real-quota-i-am-certain` none is bought"),
 			_ => eprintln!("{what}: {need} searches are not in the work dir and will be bought"),
 		}
 	}
 
 	/// Refused here, before the first request, when this run buys nothing and `missing` is not zero.
 	pub(crate) fn may_buy(&self, missing: usize) -> Result<()> {
-		match self.block_spend && missing > 0 {
+		match !self.spend && missing > 0 {
 			true => Err(Blocked { missing }.into()),
 			false => Ok(()),
 		}
@@ -401,7 +401,7 @@ impl Work {
 		{
 			return Ok(hit);
 		}
-		if self.block_spend {
+		if !self.spend {
 			return Err(Blocked { missing: 1 }.into());
 		}
 		let canonical = serde_json::to_string(body)?;
@@ -652,11 +652,11 @@ mod tests {
 		assert!(format!("{e:#}").contains("spent"), "the chain carries what the day was refused for: {e:#}");
 	}
 
-	/// Under `--block-spend` a Places miss is refused before it reaches the network, and what is on disk is still served.
+	/// Without `spend` a Places miss is refused before it reaches the network, and what is on disk is still served.
 	#[test]
 	fn a_blocked_run_serves_the_cache_and_buys_nothing() {
-		let dir = std::env::temp_dir().join(format!("gmaps_block_spend_{}", std::process::id()));
-		let work = Work::at(&dir, QueriesCache::Local).block_spend(true);
+		let dir = std::env::temp_dir().join(format!("gmaps_no_spend_{}", std::process::id()));
+		let work = Work::at(&dir, QueriesCache::Local);
 		let (hit, miss) = (serde_json::json!({"textQuery": "kept"}), serde_json::json!({"textQuery": "never asked"}));
 		let key = Key(Sha256::digest(format!("{}\n{}", crate::poi::SEARCH_TEXT, serde_json::to_string(&hit).unwrap())).into());
 		let dst = work.post_path(key).unwrap();

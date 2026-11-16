@@ -15,11 +15,11 @@ use gmaps_optimal_placement_sources::{Work, work::QueriesCache};
 struct Cli {
 	#[clap(flatten)]
 	settings: SettingsFlags,
-	/// Spend no Google Maps credit: Places answers come out of the work dir or not at all. A map
-	/// missing any of its inventory opens on whatever of it the work dir holds and says how much is
-	/// missing, and a probe stops at its first miss
+	/// Buy what the work dir lacks, on real Google quota. Without it Places answers come out of the
+	/// work dir or not at all: a map missing any of its inventory opens on what the work dir holds and
+	/// says how much is missing, and a probe stops at its first miss
 	#[arg(long, global = true)]
-	block_spend: bool,
+	spend_real_quota_i_am_certain: bool,
 	#[command(subcommand)]
 	cmd: Cmd,
 }
@@ -147,17 +147,17 @@ fn main() -> Result<()> {
 	}
 	let cfg = AppConfig::try_build(cli.settings)?;
 	let refresh = matches!(cli.cmd, Cmd::Serve { refresh, .. } | Cmd::Probe { refresh, .. } if refresh);
-	eyre::ensure!(!(refresh && cli.block_spend), "`--refresh` buys every answer again, and `--block-spend` buys none");
+	let spend = cli.spend_real_quota_i_am_certain;
+	eyre::ensure!(!refresh || spend, "`--refresh` buys every answer again, which only `--spend-real-quota-i-am-certain` does");
 	// behind the conductor a GET never spends: "Pull latest", a POST, is the one way to buy
 	let behind = matches!(cli.cmd, Cmd::Serve { behind_conductor: true, .. });
-	let block_spend = cli.block_spend;
 	let keys: Vec<(String, String)> = (&cfg).into();
 	let cache: QueriesCache = cfg.queries_cache.parse()?;
 	let work = Work::at(v_utils::xdg_cache_dir!(""), cache.clone())
 		.policy((&cfg.age).into(), (&cfg.sweep).into())
 		.keys(keys.clone())
 		.refresh(refresh)
-		.block_spend(block_spend || behind);
+		.spend(spend && !behind);
 	match cli.cmd {
 		Cmd::Config { .. } => unreachable!("handled above, and `handle_settings_command` exits"),
 		Cmd::Schema => {
@@ -175,17 +175,17 @@ fn main() -> Result<()> {
 			// the work dir rather than `work` itself: `Work` holds a `Cell`, and the server calls this
 			// from whichever blocking thread a request landed on. `--refresh` does not come along: it
 			// belongs to the run that asked for it, and a tab switch is not one — the page's own reload
-			// is. `--block-spend` does, because it is about the server and not about a run
+			// is. Spending does, because it is about the server and not about a run
 			let (dir, age, tiling) = (work.path().to_owned(), (&cfg.age).into(), (&cfg.sweep).into());
 			let worker = {
 				let (keys, cache) = (keys.clone(), cache.clone());
 				move |refresh: bool| -> Result<Work> {
-					eyre::ensure!(!(refresh && block_spend), "`--block-spend` buys nothing, so it re-asks nothing either");
+					eyre::ensure!(!refresh || spend, "this server buys nothing: it was started without `--spend-real-quota-i-am-certain`");
 					Ok(Work::at(dir.clone(), cache.clone())
 						.policy(age, tiling)
 						.keys(keys.clone())
 						.refresh(refresh)
-						.block_spend(block_spend || !refresh))
+						.spend(spend && refresh))
 				}
 			};
 			let experts = at.experts.clone();
@@ -251,7 +251,7 @@ fn main() -> Result<()> {
 					// gop's own page buys on a GET, as it always has; only behind the conductor does a GET read alone
 					let work = match refresh {
 						true => worker(true)?,
-						false => worker(false)?.block_spend(block_spend),
+						false => worker(false)?.spend(spend),
 					};
 					let payload = study(category, location, &experts)?.build(&work)?;
 					Ok(serde_json::to_string(&payload)?)
@@ -259,7 +259,7 @@ fn main() -> Result<()> {
 			});
 			let find = std::sync::Arc::new(move |location: &std::path::Path, q: &str| {
 				let frame = study(None, location, &experts)?.area.frame().bbox;
-				gmaps_optimal_placement_sources::poi::find(&worker(false)?.block_spend(block_spend), frame, q)
+				gmaps_optimal_placement_sources::poi::find(&worker(false)?.spend(spend), frame, q)
 			});
 			gmaps_optimal_placement_web::serve::serve(
 				addr,

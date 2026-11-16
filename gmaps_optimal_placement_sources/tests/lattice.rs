@@ -53,7 +53,7 @@ fn an_overlapping_area_pays_only_for_new_ground() {
 	}))
 	.unwrap();
 	cfg.queries = vec!["plombier".into()];
-	let work = Work::at(&dir, QueriesCache::Local).policy(Age::default(), Tiling { zoom: ZOOM, depth: 3 }).block_spend(true);
+	let work = Work::at(&dir, QueriesCache::Local).policy(Age::default(), Tiling { zoom: ZOOM, depth: 3 });
 
 	let (first, second) = (circle("a", 45.77, 3.08), circle("b", 45.77, 3.16));
 	let (a, b) = (Tile::covering(first.frame().bbox, ZOOM), Tile::covering(second.frame().bbox, ZOOM));

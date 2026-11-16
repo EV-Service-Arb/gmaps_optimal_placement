@@ -12,7 +12,7 @@ gmaps_optimal_placement serve trades/ locations/
         ├─ GET /place/{location}            the same city with no trade over it: the statistical
         │                                   archive alone, and not one billed call
         ├─ GET /find/{location}?q=          the one place a search names in that city's frame, as
-        │                                   cached and as refused under `--block-spend` as any
+        │                                   cached and as refused without `--spend-real-quota-i-am-certain` as any
         │                                   Places answer
         ├─ GET /pkg/*         the client wasm
         ├─ GET /mfe/*         the overlay module a host page imports
