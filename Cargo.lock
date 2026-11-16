@@ -2860,6 +2860,7 @@ checksum = "fcefdcefac59ac8f8401852e3427d55610481fc41e6625c39bac62d2d771623a"
 dependencies = [
  "jiff-core",
  "jiff-static",
+ "jiff-tzdb",
  "jiff-tzdb-platform",
  "log",
  "portable-atomic",
@@ -4384,10 +4385,11 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 [[package]]
 name = "sa_alerts"
 version = "0.1.0"
-source = "git+https://github.com/EV-Service-Arb/site_conductor?branch=main#f1d4612d3e29120e30b07119e9501f355ec358d2"
+source = "git+https://github.com/EV-Service-Arb/site_conductor?branch=main#dd351250352eccbb2c949a03ce1b78ee0714d243"
 dependencies = [
  "jiff",
  "sa_auth",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -4397,12 +4399,13 @@ dependencies = [
 [[package]]
 name = "sa_auth"
 version = "0.1.0"
-source = "git+https://github.com/EV-Service-Arb/site_conductor?branch=main#f1d4612d3e29120e30b07119e9501f355ec358d2"
+source = "git+https://github.com/EV-Service-Arb/site_conductor?branch=main#dd351250352eccbb2c949a03ce1b78ee0714d243"
 dependencies = [
  "base64 0.22.1",
  "concierge_iam",
  "ed25519-dalek",
  "hex",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -4412,16 +4415,18 @@ dependencies = [
 [[package]]
 name = "sa_core"
 version = "0.1.0"
-source = "git+https://github.com/EV-Service-Arb/site_conductor?branch=main#f1d4612d3e29120e30b07119e9501f355ec358d2"
+source = "git+https://github.com/EV-Service-Arb/site_conductor?branch=main#dd351250352eccbb2c949a03ce1b78ee0714d243"
 dependencies = [
  "hex",
  "hmac",
  "jiff",
  "sa_alerts",
  "sa_auth",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "strum",
  "subtle",
  "thiserror 2.0.20",
  "url",
@@ -4445,10 +4450,12 @@ checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
 dependencies = [
  "dyn-clone",
  "indexmap",
+ "jiff",
  "ref-cast",
  "schemars_derive",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -5023,7 +5030,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
