@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 fn an_unreachable_cache_serves_the_mirror_and_buys_nothing() {
 	let dir = std::env::temp_dir().join(format!("gmaps_queries_cache_{}", std::process::id()));
 	let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap(); // dropped: nothing listens there
-	let work = Work::at(&dir, QueriesCache::Conductor(format!("http://{closed}/api/queries_cache"))).keys(vec!["k".into()]);
+	let work = Work::at(&dir, QueriesCache::Conductor(format!("http://{closed}/api/queries_cache"))).keys(vec![("house".into(), "k".into())]);
 	let (kept, missing) = (serde_json::json!({"textQuery": "kept"}), serde_json::json!({"textQuery": "missing"}));
 	let key: String = Sha256::digest(format!("{SEARCH_TEXT}\n{}", serde_json::to_string(&kept).unwrap()))
 		.iter()

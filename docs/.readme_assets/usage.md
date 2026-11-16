@@ -1,8 +1,9 @@
 ```sh
 # Name your Google Maps API keys in ~/.config/gmaps_optimal_placement.nix, each read from the
 # environment so it never lands in a file. Searches are bought on the free (trial-credit) projects
-# first, moving on as each one's day is spent; the map loads with the first:
-#   google_maps = [ { key = { env = "GOOGLE_MAPS_KEY_TRIAL"; }; free = true; } { key = { env = "GOOGLE_MAPS_KEY"; }; free = false; } ];
+# first, moving on as each one's day is spent; the map loads with the first. `account` is the conductor's
+# Google account the key's project bills to, which counts what is bought on it:
+#   google_maps = [ { key = { env = "GOOGLE_MAPS_KEY_TRIAL"; }; account = "trial"; free = true; } { key = { env = "GOOGLE_MAPS_KEY"; }; account = "main"; free = false; } ];
 export GOOGLE_MAPS_KEY_TRIAL=... GOOGLE_MAPS_KEY=...
 # and where what is bought is cached for everyone, so no machine buys the same query twice: the
 # Service-Arb conductor's queries cache, or `local` for this machine's work dir alone:

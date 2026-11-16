@@ -151,7 +151,7 @@ fn main() -> Result<()> {
 	// behind the conductor a GET never spends: "Pull latest", a POST, is the one way to buy
 	let behind = matches!(cli.cmd, Cmd::Serve { behind_conductor: true, .. });
 	let block_spend = cli.block_spend;
-	let keys: Vec<String> = (&cfg).into();
+	let keys: Vec<(String, String)> = (&cfg).into();
 	let cache: QueriesCache = cfg.queries_cache.parse()?;
 	let work = Work::at(v_utils::xdg_cache_dir!(""), cache.clone())
 		.policy((&cfg.age).into(), (&cfg.sweep).into())
@@ -243,6 +243,7 @@ fn main() -> Result<()> {
 			let key = keys
 				.first()
 				.ok_or_else(|| eyre::eyre!("the map loads Google's script with a key, and the config's `google_maps` lists none"))?
+				.1
 				.clone();
 			let build = std::sync::Arc::new({
 				let (experts, worker) = (experts.clone(), worker.clone());

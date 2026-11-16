@@ -30,15 +30,17 @@ pub struct AppConfig {
 pub struct MapsKey {
 	/// `{ env = "..." }`, so the key stays in the environment.
 	pub key: String,
+	/// The conductor's Google account its project bills to: what a search bought on it is counted against.
+	pub account: String,
 	/// The project spends trial credit rather than money. Set by hand: a key cannot read its project's billing.
 	pub free: bool,
 }
 
-impl From<&AppConfig> for Vec<String> {
+impl From<&AppConfig> for Vec<(String, String)> {
 	fn from(cfg: &AppConfig) -> Self {
 		let mut keys = cfg.google_maps.clone();
 		keys.sort_by_key(|k| !k.free); // stable, so config order breaks ties
-		keys.into_iter().map(|k| k.key).collect()
+		keys.into_iter().map(|k| (k.account, k.key)).collect()
 	}
 }
 

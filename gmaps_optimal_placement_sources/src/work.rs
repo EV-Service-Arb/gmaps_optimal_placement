@@ -202,8 +202,9 @@ pub struct Work {
 	block_spend: bool,
 	/// Age of every cached answer this run served, by kind.
 	served: RefCell<Vec<(Kind, Duration)>>,
-	/// Google Maps keys in the order they are spent, each its own project's quota and billing.
-	keys: Vec<String>,
+	/// Google Maps keys in the order they are spent, each its own project's quota, beside the conductor's
+	/// Google account its project bills to.
+	keys: Vec<(String, String)>,
 	/// Why each of the first `len` keys can buy no more. Per `Work`, so the next run starts over on
 	/// the most preferred key: a 429 is not billed, and quota comes back the next day.
 	spent: RefCell<Vec<Spent>>,
@@ -226,9 +227,9 @@ impl Work {
 		}
 	}
 
-	pub fn keys(mut self, keys: Vec<String>) -> Self {
+	pub fn keys(mut self, keys: Vec<(String, String)>) -> Self {
 		assert!(
-			keys.iter().enumerate().all(|(i, k)| !keys[..i].contains(k)),
+			keys.iter().enumerate().all(|(i, (_, k))| keys[..i].iter().all(|(_, o)| o != k)),
 			"a key listed twice is one project's quota counted twice"
 		);
 		self.keys = keys;
@@ -433,7 +434,11 @@ impl Work {
 			let put = serde_json::to_vec(&Put {
 				answer: answer.clone(),
 				request,
-				bought: Some(Billed { item, bill: Bill::Ours }),
+				bought: Some(Billed {
+					item,
+					bill: Bill::Ours,
+					account: (url == crate::poi::SEARCH_TEXT).then(|| self.keys[self.spent.borrow().len()].0.clone()),
+				}),
 			})?;
 			match self.ask_cache("PUT", &under(Scheme::Gop, key), &put)? {
 				(204, _) => {}
@@ -461,7 +466,7 @@ impl Work {
 			if places {
 				let at = self.spent.borrow().len();
 				eyre::ensure!(!self.keys.is_empty(), "a Places search the work dir has no answer for needs a key in the config's `google_maps`");
-				let Some(key) = self.keys.get(at) else {
+				let Some((_, key)) = self.keys.get(at) else {
 					return Err(Exhausted(self.spent.borrow().clone()).into());
 				};
 				req = req.header("X-Goog-Api-Key", key);
@@ -478,8 +483,8 @@ impl Work {
 				let mut spent = self.spent.borrow_mut();
 				let tail = |k: &str| format!("…{}", &k[k.len().saturating_sub(4)..]);
 				match self.keys.get(spent.len() + 1) {
-					Some(next) => eprintln!("key {} spent: {why}; moving to {}", tail(&self.keys[spent.len()]), tail(next)),
-					None => eprintln!("key {} spent: {why}; no key left", tail(&self.keys[spent.len()])),
+					Some((_, next)) => eprintln!("key {} spent: {why}; moving to {}", tail(&self.keys[spent.len()].1), tail(next)),
+					None => eprintln!("key {} spent: {why}; no key left", tail(&self.keys[spent.len()].1)),
 				}
 				spent.push(why);
 				continue;
