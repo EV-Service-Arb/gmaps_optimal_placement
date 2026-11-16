@@ -57,7 +57,12 @@ impl Served {
 		)
 		.unwrap();
 		std::fs::write(dir.join("site/mfe/gmaps_optimal_placement_overlay.js"), "export default async function init() {}").unwrap();
-		std::fs::write(dir.join("countries/FR.nix"), format!("import {}", root().join("examples/countries/FR.nix").display())).unwrap();
+		// weighed by DataForSEO, which a stub can stand in for: Keyword Planner's token exchange is not a bought URL
+		std::fs::write(
+			dir.join("countries/FR.nix"),
+			format!("import {} // {{ searches.provider = \"dataforseo\"; }}", root().join("examples/countries/FR.nix").display()),
+		)
+		.unwrap();
 		for t in ["never_asked", "never_asked_either"] {
 			std::fs::write(
 				dir.join(format!("trades/{t}.nix")),
@@ -65,7 +70,7 @@ impl Served {
 					inherit (loc) area grid candidate country column layer searches;
 					poi = { source = "google_places"; tier = [ { name = "any"; weight = 1.0; match = "."; } ]; };
 					model = { demand = "ind"; lambda_m = 2000; };
-					rank = { nodes = 4; term = [ { text = "plombier"; weight = 1.0; } ]; };
+					rank.nodes = 4;
 				}"#,
 			)
 			.unwrap();
@@ -81,6 +86,8 @@ impl Served {
 			.arg("--countries")
 			.arg(dir.join("countries"))
 			.env("PANEL_ASSERTION_KEYS", panel.public())
+			.env("DATAFORSEO_LOGIN", "stub")
+			.env("DATAFORSEO_PASSWORD", "stub")
 			.env_remove("GMAPS_OPTIMAL_PLACEMENT_QUERIES_CACHE")
 			.env("LEPTOS_SITE_ROOT", dir.join("site"));
 		if let Some(stub) = places {
@@ -95,7 +102,7 @@ impl Served {
 			}
 			cmd.arg("--spend-real-quota-i-am-certain")
 				.env("XDG_CACHE_HOME", dir.join("cache"))
-				.env("GOP_PLACES_STUB", format!("http://{}/v1/places:searchText", stub.at));
+				.env("GOP_STUB", format!("http://{}", stub.at));
 		}
 		let child = cmd.spawn().unwrap();
 		let mut served = Self { child, dir, port, panel };
@@ -289,7 +296,8 @@ fn a_definition_that_does_not_hold_is_refused_on_put() {
 }
 
 /// Places, as far as a sweep can tell: one rated competitor in every tile, and a second page behind
-/// the first answer when `paged`. Counts what it served.
+/// the first answer when `paged`; and DataForSEO, as far as weighing can tell: every keyword asked,
+/// searched. Counts the Places searches it served.
 struct Stub {
 	at: std::net::SocketAddr,
 	served: Arc<AtomicUsize>,
@@ -304,6 +312,8 @@ impl Stub {
 		std::thread::spawn(move || {
 			for conn in listener.incoming() {
 				let mut conn = BufReader::new(conn.unwrap());
+				let mut asked = String::new();
+				conn.read_line(&mut asked).unwrap();
 				let mut len = 0;
 				loop {
 					let mut line = String::new();
@@ -317,15 +327,31 @@ impl Stub {
 						len = v.trim().parse().unwrap();
 					}
 				}
-				conn.read_exact(&mut vec![0; len]).unwrap();
-				let n = counted.fetch_add(1, Ordering::SeqCst);
-				let mut answer = serde_json::json!({"places": [{
-					"id": "stub", "displayName": {"text": "Stub plombier"}, "rating": 4.5, "userRatingCount": 10,
-					"location": {"latitude": 45.78, "longitude": 3.07},
-				}]});
-				if paged && n == 0 {
-					answer["nextPageToken"] = "more".into();
-				}
+				let mut body = vec![0; len];
+				conn.read_exact(&mut body).unwrap();
+				let answer = match asked.contains("/search_volume/") {
+					true => {
+						let tasks: serde_json::Value = serde_json::from_slice(&body).unwrap();
+						let result: Vec<_> = tasks[0]["keywords"]
+							.as_array()
+							.unwrap()
+							.iter()
+							.map(|k| serde_json::json!({"keyword": k, "monthly_searches": [{"year": 2026, "month": 10, "search_volume": 10}]}))
+							.collect();
+						serde_json::json!({"tasks": [{"status_code": 20000, "result": result}]})
+					}
+					false => {
+						let n = counted.fetch_add(1, Ordering::SeqCst);
+						let mut answer = serde_json::json!({"places": [{
+							"id": "stub", "displayName": {"text": "Stub plombier"}, "rating": 4.5, "userRatingCount": 10,
+							"location": {"latitude": 45.78, "longitude": 3.07},
+						}]});
+						if paged && n == 0 {
+							answer["nextPageToken"] = "more".into();
+						}
+						answer
+					}
+				};
 				let body = answer.to_string();
 				write!(
 					conn.get_mut(),
@@ -344,12 +370,15 @@ impl Stub {
 }
 
 /// `study` defined on `s` under a Places query of its own: its path, and the searches its sweep
-/// counts it lacks, as a read's notice says.
+/// counts it lacks, as a read's notice says once its keywords are weighed (a pull refused for its
+/// budget has bought their volumes, and nothing else).
 fn defined(s: &Served, study: &str) -> (String, usize) {
 	let def = definition(Some(study));
 	let at = format!("/studies/{}", def.id());
 	let (status, text) = s.signed("PUT", &at, &[Study::Read], Some(&serde_json::to_string(&def).unwrap()));
 	assert_eq!(status, 204, "{text}");
+	let (status, billed, text) = s.pull(&at, "?budget=0");
+	assert_eq!((status, billed), (402, Some(0)), "{text}");
 	let (status, text) = s.signed("GET", &at, &[Study::Read], None);
 	assert_eq!(status, 200, "{text}");
 	let missing = serde_json::from_str::<serde_json::Value>(&text).unwrap()["notice"]["missing"].as_u64().unwrap();
@@ -378,6 +407,12 @@ fn a_pull_buys_within_its_budget_and_says_what_it_bought() {
 	assert_eq!(status, 200, "{text}");
 	assert_eq!(billed, Some(places.served()), "every search bought is charged, and nothing else");
 	assert_eq!(places.served(), need, "a sweep that opens nothing past what it counted buys exactly that");
+	let trade = &serde_json::from_str::<serde_json::Value>(&text).unwrap()["trade"];
+	assert_eq!(
+		trade["terms"],
+		serde_json::json!([{"text": "gmaps_optimal_placement never_asked", "weight": 1.0}]),
+		"the competitors are scored on the category's keywords, weighed by their volume: {text}"
+	);
 }
 
 /// What a sweep counts up front is a floor — a second page, a tile at the cap — so the budget is

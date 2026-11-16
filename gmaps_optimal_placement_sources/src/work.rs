@@ -479,11 +479,19 @@ impl Work {
 	/// answer, and its text. What is paid for and not an answer is kept beside `dst`.
 	fn buy(&self, url: &str, canonical: &str, headers: &[(&str, &str)], refused: &dyn Fn(&serde_json::Value) -> Option<String>, dst: &Path) -> Result<(serde_json::Value, String)> {
 		let places = url == crate::poi::SEARCH_TEXT;
-		#[cfg(debug_assertions)] // a test stands a stub in for Google; a release build only ever asks Google
-		let stub = std::env::var_os("GOP_PLACES_STUB").filter(|_| places).map(|s| s.into_string().expect("GOP_PLACES_STUB is a URL"));
+		// a test stands a stub in for every vendor, at the same paths; a release build only ever asks them
+		#[cfg(debug_assertions)]
+		let to = match std::env::var("GOP_STUB") {
+			Ok(origin) => format!(
+				"{origin}{}",
+				url.split_once("://").and_then(|(_, rest)| rest.find('/').map(|i| &rest[i..])).expect("a bought URL has a path")
+			),
+			Err(std::env::VarError::NotPresent) => url.to_owned(),
+			Err(e) => panic!("GOP_STUB: {e}"),
+		};
 		#[cfg(not(debug_assertions))]
-		let stub: Option<String> = None;
-		let to = stub.as_deref().unwrap_or(url);
+		let to = url.to_owned();
+		let to = to.as_str();
 		let (status, text) = loop {
 			let mut req = self.agent.post(to).header("Content-Type", "application/json");
 			for (k, v) in headers {

@@ -85,20 +85,9 @@ pub struct Model {
 pub struct RankSpec {
 	/// Power of two — a k-d split to depth log2(n), one equal share of demand per stratum. The
 	/// `locationBias` circle the probe asks from is a stratum's worth of ground, so this sets it too.
+	/// What it asks there is the category's keywords: what a customer types, not the sweep's
+	/// queries, which are tuned to *find* competitors and so lean on words already in shop names.
 	pub nodes: usize,
-	/// Deliberately not the sweep's queries: those are tuned to *find* competitors, which biases them
-	/// toward words already in the shop names. The name coefficient is identified by businesses that
-	/// were close and did not appear, so this set must contain terms the names do not.
-	#[serde(rename = "term")]
-	pub terms: Vec<Term>,
-}
-
-/// One query, and what a searcher typing it is worth — this is where searches × ticket price enters.
-#[derive(Clone, Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Term {
-	pub text: String,
-	pub weight: f64,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]

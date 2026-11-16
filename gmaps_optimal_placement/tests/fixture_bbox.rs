@@ -79,7 +79,7 @@ fn a_location_alone_builds_off_the_archive() {
 	let study = narrowed(None);
 	assert_eq!(study.name, "clermont-ferrand", "with no category to apply, a study is named after the area");
 
-	let p = study.build(&Work::at(v_utils::xdg_cache_dir!(""), QueriesCache::Local)).unwrap();
+	let p = study.build(&Work::at(v_utils::xdg_cache_dir!(""), QueriesCache::Local), &[]).unwrap();
 	assert!(p.trade.is_none(), "a location carries no demand surface and no competitors");
 	let m = gmaps_optimal_placement_core::Model::try_new(p).unwrap();
 	assert!(m.traded().is_none(), "and so no view onto anything a slider moves");

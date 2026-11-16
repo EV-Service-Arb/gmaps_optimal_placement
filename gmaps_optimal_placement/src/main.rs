@@ -159,6 +159,7 @@ fn main() -> Result<()> {
 	// behind the conductor a GET never spends: "Pull latest", a POST, is the one way to buy
 	let behind = matches!(cli.cmd, Cmd::Serve { behind_conductor: true, .. });
 	let keys: Vec<(String, String)> = (&cfg).into();
+	let ads: Vec<gmaps_optimal_placement_sources::searches::Ads> = cfg.google.iter().filter_map(|a| a.provides.ads.as_ref().map(Into::into)).collect();
 	let cache: QueriesCache = cfg.queries_cache.parse()?;
 	let work = Work::at(v_utils::xdg_cache_dir!(""), cache.clone())
 		.policy((&cfg.age).into(), (&cfg.sweep).into())
@@ -208,6 +209,7 @@ fn main() -> Result<()> {
 					let experts = experts.clone();
 					std::sync::Arc::new(move |def: &Definition| gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades).map(drop))
 				};
+				let ads = ads.clone();
 				let build = std::sync::Arc::new(move |def: &Definition, pull: Option<gmaps_optimal_placement_web::studies::Pull>| -> (usize, Result<String>) {
 					let work = match worker(pull.as_ref().map(|p| p.since)) {
 						Ok(w) => w.budget(pull.map(|p| p.budget)),
@@ -215,7 +217,7 @@ fn main() -> Result<()> {
 					};
 					let built = (|| {
 						Ok(serde_json::to_string(
-							&gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades)?.build(&work)?,
+							&gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades)?.build(&work, &ads)?,
 						)?)
 					})();
 					(work.billed(), built)
@@ -237,7 +239,7 @@ fn main() -> Result<()> {
 			let (categories, locations) = (categories(&at, &work)?, gmaps_optimal_placement::files(&at.locations)?);
 			let prebuilt = match (categories.as_slice(), locations.as_slice()) {
 				([(key, category)], [location]) => {
-					let payload = study(Some(category), location, &experts)?.build(&work)?;
+					let payload = study(Some(category), location, &experts)?.build(&work, &ads)?;
 					report(gmaps_optimal_placement::stats(&payload));
 					vec![(Some(key.clone()), gmaps_optimal_placement::stem(location).to_owned(), serde_json::to_string(&payload)?)]
 				}
@@ -263,14 +265,14 @@ fn main() -> Result<()> {
 				.key
 				.clone();
 			let build = std::sync::Arc::new({
-				let (experts, worker) = (experts.clone(), worker.clone());
+				let (experts, worker, ads) = (experts.clone(), worker.clone(), ads.clone());
 				move |category: Option<&Category>, location: &std::path::Path, refresh: bool| {
 					// gop's own page buys on a GET, as it always has; only behind the conductor does a GET read alone
 					let work = match refresh {
 						true => worker(Some(std::time::SystemTime::now()))?,
 						false => worker(None)?.spend(spend),
 					};
-					let payload = study(category, location, &experts)?.build(&work)?;
+					let payload = study(category, location, &experts)?.build(&work, &ads)?;
 					Ok(serde_json::to_string(&payload)?)
 				}
 			});
@@ -318,7 +320,7 @@ fn main() -> Result<()> {
 		}
 		Cmd::Searches { at, out } => {
 			let (category, location) = picked(&at, &work)?;
-			let payload = study(Some(&category), &location, &at.experts)?.searches(&work, &cfg.google.iter().filter_map(|a| a.provides.ads.as_ref().map(Into::into)).collect::<Vec<_>>())?;
+			let payload = study(Some(&category), &location, &at.experts)?.searches(&work, &ads)?;
 			report(gmaps_optimal_placement::search_stats(&payload));
 			let html = gmaps_optimal_placement::render::render_searches(&payload)?;
 			write(out.unwrap_or_else(|| work.path().join("out").join(format!("{}-searches.html", payload.name))), &html)

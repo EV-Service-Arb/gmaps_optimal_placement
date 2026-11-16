@@ -122,19 +122,46 @@ impl Study {
 			.ok_or_else(|| eyre::eyre!("{} has a trade but no category to say what it is asked", self.name))
 	}
 
-	/// What the probe asks from each node.
+	/// What the probe asks from each node: every keyword, weighed or not, so a plan does not move with
+	/// what the provider happened to answer.
 	fn terms(&self) -> Result<Vec<String>> {
-		Ok(self.trade()?.2.terms.iter().map(|t| t.text.clone()).collect())
+		self.trade()?;
+		Ok(self.category()?.keywords.clone())
 	}
 
-	/// The trade file's rank terms and their weights; the category's keywords do not weigh competitors
-	/// until their search volumes do (`shortcut:` volumes need a Keyword Planner provider with Basic
-	/// access, which this server has none of).
-	fn weigh(&self) -> Result<Terms> {
-		Ok(Terms {
-			weighted: self.trade()?.2.terms.iter().map(|t| (t.text.clone(), t.weight)).collect(),
-			unweighted: self.category()?.keywords.clone(),
-		})
+	/// The category's keywords, each weighed by its search volume over the country: a weight is a
+	/// ratio, and the country's buckets are the finest the provider gives one. Fails on a volume the
+	/// work dir lacks when this run buys none, as a Places search would.
+	fn weigh(&self, work: &Work, ads: &[searches::Ads]) -> Result<Terms> {
+		let cat = self.category()?;
+		let cfg = self
+			.searches
+			.as_ref()
+			.ok_or_else(|| eyre::eyre!("{} declares no `searches` block, which names who weighs its keywords", self.name))?;
+		let provider = searches::provider(&cfg.provider, ads).map_err(|e| Unweighable(format!("{e:#}")))?;
+		let answered = provider.volumes(&cat.keywords, searches::country_place(self.country), self.country.lang(), work)?;
+		let mut avg: Vec<(String, Option<f64>)> = Vec::new();
+		for k in &cat.keywords {
+			let series = answered.iter().find(|a| a.text == *k).and_then(|a| a.monthly.as_ref());
+			let mean = series.filter(|m| !m.is_empty()).map(|m| m.iter().map(|x| x.searches as f64).sum::<f64>() / m.len() as f64);
+			avg.push((k.clone(), mean.filter(|v| *v > 0.)));
+		}
+		let top = avg.iter().filter_map(|(_, v)| *v).fold(0., f64::max);
+		ensure!(
+			top > 0.,
+			"none of {}'s {} keywords has a search volume in {}, so no term weighs anything",
+			self.name,
+			cat.keywords.len(),
+			self.country
+		);
+		let (mut weighted, mut unweighted) = (Vec::new(), Vec::new());
+		for (k, v) in avg {
+			match v {
+				Some(v) => weighted.push((k, round1(v / top, 4))),
+				None => unweighted.push(k),
+			}
+		}
+		Ok(Terms { weighted, unweighted })
 	}
 
 	/// The demand a trade's model puts over this grid.
@@ -200,8 +227,9 @@ impl Study {
 	}
 
 	/// A location opened without a trade stops at the grid: nothing below reaches `poi::load`, so it
-	/// spends no Places call and no day of the quota.
-	pub fn build(&self, work: &Work) -> Result<Payload> {
+	/// spends no Places call and no day of the quota. `ads` are the accounts Keyword Planner may weigh
+	/// the keywords through.
+	pub fn build(&self, work: &Work, ads: &[searches::Ads]) -> Result<Payload> {
 		let cells = self.cells(work)?;
 		let n = cells.grid.len();
 		let place: Vec<String> = cells.grid.cells.iter().map(|c| c.place.clone()).collect();
@@ -224,12 +252,12 @@ impl Study {
 			_ => {
 				let (poi_cfg, _, _) = self.trade()?;
 				let frame = Frame::from(&self.area);
-				let terms = self.weigh()?;
-				match poi::load(poi_cfg, frame, &self.name, work) {
-					Ok(inv) => (Some(self.billed(&cells, &place, inv, terms, work)?), None),
+				// weighed first: a sweep bought for competitors nothing can score is a sweep paid for nothing
+				match self.weigh(work, ads).map(|terms| (poi::load(poi_cfg, frame, &self.name, work), terms)) {
+					Ok((Ok(inv), terms)) => (Some(self.billed(&cells, &place, inv, terms, work)?), None),
 					// the refusals that are neither this tool's fault nor a study that will not build: the map opens on
 					// what the work dir holds and says what it is missing
-					Err(e) => match refusal(e)? {
+					Ok((Err(e), terms)) => match refusal(e)? {
 						Refusal::Blocked(blocked) => {
 							let held = poi::cached(poi_cfg, frame, work)?;
 							let missing = Some(blocked.missing);
@@ -257,7 +285,20 @@ impl Study {
 								missing: None,
 							}),
 						),
+						Refusal::Unweighable(_) => unreachable!("weighed before the sweep"),
 					},
+					// competitors are scored on the weighted keywords, so a sweep held in full is still not a map
+					Err(e) => {
+						let (text, missing) = match refusal(e)? {
+							Refusal::Blocked(blocked) => (
+								format!("{blocked}: the keywords' search volumes, which weigh what each competitor is scored on. {EMPTY}"),
+								Some(blocked.missing),
+							),
+							Refusal::Spent(spent) => (format!("{spent}. {EMPTY}"), None),
+							Refusal::Unweighable(why) => (format!("{why}. {EMPTY}"), None),
+						};
+						(None, Some(Notice { text, missing }))
+					}
 				}
 			}
 		};
@@ -640,9 +681,21 @@ pub struct Terms {
 	pub unweighted: Vec<String>,
 }
 
+/// This server cannot ask anyone for search volume: its provider's credentials are not in its
+/// environment. A map without competitors, and the reason on it.
+#[derive(Debug)]
+struct Unweighable(String);
+impl std::fmt::Display for Unweighable {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "no volume provider to weigh the keywords with ({})", self.0)
+	}
+}
+impl std::error::Error for Unweighable {}
+
 enum Refusal {
 	Blocked(sources::work::Blocked),
 	Spent(sources::work::Exhausted),
+	Unweighable(Unweighable),
 }
 
 /// The refusals a map opens through rather than fails on; anything else is the error it was.
@@ -651,7 +704,11 @@ fn refusal(e: eyre::Report) -> Result<Refusal> {
 		Ok(b) => return Ok(Refusal::Blocked(b)),
 		Err(e) => e,
 	};
-	e.downcast::<sources::work::Exhausted>().map(Refusal::Spent)
+	let e = match e.downcast::<sources::work::Exhausted>() {
+		Ok(x) => return Ok(Refusal::Spent(x)),
+		Err(e) => e,
+	};
+	e.downcast::<Unweighable>().map(Refusal::Unweighable)
 }
 
 fn at(nodes: &[rank::Node]) -> Vec<[f64; 2]> {
