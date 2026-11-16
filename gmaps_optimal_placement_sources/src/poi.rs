@@ -390,7 +390,7 @@ fn descend(work: &Work, buy: bool, query: &str, typed: Option<&str>, tile: Tile,
 	let body = ask(query, typed, tile.bbox());
 	// asked here rather than inferred from an empty page: a tile nobody harvested and one Google
 	// returned nothing for read the same out of `search_text`, and only the first would cost anything
-	if work.refreshing() || work.cached(SEARCH_TEXT, &body)?.is_none() {
+	if work.cached(SEARCH_TEXT, &body)?.is_none_or(|(_, at)| work.stale(at)) {
 		found.missing += 1;
 	}
 	let spent = work.calls(Kind::Inventory);

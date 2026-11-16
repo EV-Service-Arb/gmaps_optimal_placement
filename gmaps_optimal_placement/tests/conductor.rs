@@ -369,9 +369,10 @@ fn a_pull_buys_within_its_budget_and_says_what_it_bought() {
 }
 
 /// What a sweep counts up front is a floor — a second page, a tile at the cap — so the budget is
-/// held at every search, not only before the first.
+/// held at every search, not only before the first. A pull stopped part-way has paid for what it
+/// bought, so the next buys only the rest; once one ends whole, the one after re-asks everything.
 #[test]
-fn a_pull_never_buys_past_its_budget() {
+fn a_pull_never_buys_past_its_budget_and_a_retry_buys_only_the_rest() {
 	let places = Stub::start(true);
 	let s = Served::start("over_budget", Some(&places));
 	let at = defined(&s, "never_asked");
@@ -380,4 +381,16 @@ fn a_pull_never_buys_past_its_budget() {
 	let (status, billed, text) = s.pull(&at, &format!("?budget={need}"));
 	assert_eq!(status, 402, "the first answer's second page is one search more than was counted: {text}");
 	assert_eq!((billed, places.served()), (Some(need), need), "bought up to the budget and charged for it: {text}");
+
+	let (status, billed, text) = s.pull(&at, "?budget=1000");
+	assert_eq!(status, 200, "{text}");
+	assert_eq!(
+		(billed, places.served()),
+		(Some(1), need + 1),
+		"the retry buys the one search the stopped pull did not, and is charged for that alone"
+	);
+
+	let (status, billed, text) = s.pull(&at, "?budget=1000");
+	assert_eq!(status, 200, "{text}");
+	assert_eq!((billed, places.served()), (Some(need), 2 * need + 1), "after a whole pull, every tile is asked again");
 }

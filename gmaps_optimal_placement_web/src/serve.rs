@@ -18,9 +18,16 @@
 //!   GET  /studies/{sha}          Read   the payload, built once; never spends
 //!   POST /studies/{sha}/pull     Spend  ?budget=<n>: the payload, built again buying at most n Places
 //!                                       searches; 402 {need, budget} when the sweep needs more.
-//!                                       Every answer carries x-billed: the searches it bought
+//!                                       Every answer carries x-billed: the searches it bought.
+//!                                       After one that did not end 2xx, buys only what it did not
 //! ```
-use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+	collections::HashMap,
+	net::SocketAddr,
+	path::PathBuf,
+	sync::Arc,
+	time::{SystemTime, UNIX_EPOCH},
+};
 
 use axum::{
 	Router,
@@ -47,7 +54,7 @@ pub type Find = Arc<dyn Fn(&std::path::Path, &str) -> Result<Option<([f64; 2], S
 /// counted whether it built or not, because they are paid either way. A pull's budget buys what the
 /// work dir lacks; without one nothing is bought. `Err` before anything is read when the definition
 /// does not hold.
-pub type Built = Arc<dyn Fn(&Definition, Option<usize>) -> (usize, Result<String>) + Send + Sync>;
+pub type Built = Arc<dyn Fn(&Definition, Option<Pull>) -> (usize, Result<String>) + Send + Sync>;
 
 /// Whether a definition holds — its trade is served, its country has a base, the trade takes it —
 /// without building it.
@@ -261,11 +268,11 @@ fn conductor_api(catalog: String, studies: PathBuf, holds: Holds, build: Built) 
 		)
 		.route(
 			"/studies/{sha}/pull",
-			post(move |UrlPath(sha): UrlPath<String>, pull: Result<Query<Pull>, axum::extract::rejection::QueryRejection>| {
+			post(move |UrlPath(sha): UrlPath<String>, pull: Result<Query<Budget>, axum::extract::rejection::QueryRejection>| {
 				let (dir, slot, build) = (pull_dir.clone(), pull_slot(&sha), pull_build.clone());
 				async move {
 					let (billed, built) = match pull {
-						Ok(Query(Pull { budget })) => study(&dir, &sha, slot, build, Some(budget)).await,
+						Ok(Query(Budget { budget })) => study(&dir, &sha, slot, build, Some(budget)).await,
 						Err(e) => (0, Err(e.into_response())),
 					};
 					([(axum::http::HeaderName::from_static("x-billed"), billed.to_string())], built.map(json))
@@ -298,14 +305,41 @@ async fn define(dir: PathBuf, holds: Holds, sha: String, body: axum::body::Bytes
 }
 
 #[derive(serde::Deserialize)]
-struct Pull {
+struct Budget {
 	budget: usize,
+}
+
+/// What a pull may buy, and the answers it re-asks: those written before `since`.
+pub struct Pull {
+	/// Places searches.
+	pub budget: usize,
+	pub since: SystemTime,
+}
+
+/// When the first pull of a study since its last whole one began, kept beside its definition until
+/// one ends whole: a pull that stops part-way, or never ends, has paid for what it already bought.
+fn began(resume: &std::path::Path) -> std::io::Result<SystemTime> {
+	match std::fs::read_to_string(resume) {
+		Ok(s) => s
+			.parse()
+			.map(|ns: u64| UNIX_EPOCH + std::time::Duration::from_nanos(ns))
+			.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{} is not nanoseconds: {e}", resume.display()))),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+			let now = SystemTime::now();
+			let part = resume.with_extension("resume.part");
+			std::fs::write(&part, now.duration_since(UNIX_EPOCH).expect("the clock is past 1970").as_nanos().to_string())?;
+			std::fs::rename(&part, resume)?;
+			Ok(now)
+		}
+		Err(e) => Err(e),
+	}
 }
 
 /// Built on the first GET and kept. A pull re-asks Google everything it is built from, and that
 /// answer goes to the puller alone: one stopped part-way by the day's quota is a map with no
 /// competitors, while the work dir now holds every answer it paid for, so the next GET builds from
-/// that. Beside it, the Places searches bought, which is all a pull is charged on.
+/// that, and the next pull buys only what this one did not. Beside it, the Places searches bought,
+/// which is all a pull is charged on.
 async fn study(dir: &std::path::Path, sha: &str, slot: Slot, build: Built, budget: Option<usize>) -> (usize, Result<axum::body::Bytes, Response>) {
 	let path = dir.join(format!("{sha}.json"));
 	let mut slot = slot.lock().await;
@@ -326,8 +360,13 @@ async fn study(dir: &std::path::Path, sha: &str, slot: Slot, build: Built, budge
 		Err(e) => return (0, Err((StatusCode::INTERNAL_SERVER_ERROR, format!("reading {}: {e}", path.display())).into_response())),
 	};
 	let name = def.name();
+	let resume = dir.join(format!("{sha}.resume"));
+	let pull = match budget.map(|budget| began(&resume).map(|since| Pull { budget, since })).transpose() {
+		Ok(pull) => pull,
+		Err(e) => return (0, Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{}: {e}", resume.display())).into_response())),
+	};
 	// a panicked build took what it bought with it, and no answer is better than an x-billed that guesses
-	let (billed, built) = tokio::task::spawn_blocking(move || build(&def, budget))
+	let (billed, built) = tokio::task::spawn_blocking(move || build(&def, pull))
 		.await
 		.unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
 	let built = match built {
@@ -341,8 +380,15 @@ async fn study(dir: &std::path::Path, sha: &str, slot: Slot, build: Built, budge
 			return (billed, Err(refused));
 		}
 	};
-	if budget.is_none() {
-		*slot = Some(built.clone());
+	match budget {
+		None => *slot = Some(built.clone()),
+		Some(_) =>
+			if let Err(e) = std::fs::remove_file(&resume) {
+				return (
+					billed,
+					Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{} outlived a whole pull: {e}", resume.display())).into_response()),
+				);
+			},
 	}
 	(billed, Ok(built))
 }

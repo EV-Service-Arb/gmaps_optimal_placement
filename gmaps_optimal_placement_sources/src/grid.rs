@@ -69,8 +69,9 @@ pub fn load(source: GridSource, vintage: u16, bbox: Bbox, work: &Work) -> Result
 	let key = Work::digest(&[&format!("{source:?}"), &vintage.to_string(), &serde_json::to_string(&bbox)?]);
 	let kept = work.derived("data/extract", &format!("{key}.csv"))?;
 
-	let mut grid = match (!work.refreshing()).then(|| std::fs::File::open(&kept).ok()).flatten() {
-		Some(f) => {
+	let rows = std::fs::File::open(&kept).ok().map(|f| Ok::<_, std::io::Error>((f.metadata()?.modified()?, f))).transpose()?;
+	let mut grid = match rows.filter(|(at, _)| !work.stale(*at)) {
+		Some((_, f)) => {
 			let mut rdr = csv::ReaderBuilder::new().from_reader(std::io::BufReader::new(f));
 			let grid = collect(&a, bbox.to_laea(&proj)?, &proj, &mut rdr, None)?;
 			eprintln!("{:?}: {} cells, off the rows an earlier scan kept", a.member, grid.len());

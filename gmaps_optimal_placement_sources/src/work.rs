@@ -196,9 +196,9 @@ pub struct Work {
 	agent: ureq::Agent,
 	age: Age,
 	tiling: crate::poi::Tiling,
-	/// Re-ask every billed request and overwrite what it answered. The only thing that spends on a
-	/// question already answered; age alone never does.
-	refresh: bool,
+	/// Re-ask every billed request answered before this, and overwrite what it answered. The only
+	/// thing that spends on a question already answered; age alone never does.
+	refresh: Option<SystemTime>,
 	/// Buy what the work dir has no answer for; off, every such paid question is refused.
 	spend: bool,
 	/// Places searches this run may buy at most; `None` is whatever the sweep needs.
@@ -222,7 +222,7 @@ impl Work {
 			agent: ureq::Agent::config_builder().http_status_as_error(false).build().new_agent(),
 			age: Age::default(),
 			tiling: crate::poi::Tiling::default(),
-			refresh: false,
+			refresh: None,
 			spend: false,
 			budget: None,
 			served: RefCell::default(),
@@ -253,8 +253,9 @@ impl Work {
 		self.tiling
 	}
 
-	pub fn refresh(mut self, yes: bool) -> Self {
-		self.refresh = yes;
+	/// Answers written before `since` are bought again; a plain refresh is since now.
+	pub fn refresh(mut self, since: Option<SystemTime>) -> Self {
+		self.refresh = since;
 		self
 	}
 
@@ -268,10 +269,10 @@ impl Work {
 		self
 	}
 
-	/// Whether an answer already on disk will be bought again — which is what a preflight has to
+	/// Whether an answer written `at` will be bought again — which is what a preflight has to
 	/// count, and the read-only walk that counts it is deliberately not affected.
-	pub fn refreshing(&self) -> bool {
-		self.refresh
+	pub(crate) fn stale(&self, at: SystemTime) -> bool {
+		self.refresh.is_some_and(|since| at < since)
 	}
 
 	pub fn path(&self) -> &Path {
@@ -409,8 +410,8 @@ impl Work {
 		headers: &[(&str, &str)],
 		refused: &dyn Fn(&serde_json::Value) -> Option<String>,
 	) -> Result<(serde_json::Value, SystemTime)> {
-		if !self.refresh
-			&& let Some(hit) = self.cached(url, body)?
+		if let Some(hit) = self.cached(url, body)?
+			&& !self.stale(hit.1)
 		{
 			return Ok(hit);
 		}
@@ -429,7 +430,7 @@ impl Work {
 		let key = Key(Sha256::digest(request.as_bytes()).into());
 		let dst = self.post_path(key)?;
 		if let QueriesCache::Conductor(_) = self.cache {
-			let fresh_since = self.refresh.then(jiff::Timestamp::now);
+			let fresh_since = self.refresh.map(jiff::Timestamp::try_from).transpose().wrap_err("a refresh dated before 1970")?;
 			loop {
 				match self.ask_cache("POST", &format!("{}/claim", under(Scheme::Gop, key)), &serde_json::to_vec(&ClaimBody { fresh_since })?)? {
 					(200, text) => match serde_json::from_str(&text).wrap_err("the queries cache's claim")? {

@@ -138,6 +138,11 @@ is refused before the first with `402 {need, budget}`, and one that outgrows its
 at the budget with the same. Every answer to a pull, refusals and failures included, carries
 `x-billed`: the searches it bought, which is what the person is charged.
 
+A pull re-asks every answer written before it began — unless one before it did not end whole, in
+which case it re-asks only those written before *that* one began (`{sha}.resume` beside the
+definition, gone on the first 2xx). What a stopped pull paid for is served to its retry, so a
+refunded failure is never bought twice, and the up-front count and the budget see the same cutoff.
+
 ## Invariants
 
 - **Reprojection is exact or the build fails.** A silently shifted grid is the one bug that looks

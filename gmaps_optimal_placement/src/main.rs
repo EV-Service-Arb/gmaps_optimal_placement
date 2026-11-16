@@ -156,7 +156,7 @@ fn main() -> Result<()> {
 	let work = Work::at(v_utils::xdg_cache_dir!(""), cache.clone())
 		.policy((&cfg.age).into(), (&cfg.sweep).into())
 		.keys(keys.clone())
-		.refresh(refresh)
+		.refresh(refresh.then(std::time::SystemTime::now))
 		.spend(spend && !behind);
 	match cli.cmd {
 		Cmd::Config { .. } => unreachable!("handled above, and `handle_settings_command` exits"),
@@ -179,13 +179,13 @@ fn main() -> Result<()> {
 			let (dir, age, tiling) = (work.path().to_owned(), (&cfg.age).into(), (&cfg.sweep).into());
 			let worker = {
 				let (keys, cache) = (keys.clone(), cache.clone());
-				move |refresh: bool| -> Result<Work> {
-					eyre::ensure!(!refresh || spend, "this server buys nothing: it was started without `--spend-real-quota-i-am-certain`");
+				move |refresh: Option<std::time::SystemTime>| -> Result<Work> {
+					eyre::ensure!(refresh.is_none() || spend, "this server buys nothing: it was started without `--spend-real-quota-i-am-certain`");
 					Ok(Work::at(dir.clone(), cache.clone())
 						.policy(age, tiling)
 						.keys(keys.clone())
 						.refresh(refresh)
-						.spend(spend && refresh))
+						.spend(spend && refresh.is_some()))
 				}
 			};
 			let experts = at.experts.clone();
@@ -197,9 +197,9 @@ fn main() -> Result<()> {
 					let experts = experts.clone();
 					std::sync::Arc::new(move |def: &Definition| gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades).map(drop))
 				};
-				let build = std::sync::Arc::new(move |def: &Definition, budget: Option<usize>| -> (usize, Result<String>) {
-					let work = match worker(budget.is_some()) {
-						Ok(w) => w.budget(budget),
+				let build = std::sync::Arc::new(move |def: &Definition, pull: Option<gmaps_optimal_placement_web::serve::Pull>| -> (usize, Result<String>) {
+					let work = match worker(pull.as_ref().map(|p| p.since)) {
+						Ok(w) => w.budget(pull.map(|p| p.budget)),
 						Err(e) => return (0, Err(e)),
 					};
 					let built = (|| {
@@ -260,8 +260,8 @@ fn main() -> Result<()> {
 				move |category: Option<&std::path::Path>, location: &std::path::Path, refresh: bool| {
 					// gop's own page buys on a GET, as it always has; only behind the conductor does a GET read alone
 					let work = match refresh {
-						true => worker(true)?,
-						false => worker(false)?.spend(spend),
+						true => worker(Some(std::time::SystemTime::now()))?,
+						false => worker(None)?.spend(spend),
 					};
 					let payload = study(category, location, &experts)?.build(&work)?;
 					Ok(serde_json::to_string(&payload)?)
@@ -269,7 +269,7 @@ fn main() -> Result<()> {
 			});
 			let find = std::sync::Arc::new(move |location: &std::path::Path, q: &str| {
 				let frame = study(None, location, &experts)?.area.frame().bbox;
-				gmaps_optimal_placement_sources::poi::find(&worker(false)?.spend(spend), frame, q)
+				gmaps_optimal_placement_sources::poi::find(&worker(None)?.spend(spend), frame, q)
 			});
 			gmaps_optimal_placement_web::serve::serve(
 				addr,

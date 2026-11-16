@@ -54,16 +54,13 @@ pub fn run(work: &Work, what: &str, plan: Vec<(Ranking, serde_json::Value)>) -> 
 		.collect()
 }
 
-/// What a run would spend: one call per plan entry the work dir has no answer for, and every entry
-/// under `--refresh`. Exact — a probe is one page from one point, and nothing about the answer
+/// What a run would spend: one call per plan entry the work dir has no answer for, or only one a
+/// refresh re-asks. Exact — a probe is one page from one point, and nothing about the answer
 /// changes how many more there are to make.
 pub fn unanswered(work: &Work, plan: &[(Ranking, serde_json::Value)]) -> Result<usize> {
-	if work.refreshing() {
-		return Ok(plan.len());
-	}
 	let mut n = 0;
 	for (_, body) in plan {
-		n += usize::from(work.cached(poi::SEARCH_TEXT, body)?.is_none());
+		n += usize::from(work.cached(poi::SEARCH_TEXT, body)?.is_none_or(|(_, at)| work.stale(at)));
 	}
 	Ok(n)
 }
