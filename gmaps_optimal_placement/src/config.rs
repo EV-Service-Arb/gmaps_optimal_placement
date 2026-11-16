@@ -74,17 +74,28 @@ pub struct Model {
 	pub lambda_m: f64,
 }
 
-/// How the probe samples the frame. What it asks there is the category's keywords — never the sweep's
-/// queries: those name the trade the way the trade names itself, which biases them toward words
-/// already in the shop names, and the name coefficient is identified by businesses that were close
-/// and did not appear. The reviews→prominence curve is not here either: it is a property of how
-/// Google ranks, shared by every trade, and lives in `gmaps_optimal_placement_core::rank`.
+/// How the probe samples the frame and what it asks there. The reviews→prominence curve is not here:
+/// it is a property of how Google ranks, shared by every trade, and lives in
+/// `gmaps_optimal_placement_core::rank`.
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RankSpec {
 	/// Power of two — a k-d split to depth log2(n), one equal share of demand per stratum. The
 	/// `locationBias` circle the probe asks from is a stratum's worth of ground, so this sets it too.
 	pub nodes: usize,
+	/// Deliberately not the sweep's queries: those are tuned to *find* competitors, which biases them
+	/// toward words already in the shop names. The name coefficient is identified by businesses that
+	/// were close and did not appear, so this set must contain terms the names do not.
+	#[serde(rename = "term")]
+	pub terms: Vec<Term>,
+}
+
+/// One query, and what a searcher typing it is worth — this is where searches × ticket price enters.
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Term {
+	pub text: String,
+	pub weight: f64,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]

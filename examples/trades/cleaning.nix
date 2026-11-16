@@ -50,7 +50,17 @@ assert loc.searches.language == "fr";
     lambda_m = 3000;
   };
 
-  rank.nodes = 32;
+  # Not `poi.queries`: those name the trade the way the trade names itself, which is exactly the
+  # variation the name coefficient cannot be fitted on. No company is called "femme de ménage" and
+  # that is what the household types.
+  rank = {
+    nodes = 32;
+    term = [
+      { text = "femme de ménage"; weight = 1.0; }
+      { text = "nettoyage bureaux"; weight = 0.6; }
+      { text = "nettoyage fin de chantier"; weight = 0.3; }
+    ];
+  };
 
   layer = loc.layer ++ [
     {

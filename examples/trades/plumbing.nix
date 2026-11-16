@@ -46,7 +46,16 @@ assert loc.searches.language == "fr";
     lambda_m = 5000;
   };
 
-  rank.nodes = 32;
+  # Not `poi.queries`: those name the trade the way the trade names itself, which is exactly the
+  # variation the name coefficient cannot be fitted on. "chauffage" is what the customer types.
+  rank = {
+    nodes = 32;
+    term = [
+      { text = "plombier"; weight = 1.0; }
+      { text = "chauffage"; weight = 0.7; }
+      { text = "dépannage plomberie"; weight = 0.4; }
+    ];
+  };
 
   # Nobody searches "chauffagiste" and everybody searches "chauffage" (see niches/plumbing/Aquafix),
   # so the heating group is seeded on the trade word and matched on the layman's.

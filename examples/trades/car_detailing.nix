@@ -35,7 +35,17 @@ assert loc.searches.language == "fr";
     lambda_m = 2000;
   };
 
-  rank.nodes = 32;
+  # Not `poi.queries`: those name the trade the way the trade names itself, which is exactly the
+  # variation the name coefficient cannot be fitted on. Nobody outside the trade says "esthétique
+  # automobile"; they say they want the car cleaned.
+  rank = {
+    nodes = 32;
+    term = [
+      { text = "lavage auto"; weight = 1.0; }
+      { text = "nettoyage intérieur voiture"; weight = 0.6; }
+      { text = "polissage carrosserie"; weight = 0.4; }
+    ];
+  };
 
   # `match` / `drop` are the same vocabulary as `poi.tier` / `poi.drop`: case-insensitive regex,
   # `drop` checked first. The expansion is fuzzy and drags in intent that is not demand.

@@ -50,7 +50,7 @@ impl Served {
 					inherit (loc) area grid candidate country column layer searches;
 					poi = { source = "google_places"; tier = [ { name = "any"; weight = 1.0; match = "."; } ]; };
 					model = { demand = "ind"; lambda_m = 2000; };
-					rank.nodes = 4;
+					rank = { nodes = 4; term = [ { text = "plombier"; weight = 1.0; } ]; };
 				}"#,
 			)
 			.unwrap();
@@ -208,7 +208,7 @@ fn a_study_is_defined_then_read_and_only_a_pull_spends() {
 	assert!(payload["trade"].is_null(), "nothing that scores a competitor was held or bought");
 	assert_eq!(payload["name"], format!("never_asked·FR·clermont-centre-{}", std::process::id()));
 	let notice = payload["notice"]["text"].as_str().unwrap();
-	assert!(notice.contains("weigh the keywords"), "{notice}");
+	assert!(payload["notice"]["missing"].as_u64().is_some_and(|n| n > 0), "the sweep it lacks is counted: {notice}");
 
 	let pull = format!("{at}/pull");
 	assert_eq!(s.signed("POST", &pull, &[Study::Read], None).0, 403, "a pull spends, and reading is not spending");
