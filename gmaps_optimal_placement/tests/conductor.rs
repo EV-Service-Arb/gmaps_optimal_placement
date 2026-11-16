@@ -35,7 +35,7 @@ impl Served {
 		for sub in ["trades", "countries", "site/mfe"] {
 			std::fs::create_dir_all(dir.join(sub)).unwrap();
 		}
-		// no `google_maps`: there is no key to buy with
+		// no `google`: there is no key to buy with
 		std::fs::write(
 			dir.join("config.nix"),
 			r#"{ age = { communes = "1y"; inventory = "1w"; ordering = "1y"; }; sweep = { depth = 3; zoom = 12; }; queries_cache = "local"; }"#,
@@ -67,7 +67,6 @@ impl Served {
 			.arg(dir.join("countries"))
 			.env("PANEL_ASSERTION_KEYS", panel.public())
 			.env_remove("GMAPS_OPTIMAL_PLACEMENT_QUERIES_CACHE")
-			.env_remove("GOOGLE_ADS_DEVELOPER_TOKEN")
 			.env("LEPTOS_SITE_ROOT", dir.join("site"))
 			.spawn()
 			.unwrap();

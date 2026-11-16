@@ -1,10 +1,10 @@
 ```sh
-# Name your Google Maps API keys in ~/.config/gmaps_optimal_placement.nix, each read from the
-# environment so it never lands in a file. Searches are bought on the free-quota (trial-credit, demo) projects
-# first, moving on as each one's day is spent; the map loads with the first. `account` is the conductor's
-# Google account the key's project bills to, which counts what is bought on it:
-#   google_maps = [ { key = { env = "GOOGLE_MAPS_KEY_TRIAL"; }; account = "trial"; free_quota = true; } { key = { env = "GOOGLE_MAPS_KEY"; }; account = "main"; free_quota = false; } ];
-export GOOGLE_MAPS_KEY_TRIAL=... GOOGLE_MAPS_KEY=...
+# Every Google key is a slot of a billing account in accounting's google.nix, each read from the
+# environment so it never lands in a file; ~/.config/gmaps_optimal_placement.nix imports the list whole.
+# Places searches are bought on the accounts that provide `places`, in list order, moving on as each
+# one's day is spent; the map loads with the first `browser` key; Keyword Planner uses the one account
+# that provides `ads`. What is bought is counted against the account's `name`:
+#   google = (import ~/s/ev/_sa/accounting/google.nix).accounts;
 # and where what is bought is cached for everyone, so no machine buys the same query twice: the
 # Service-Arb conductor's queries cache, or `local` for this machine's work dir alone:
 #   queries_cache = "https://sa.evinvest.ltd/api/queries_cache";
@@ -29,7 +29,7 @@ gmaps_optimal_placement serve -c examples/categories/cleaning_FR.json -l example
 # statistical grid only. This map has no demand layer and no competitors, and it uses no Google Maps calls.
 
 # Chart the monthly search volume of each query group. Set the credentials of the provider first:
-# GOOGLE_ADS_{DEVELOPER_TOKEN,CLIENT_ID,CLIENT_SECRET,REFRESH_TOKEN,CUSTOMER_ID}, or
+# an account providing `ads`, or
 # DATAFORSEO_{LOGIN,PASSWORD}. Each axis is picked through fzf.
 gmaps_optimal_placement searches -c examples/categories -l examples/locations
 

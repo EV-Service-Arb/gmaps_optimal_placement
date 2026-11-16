@@ -7,7 +7,7 @@
 
 | `searches.provider` | Credentials | Notes |
 |---|---|---|
-| `google_ads` | `GOOGLE_ADS_*` | Keyword Planner at the source; needs Basic API access |
+| `google_ads` | the one `google` account providing `ads` | Keyword Planner at the source; needs Basic API access |
 | `dataforseo` | `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD` | the same numbers, resold per call |
 
 ## Expressions

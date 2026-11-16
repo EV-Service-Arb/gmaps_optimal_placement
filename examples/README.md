@@ -83,12 +83,12 @@ INSEE Filosofi 2021           Google Places API (New)
 
 ## Inputs
 
-A key must be named in the config's `google_maps`. The INSEE archive downloads once into `$XDG_CACHE_HOME/gmaps_optimal_placement/data/` (~87 MB) and is
+An account in the config's `google` must provide `places`. The INSEE archive downloads once into `$XDG_CACHE_HOME/gmaps_optimal_placement/data/` (~87 MB) and is
 shared by every study over the same country; Places responses are cached per request on one quadtree,
 so editing the tiering rules costs nothing, a second category only pays for its own queries, and an
 area overlapping one already swept pays only for the new ground. Ranking terms are weighed by the
 keywords' search volume over the country, which needs the volume provider's credentials
-(`GOOGLE_ADS_*` or `DATAFORSEO_*`); without them a map opens with no competitors and says so.
+(a `google` account providing `ads`, or `DATAFORSEO_*`); without them a map opens with no competitors and says so.
 
 ## What these models do not know
 

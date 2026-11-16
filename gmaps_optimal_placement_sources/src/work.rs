@@ -202,8 +202,8 @@ pub struct Work {
 	spend: bool,
 	/// Age of every cached answer this run served, by kind.
 	served: RefCell<Vec<(Kind, Duration)>>,
-	/// Google Maps keys in the order they are spent, each its own project's quota, beside the conductor's
-	/// Google account its project bills to.
+	/// Places keys in the order they are spent, each its own project's quota, beside the name of the
+	/// account (accounting's google.nix) it bills to.
 	keys: Vec<(String, String)>,
 	/// Why each of the first `len` keys can buy no more. Per `Work`, so the next run starts over on
 	/// the most preferred key: a 429 is not billed, and quota comes back the next day.
@@ -465,7 +465,10 @@ impl Work {
 			}
 			if places {
 				let at = self.spent.borrow().len();
-				eyre::ensure!(!self.keys.is_empty(), "a Places search the work dir has no answer for needs a key in the config's `google_maps`");
+				eyre::ensure!(
+					!self.keys.is_empty(),
+					"a Places search the work dir has no answer for needs an account in the config's `google` that provides `places`"
+				);
 				let Some((_, key)) = self.keys.get(at) else {
 					return Err(Exhausted(self.spent.borrow().clone()).into());
 				};

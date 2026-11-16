@@ -42,5 +42,5 @@ fit whose implied catchment nothing observed.
 pressure, underserved demand, capture scores and the top-N sweep are `gmaps_optimal_placement_core::model`,
 recomputed in the page because they move with the sliders.
 
-The Google Maps keys are named by the config's `google_maps`, read from the environment and never written to disk.
+Google keys are slots of the config's `google` accounts (accounting's google.nix), read from the environment and never written to disk.
 Archives and API responses cache under `$XDG_CACHE_HOME/gmaps_optimal_placement`.

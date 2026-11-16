@@ -240,10 +240,12 @@ fn main() -> Result<()> {
 					})
 				})
 				.collect::<Result<Vec<_>>>()?;
-			let key = keys
-				.first()
-				.ok_or_else(|| eyre::eyre!("the map loads Google's script with a key, and the config's `google_maps` lists none"))?
-				.1
+			let key = cfg
+				.google
+				.iter()
+				.find_map(|a| a.provides.browser.as_ref())
+				.ok_or_else(|| eyre::eyre!("the map loads Google's script with a `browser` key, and no account in the config's `google` provides one"))?
+				.key
 				.clone();
 			let build = std::sync::Arc::new({
 				let (experts, worker) = (experts.clone(), worker.clone());
@@ -301,7 +303,7 @@ fn main() -> Result<()> {
 		}
 		Cmd::Searches { at, out } => {
 			let (category, location) = (gmaps_optimal_placement::pick(&at.categories)?, gmaps_optimal_placement::pick(&at.locations)?);
-			let payload = study(Some(&category), &location, &at.experts)?.searches(&work)?;
+			let payload = study(Some(&category), &location, &at.experts)?.searches(&work, &cfg.google.iter().filter_map(|a| a.provides.ads.as_ref().map(Into::into)).collect::<Vec<_>>())?;
 			report(gmaps_optimal_placement::search_stats(&payload));
 			let html = gmaps_optimal_placement::render::render_searches(&payload)?;
 			write(out.unwrap_or_else(|| work.path().join("out").join(format!("{}-searches.html", payload.name))), &html)

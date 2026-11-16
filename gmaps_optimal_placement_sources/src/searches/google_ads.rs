@@ -6,7 +6,7 @@ use std::cell::OnceCell;
 use eyre::{Result, WrapErr, bail, ensure};
 use sa_core::prices::{AdsRequest, Item};
 
-use super::{Keyword, Month, SearchVolume, env};
+use super::{Ads, Keyword, Month, SearchVolume};
 use crate::work::Work;
 
 const API: &str = "https://googleads.googleapis.com/v21";
@@ -15,26 +15,15 @@ const API: &str = "https://googleads.googleapis.com/v21";
 const LANGUAGES: &[(&str, u32)] = &[("en", 1000), ("de", 1001), ("es", 1003), ("fr", 1040), ("it", 1004)];
 
 pub struct GoogleAds {
-	developer_token: String,
-	client_id: String,
-	client_secret: String,
-	refresh_token: String,
-	customer_id: String,
+	ads: Ads,
 	/// One exchange per run, shared across groups.
 	access: OnceCell<String>,
 }
 
 impl GoogleAds {
-	pub fn from_env() -> Result<Self> {
-		Ok(Self {
-			developer_token: env("GOOGLE_ADS_DEVELOPER_TOKEN")?,
-			client_id: env("GOOGLE_ADS_CLIENT_ID")?,
-			client_secret: env("GOOGLE_ADS_CLIENT_SECRET")?,
-			refresh_token: env("GOOGLE_ADS_REFRESH_TOKEN")?,
-			// Google writes it with dashes and the API path wants it without
-			customer_id: env("GOOGLE_ADS_CUSTOMER_ID")?.replace('-', ""),
-			access: OnceCell::new(),
-		})
+	pub fn new(mut ads: Ads) -> Self {
+		ads.customer_id = ads.customer_id.replace('-', ""); // Google writes it with dashes and the API path wants it without
+		Self { ads, access: OnceCell::new() }
 	}
 
 	/// Plain `ureq`, never [`Work::cached_post`] — that helper writes the response to disk and this
@@ -45,9 +34,9 @@ impl GoogleAds {
 		}
 		let body = ureq::post("https://oauth2.googleapis.com/token")
 			.send_form([
-				("client_id", self.client_id.as_str()),
-				("client_secret", self.client_secret.as_str()),
-				("refresh_token", self.refresh_token.as_str()),
+				("client_id", self.ads.client_id.as_str()),
+				("client_secret", self.ads.client_secret.as_str()),
+				("refresh_token", self.ads.refresh_token.as_str()),
 				("grant_type", "refresh_token"),
 			])
 			.wrap_err("refreshing the Google Ads access token")?
@@ -61,7 +50,7 @@ impl GoogleAds {
 	}
 
 	fn headers(&self) -> Result<[(&str, &str); 2]> {
-		Ok([("Authorization", self.access_token()?), ("developer-token", self.developer_token.as_str())])
+		Ok([("Authorization", self.access_token()?), ("developer-token", self.ads.developer_token.as_str())])
 	}
 
 	/// No closest-match fallback: a study asking about Clermont-Ferrand must not silently be answered
@@ -79,7 +68,7 @@ impl GoogleAds {
 				Item::Ads(AdsRequest::Location),
 				&format!("{API}/geoTargetConstants:suggest"),
 				&body,
-				&[("Authorization", &auth), ("developer-token", &self.developer_token)],
+				&[("Authorization", &auth), ("developer-token", &self.ads.developer_token)],
 				&|res| res.get("error").map(|e| format!("geoTargetConstants:suggest for {city:?}: {e}")),
 			)?
 			.0;
@@ -109,7 +98,7 @@ impl SearchVolume for GoogleAds {
 			"language": language,
 			"keywordPlanNetwork": "GOOGLE_SEARCH",
 		});
-		let url = format!("{API}/customers/{}:generateKeywordIdeas", self.customer_id);
+		let url = format!("{API}/customers/{}:generateKeywordIdeas", self.ads.customer_id);
 		let refused = |res: &serde_json::Value| res.get("error").map(|e| format!("generateKeywordIdeas for {seeds:?}: {e}"));
 		let res = work.cached_post(Item::Ads(AdsRequest::KeywordIdeas), &url, &body, &self.headers()?, &refused)?.0;
 
@@ -124,7 +113,7 @@ impl SearchVolume for GoogleAds {
 			"language": language(lang)?,
 			"keywordPlanNetwork": "GOOGLE_SEARCH",
 		});
-		let url = format!("{API}/customers/{}:generateKeywordHistoricalMetrics", self.customer_id);
+		let url = format!("{API}/customers/{}:generateKeywordHistoricalMetrics", self.ads.customer_id);
 		let refused = |res: &serde_json::Value| res.get("error").map(|e| format!("generateKeywordHistoricalMetrics for {keywords:?}: {e}"));
 		let res = work.cached_post(Item::Ads(AdsRequest::HistoricalMetrics), &url, &body, &self.headers()?, &refused)?.0;
 		parse(&res, "keywordMetrics")

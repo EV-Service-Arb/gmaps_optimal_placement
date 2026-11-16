@@ -32,10 +32,24 @@ pub struct Keyword {
 	pub monthly: Option<Vec<Month>>,
 }
 
-/// The one place that knows the set.
-pub fn provider(name: &str) -> Result<Box<dyn SearchVolume>> {
+/// A Google Ads account's Keyword Planner credentials.
+#[derive(Clone)]
+pub struct Ads {
+	pub developer_token: String,
+	pub client_id: String,
+	pub client_secret: String,
+	pub refresh_token: String,
+	pub customer_id: String,
+}
+
+/// The one place that knows the set. `ads` is every configured account's, of which Keyword Planner
+/// needs exactly one.
+pub fn provider(name: &str, ads: &[Ads]) -> Result<Box<dyn SearchVolume>> {
 	match name {
-		"google_ads" => Ok(Box::new(google_ads::GoogleAds::from_env()?)),
+		"google_ads" => match ads {
+			[one] => Ok(Box::new(google_ads::GoogleAds::new(one.clone()))),
+			_ => bail!("Keyword Planner buys through the one account in the config's `google` that provides `ads`, and {} do", ads.len()),
+		},
 		"dataforseo" => Ok(Box::new(dataforseo::DataForSeo::from_env()?)),
 		_ => bail!("unknown searches.provider {name:?} — known: google_ads, dataforseo"),
 	}

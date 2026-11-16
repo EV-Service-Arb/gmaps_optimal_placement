@@ -163,8 +163,9 @@ what the work dir holds, and its notice says how many are missing. Either reads 
 - **The study file is a seed, never a sink.** `serve` only reads it. Pins promoted or hidden on the
   map are a diff beside it, under `XDG_DATA_HOME` — data, not cache, because a promoted candidate is
   a decision and cache is what cleaners delete.
-- **Google Maps keys live in the server's environment, never in an artifact.** The config names each
-  by the variable holding it.
+- **A Google key is a slot of a billing account, and lives in the server's environment, never in an
+  artifact.** The config's `google` is accounting's google.nix `accounts`, imported whole, so every
+  spend shows in that account's billing export; each slot names the variable holding its key.
 - **A billed answer is bought once, wherever this runs.** Places, DataForSEO and Keyword Planner
   answers are kept in the conductor's queries cache (settings' `queries_cache`; site_conductor's
   docs/ARCHITECTURE.md, Queries cache), claimed there while bought; the work dir under `$XDG_CACHE_HOME/gmaps_optimal_placement` mirrors
@@ -185,8 +186,8 @@ what the work dir holds, and its notice says how many are missing. Either reads 
 - **What a run is about to spend is stated, never guessed at.** No API key can read what is left of
   its project's `SearchTextRequestPerDayPerProject`, so a local tally could only ever refuse work
   Google would have served. What the work dir is missing is counted and announced before anything is
-  bought; what remains is Google's to say, in the 429 — which moves the run on to the next key, free
-  projects before paid ones, until none is left.
+  bought; what remains is Google's to say, in the 429 — which moves the run on to the next account's
+  `places` key, in the list's order, until none is left.
 
 ## Sources are an enum
 

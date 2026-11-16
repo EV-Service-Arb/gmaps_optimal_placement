@@ -131,7 +131,10 @@ impl Study {
 	/// until their search volumes do (`shortcut:` volumes need a Keyword Planner provider with Basic
 	/// access, which this server has none of).
 	fn weigh(&self) -> Result<Terms> {
-		Ok(Terms { weighted: self.trade()?.2.terms.iter().map(|t| (t.text.clone(), t.weight)).collect(), unweighted: self.category()?.keywords.clone() })
+		Ok(Terms {
+			weighted: self.trade()?.2.terms.iter().map(|t| (t.text.clone(), t.weight)).collect(),
+			unweighted: self.category()?.keywords.clone(),
+		})
 	}
 
 	/// The demand a trade's model puts over this grid.
@@ -362,11 +365,11 @@ impl Study {
 		})
 	}
 
-	pub fn searches(&self, work: &Work) -> Result<SearchPayload> {
+	pub fn searches(&self, work: &Work, ads: &[searches::Ads]) -> Result<SearchPayload> {
 		let cfg = self.searches.as_ref().ok_or_else(|| eyre::eyre!("study {:?} declares no `searches` block", self.name))?;
 		ensure!(!cfg.groups.is_empty(), "searches declares no group");
 		let place = cfg.place.as_ref().ok_or_else(|| eyre::eyre!("{} names no `searches.place` to chart volume over", self.name))?;
-		let provider = searches::provider(&cfg.provider)?;
+		let provider = searches::provider(&cfg.provider, ads)?;
 		let (mut months, mut groups) = (Vec::new(), Vec::<GroupOut>::new());
 		for g in &cfg.groups {
 			ensure!(!groups.iter().any(|o| o.name == g.name), "two searches.group are both named {:?}", g.name);

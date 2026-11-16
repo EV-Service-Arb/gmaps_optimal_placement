@@ -1,7 +1,7 @@
 //! What the tool does, rather than what a study is about. A study document is the two axes of the
 //! product and nothing else; anything that would be the same for every study — how old an answer may
 //! get before the map says so, how a frame is tiled — lives here.
-use gmaps_optimal_placement_sources::{poi::Tiling, work::Age as Ages};
+use gmaps_optimal_placement_sources::{poi::Tiling, searches, work::Age as Ages};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smart_default::SmartDefault;
@@ -16,31 +16,61 @@ pub struct AppConfig {
 	pub age: Age,
 	#[settings(flatten)]
 	pub sweep: Sweep,
-	/// Keys the Places searches are bought with, free-quota ones first. Each is its own project's daily
-	/// quota and billing; the browser map loads with the most preferred one.
+	/// accounting's google.nix `accounts`, imported whole: every Google key is a slot of one of them.
 	#[serde(default)]
 	#[settings(skip)]
-	pub google_maps: Vec<MapsKey>,
+	pub google: Vec<Account>,
 	/// Where what is bought is cached for everyone: the conductor's `<origin>/api/queries_cache`,
 	/// so no machine buys the same query twice; or `local`, this machine's work dir alone.
 	pub queries_cache: String,
 }
 
 #[derive(Clone, ConfigJsonSchema, Debug, MyConfigPrimitives)]
-pub struct MapsKey {
-	/// `{ env = "..." }`, so the key stays in the environment.
+pub struct Account {
+	/// What a search bought on its keys is counted against.
+	pub name: String,
+	pub provides: Provides,
+}
+
+#[derive(Clone, ConfigJsonSchema, Debug, MyConfigPrimitives)]
+pub struct Provides {
+	/// Places searches.
+	pub places: Option<Key>,
+	/// The map's Maps JS.
+	pub browser: Option<Key>,
+	/// Keyword Planner.
+	pub ads: Option<Ads>,
+}
+
+#[derive(Clone, ConfigJsonSchema, Debug, MyConfigPrimitives)]
+pub struct Key {
 	pub key: String,
-	/// The conductor's Google account its project bills to: what a search bought on it is counted against.
-	pub account: String,
-	/// Spends a limited free quota (trial credit, a demo project's allowance), not money; set by hand, as a key cannot read its billing.
-	pub free_quota: bool,
+}
+
+#[derive(Clone, ConfigJsonSchema, Debug, MyConfigPrimitives)]
+pub struct Ads {
+	pub developer_token: String,
+	pub client_id: String,
+	pub client_secret: String,
+	pub refresh_token: String,
+	pub customer_id: String,
+}
+
+impl From<&Ads> for searches::Ads {
+	fn from(a: &Ads) -> Self {
+		Self {
+			developer_token: a.developer_token.clone(),
+			client_id: a.client_id.clone(),
+			client_secret: a.client_secret.clone(),
+			refresh_token: a.refresh_token.clone(),
+			customer_id: a.customer_id.clone(),
+		}
+	}
 }
 
 impl From<&AppConfig> for Vec<(String, String)> {
 	fn from(cfg: &AppConfig) -> Self {
-		let mut keys = cfg.google_maps.clone();
-		keys.sort_by_key(|k| !k.free_quota); // stable, so config order breaks ties
-		keys.into_iter().map(|k| (k.account, k.key)).collect()
+		cfg.google.iter().filter_map(|a| a.provides.places.as_ref().map(|p| (a.name.clone(), p.key.clone()))).collect()
 	}
 }
 
