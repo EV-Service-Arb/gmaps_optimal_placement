@@ -3,6 +3,7 @@
 The server behind the conductor, its one client: a definition in, its payload out.
 
 ```text
+GET  /health             open
 GET  /trades.json        Read   sa_core::placement::Catalog: what a category may be studied by, and where
 POST /studies            Read   a Definition → its Payload, built once and kept; never spends
 POST /studies/pull       Spend  ?budget=<n>, a Definition → its Payload, built again buying at most n

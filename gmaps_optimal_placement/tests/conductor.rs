@@ -98,7 +98,7 @@ impl Served {
 		let child = cmd.spawn().unwrap();
 		let mut served = Self { child, dir, port, panel };
 		for _ in 0..240 {
-			if served.get("/trades.json", None).0 == 401 {
+			if served.get("/health", None).0 == 200 {
 				return served;
 			}
 			if let Some(exit) = served.child.try_wait().unwrap() {
@@ -152,8 +152,8 @@ impl Served {
 	}
 
 	/// A pull of `def` for someone who may spend, `query` verbatim: its status, the searches its
-	/// `x-billed` names, and body.
-	fn pull(&self, def: &Definition, query: &str) -> (u16, Option<usize>, String) {
+	/// `x-billed` names, its `x-need`, and body.
+	fn pull(&self, def: &Definition, query: &str) -> (u16, Option<usize>, Option<usize>, String) {
 		let path = "/studies/pull";
 		let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
 		let req = ureq::http::Request::post(format!("http://127.0.0.1:{}{path}{query}", self.port))
@@ -166,7 +166,8 @@ impl Served {
 			let billed: std::collections::BTreeMap<String, usize> = serde_json::from_str(v.to_str().unwrap()).unwrap();
 			billed.get("places.search").copied().unwrap_or(0) // a pull that bought no search names none
 		});
-		(r.status().as_u16(), billed, r.body_mut().read_to_string().unwrap())
+		let need = r.headers().get(sa_core::placement::NEED).map(|v| v.to_str().unwrap().parse().unwrap());
+		(r.status().as_u16(), billed, need, r.body_mut().read_to_string().unwrap())
 	}
 
 	/// `method path`, signed for exactly that, for someone holding `held`.
@@ -249,7 +250,7 @@ fn a_study_is_read_and_only_a_pull_spends() {
 
 	let read = s.assertion("POST", "/studies/pull", &[Study::Read]);
 	assert_eq!(s.send("POST", "/studies/pull?budget=1000", Some(&read), Some(&body)).0, 403, "a pull spends, and reading is not spending");
-	let (status, billed, text) = s.pull(&def, "?budget=1000");
+	let (status, billed, _, text) = s.pull(&def, "?budget=1000");
 	assert!(
 		status >= 400 && billed == Some(0),
 		"a server started without spending buys nothing, whatever the budget: {status} {text}"
@@ -355,15 +356,15 @@ fn a_pull_buys_within_its_budget_and_says_what_it_bought() {
 	assert!(need > 0, "nothing is held yet");
 
 	for malformed in ["", "?budget=-1"] {
-		let (status, billed, text) = s.pull(&def, malformed);
+		let (status, billed, _, text) = s.pull(&def, malformed);
 		assert_eq!((status, billed), (400, None), "a budget is named, never assumed, and a pull not run bought nothing: {text}");
 	}
-	let (status, billed, text) = s.pull(&def, "?budget=0");
-	assert_eq!((status, billed), (402, Some(0)), "{text}");
+	let (status, billed, needs, text) = s.pull(&def, "?budget=0");
+	assert_eq!((status, billed, needs), (402, Some(0), Some(need)), "{text}");
 	assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap()["code"], "unaffordable", "{text}");
 	assert_eq!(places.served(), 0, "refused before the first search");
 
-	let (status, billed, text) = s.pull(&def, &format!("?budget={need}"));
+	let (status, billed, _, text) = s.pull(&def, &format!("?budget={need}"));
 	assert_eq!(status, 200, "{text}");
 	assert_eq!(billed, Some(places.served()), "every search bought is charged, and nothing else");
 	assert_eq!(places.served(), need, "a sweep that opens nothing past what it counted buys exactly that");
@@ -377,11 +378,11 @@ fn a_pull_never_buys_past_its_budget_and_a_retry_buys_only_the_rest() {
 	let places = Stub::start(true);
 	let s = Served::start("over_budget", Some(&places));
 	let (def, need) = defined(&s, "never_asked");
-	let (status, billed, text) = s.pull(&def, &format!("?budget={need}"));
+	let (status, billed, _, text) = s.pull(&def, &format!("?budget={need}"));
 	assert_eq!(status, 402, "the first answer's second page is one search more than was counted: {text}");
 	assert_eq!((billed, places.served()), (Some(need), need), "bought up to the budget and charged for it: {text}");
 
-	let (status, billed, text) = s.pull(&def, "?budget=1000");
+	let (status, billed, _, text) = s.pull(&def, "?budget=1000");
 	assert_eq!(status, 200, "{text}");
 	assert_eq!(
 		(billed, places.served()),
@@ -389,7 +390,7 @@ fn a_pull_never_buys_past_its_budget_and_a_retry_buys_only_the_rest() {
 		"the retry buys the one search the stopped pull did not, and is charged for that alone"
 	);
 
-	let (status, billed, text) = s.pull(&def, "?budget=1000");
+	let (status, billed, _, text) = s.pull(&def, "?budget=1000");
 	assert_eq!(status, 200, "{text}");
 	assert_eq!((billed, places.served()), (Some(need), 2 * need + 1), "after a whole pull, every tile is asked again");
 }

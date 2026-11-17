@@ -26,7 +26,7 @@ use gmaps_optimal_placement_core::{Payload, Unaffordable};
 use sa_auth::{Gate, Study, Verifier};
 use sa_core::{
 	Invalid,
-	placement::{BILLED, Billed as Bought, Catalog, Definition},
+	placement::{BILLED, Billed as Bought, Catalog, Definition, NEED},
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -155,16 +155,21 @@ impl OperationOutput for Studied {
 }
 
 /// An answer and, on it whatever it is, `x-billed`: what it bought, which is what the conductor
-/// charges the puller.
+/// charges the puller; on one refused `unaffordable`, `x-need` beside it.
 pub struct Billed<T> {
 	bought: Bought,
+	need: Option<usize>,
 	answer: T,
 }
 
 impl<T: IntoResponse> IntoResponse for Billed<T> {
 	fn into_response(self) -> Response {
 		let bought = serde_json::to_string(&self.bought).expect("items and counts serialise");
-		([(HeaderName::from_static(BILLED), bought)], self.answer).into_response()
+		let mut res = ([(HeaderName::from_static(BILLED), bought)], self.answer).into_response();
+		if let Some(need) = self.need {
+			res.headers_mut().insert(HeaderName::from_static(NEED), need.into());
+		}
+		res
 	}
 }
 
@@ -191,8 +196,8 @@ async fn trades(State(s): State<Studies>) -> Json<Catalog> {
 /// takes it. Built on the first ask and kept; never spends. A study whose answers are not all in
 /// the work dir opens on what it holds, and its notice says how many are missing.
 async fn study(State(s): State<Studies>, Body(def): Body<Definition>) -> Answer<Studied> {
-	let (bought, built) = studied(&s, def, None).await;
-	assert!(bought.is_empty(), "a study is built with no budget: {bought:?}");
+	let (bought, need, built) = studied(&s, def, None).await;
+	assert!(bought.is_empty() && need.is_none(), "a study is built with no budget: {bought:?}");
 	built.map(Studied)
 }
 
@@ -206,9 +211,10 @@ async fn pull(
 	Params(Budget { budget }): Params<Budget>,
 	Body(def): Body<Definition>,
 ) -> Billed<Answer<Studied>> {
-	let (bought, built) = studied(&s, def, Some(budget)).await;
+	let (bought, need, built) = studied(&s, def, Some(budget)).await;
 	Billed {
 		bought,
+		need,
 		answer: built.map(Studied),
 	}
 }
@@ -218,9 +224,9 @@ async fn pull(
 /// competitors, while the work dir now holds every answer it paid for, so the next read builds from
 /// that, and the next pull buys only what this one did not. Beside it, the Places searches bought,
 /// which is all a pull is charged on.
-async fn studied(s: &Studies, def: Definition, budget: Option<usize>) -> (Bought, Answer<Bytes>) {
+async fn studied(s: &Studies, def: Definition, budget: Option<usize>) -> (Bought, Option<usize>, Answer<Bytes>) {
 	if let Err(e) = def.check() {
-		return (Bought::new(), Err(Code::refusal(e)));
+		return (Bought::new(), None, Err(Code::refusal(e)));
 	}
 	let sha = def.id();
 	let slot = s.slot(&sha);
@@ -229,30 +235,31 @@ async fn studied(s: &Studies, def: Definition, budget: Option<usize>) -> (Bought
 		*slot = None;
 	}
 	if let Some(built) = &*slot {
-		return (Bought::new(), Ok(built.clone()));
+		return (Bought::new(), None, Ok(built.clone()));
 	}
 	let (dir, holds, build) = (s.dir.clone(), s.holds.clone(), s.build.clone());
 	// a panicked build took what it bought with it, and no answer is better than an x-billed that guesses
-	let (bought, built) = tokio::task::spawn_blocking(move || {
+	let (bought, need, built) = tokio::task::spawn_blocking(move || {
 		if let Err(e) = holds(&def) {
-			return (Bought::new(), Err(Refusal::new(Code::Unstudied, format!("{e:#}"))));
+			return (Bought::new(), None, Err(Refusal::new(Code::Unstudied, format!("{e:#}"))));
 		}
 		if let Err(e) = keep(&dir.join(format!("{sha}.json")), &def) {
-			return (Bought::new(), Err(Refusal::new(Code::Internal, e)));
+			return (Bought::new(), None, Err(Refusal::new(Code::Internal, e)));
 		}
 		let resume = dir.join(format!("{sha}.resume"));
 		let pull = match budget.map(|budget| began(&resume).map(|since| Pull { budget, since })).transpose() {
 			Ok(pull) => pull,
-			Err(e) => return (Bought::new(), Err(Refusal::new(Code::Internal, format!("{}: {e}", resume.display())))),
+			Err(e) => return (Bought::new(), None, Err(Refusal::new(Code::Internal, format!("{}: {e}", resume.display())))),
 		};
 		let (bought, built) = build(&def, pull);
+		let need = built.as_ref().err().and_then(|e| e.downcast_ref::<Unaffordable>()).map(|u| u.need);
 		let built = built.map_err(Code::refusal).and_then(|b| match budget {
 			Some(_) => std::fs::remove_file(&resume)
 				.map(|()| b)
 				.map_err(|e| Refusal::new(Code::Internal, format!("{} outlived a whole pull: {e}", resume.display()))),
 			None => Ok(b),
 		});
-		(bought, built)
+		(bought, need, built)
 	})
 	.await
 	.unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
@@ -260,7 +267,7 @@ async fn studied(s: &Studies, def: Definition, budget: Option<usize>) -> (Bought
 	if let (None, Ok(b)) = (budget, &built) {
 		*slot = Some(b.clone());
 	}
-	(bought, built)
+	(bought, need, built)
 }
 
 /// Renamed into place: a reader never sees half a definition.
@@ -305,6 +312,7 @@ fn router(studies: Studies) -> eyre::Result<Router> {
 	Ok(routes()
 		.into_iter()
 		.fold(Router::new(), |r, route| r.route(route.path, route.handler()))
+		.route("/health", axum::routing::get(|| async { "ok" }))
 		.with_state(studies))
 }
 
