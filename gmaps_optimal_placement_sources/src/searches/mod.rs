@@ -4,12 +4,18 @@ mod dataforseo;
 mod google_ads;
 
 use eyre::{Result, bail};
+use sa_core::gbp::Country;
 use serde::{Deserialize, Serialize};
 
 use crate::work::Work;
 
+/// How many seeds one expansion takes: Keyword Planner's `keywordSeed` and DataForSEO's
+/// `keywords_for_keywords` both cap it at 20.
+pub const SEEDS: usize = 20;
+
 pub trait SearchVolume {
-	/// Keywords semantically around `seeds`, each with its own trailing-12-month series.
+	/// Keywords semantically around `seeds` (at most [`SEEDS`]), each with its own trailing-12-month
+	/// series.
 	/// `place` is a Google canonical location name; `lang` an ISO-639-1 code.
 	fn ideas(&self, seeds: &[String], place: &str, lang: &str, work: &Work) -> Result<Vec<Keyword>>;
 	/// `keywords` exactly, each with its own trailing-12-month series where it has one. What a study
@@ -55,15 +61,14 @@ pub fn provider(name: &str, ads: &[Ads]) -> Result<Box<dyn SearchVolume>> {
 	}
 }
 
-/// The Google canonical name of a country, which both providers resolve volume against. A row per
-/// country a GBP can be in (`sa_core::gbp::Country`).
-pub fn country_place(iso: &str) -> Result<&'static str> {
-	const PLACES: &[(&str, &str)] = &[("FR", "France"), ("US", "United States"), ("CA", "Canada"), ("GB", "United Kingdom")];
-	PLACES
-		.iter()
-		.find(|(c, _)| *c == iso)
-		.map(|(_, p)| *p)
-		.ok_or_else(|| eyre::eyre!("no canonical place known for country {iso:?} — add it to PLACES in searches/mod.rs"))
+/// The Google canonical name of a country, which both providers resolve volume against.
+pub fn country_place(country: Country) -> &'static str {
+	match country {
+		Country::FR => "France",
+		Country::US => "United States",
+		Country::CA => "Canada",
+		Country::GB => "United Kingdom",
+	}
 }
 
 fn env(var: &str) -> Result<String> {

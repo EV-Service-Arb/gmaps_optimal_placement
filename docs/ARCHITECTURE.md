@@ -4,7 +4,7 @@ Where should a service business open. An area and the country base under it desc
 and the statistical grid behind it; a trade, applied to that area, describes how demand follows from
 whatever columns that grid publishes and how to read a competitor's name; the conductor's category —
 a trade in a country — says what the trade is called on Google and what its customers type. The
-tool serves a map that answers it.
+tool builds the payload that answers it; the conductor's map draws it.
 
 The question is the input. Retargeting an area, a country, a trade or a category is an edit to one
 of those documents, never to the code.
@@ -16,7 +16,7 @@ of those documents, never to the code.
    │ gmaps_optimal_placement_sources        network, cache     │
    │   GridSource ─ INSEE Filosofi 200 m                       │
    │               GEOSTAT 1 km                                │
-   │   PoiSource  ─ Google Places                              │
+   │   PoiSource  ─ the conductor's queries cache (Places)     │
    │   probe      ─ the same, asked from a node                │
    │   SearchVolume ─ Google Ads · DataForSEO                  │
    └──────┬────────────────────────────────────┬───────────────┘
@@ -37,21 +37,18 @@ of those documents, never to the code.
            │  every expression                     │  every slider
    ┌───────┴──────────────────────────┐   ┌────────┴──────────────────────┐
    │ gmaps_optimal_placement          │   │ gmaps_optimal_placement_web   │
-   │   CLI, study, settings, HTML     │──▶│   ssr: axum + server fns      │
-   │   categories × areas             │   │   hydrate: the MapView island │
-   └───────┬──────────────────────────┘   │   map_core.js: map, pins      │
-           │  the orderings on disk       └────────┬──────────────────────┘
-   ┌───────┴──────────────────────────┐   ┌────────┴──────────────────────┐
-   │ gmaps_optimal_placement_rank     │   │ gmaps_optimal_placement_overlay│
-   │   Observed · Strategy · Strength │   │   Scene: heat · field · dots  │
-   │   Adam, k-fold, the league table │   │   paint.js: the canvases      │
-   └──────────────────────────────────┘   │   overlay.js: /mfe, any host  │
-                                          └────────┬──────────────────────┘
-                                                   ▼
-                          gop's own map · the conductor's map · one <name>-searches.html
+   │   CLI, study, settings, HTML     │──▶│   the conductor's API:        │
+   │   categories × areas             │   │   Definition in, Payload out  │
+   └───────┬──────────────────────────┘   └────────┬──────────────────────┘
+           │  the orderings on disk                 ▼
+   ┌───────┴──────────────────────────┐   site_conductor: its map's overlay links
+   │ gmaps_optimal_placement_rank     │   `_core` (Payload, Model) at build time
+   │   Observed · Strategy · Strength │
+   │   Adam, k-fold, the league table │
+   └──────────────────────────────────┘
 ```
 
-A study is a `core::define::Definition`: an area (a city's viewport or a circle, and a margin, as
+A study is an `sa_core::placement::Definition`: an area (a city's viewport or a circle, and a margin, as
 the conductor keeps it) and a category, each named as the conductor names it. What the category
 says drives the billed half — its Google categories are the sweep's queries and its primary is the
 first tier's Places type; its keywords are what every competitor is scored on, each weighed by its
@@ -64,12 +61,10 @@ category is that function's identity — the area's own attrset is already a stu
 is the one `Option` that says so, and everything behind it is everything that is billed. A city can
 therefore be looked at before any of the Places quota goes on it.
 
-gop's own page holds two axes of files, `--categories` and `--locations`, and picks a point on
-their product — one field per axis, both live at once, because a coordinate is known in either
-order; a separate Load spends the pair. Naming both as files builds one before the listener binds,
-which is what keeps a scripted run off the picker. What a study is *called* —
-`<study>·<CC>·<slug>` — is the definition's; the web crate keys the page on the stems and the pin
-file keys on the name, so neither has a second spelling of it to keep in step.
+The CLI's commands other than `serve` hold two axes, the conductor's categories and `--locations`
+(files): a category is the latest the conductor handed in (the definitions under the work dir's
+`studies/`), because gop never reads the conductor, and a copy of a category kept beside the trades
+would drift from it. What a study is *called* — `<study>·<CC>·<slug>` — is the definition's.
 
 The map answers where the people are. It does not answer how many are looking for the thing, which
 is what `searches` is for: a cell can be dense, affluent and uncontested and still sit under a trade
@@ -96,21 +91,14 @@ carry whatever it needs without that landing in the browser or beside the HTTP s
 Both sides are Rust. `gmaps_optimal_placement_core` is wasm-safe and holds the model, so the same code that
 `cargo t` pins against a fixture is the code the browser runs.
 
-## The line between Rust and JavaScript
+## The line between this repo and the conductor
 
-What is painted over a map is `gmaps_optimal_placement_overlay`'s, and there is one path for it:
-`Scene` decides every number, `paint.js` projects and fills, because filling needs
-`fromLatLngToDivPixel` every frame. gop's Leptos map and the conductor's page both draw through it;
-`map_core.js` keeps what is gop's page alone — the map instance, the pins, the pan. The pattern is
-`v_utils::lwc`'s.
-
-The conductor imports `/mfe/overlay.js` onto a `google.maps.Map` it owns: the map, its styles and
-its own markers stay the host's. The module comes from the same build as the payloads it reads, so
-`Model::try_new` checks their weights against the `rank::COEF` it was linked with.
-
-Nothing throws across either boundary for a data problem. Under `panic=abort` a rejected promise
-reaching wasm kills the app, so `map_core.js`'s `mount` returns a banner string; the overlay turns a
-payload that will not arrive, parse or build into a `notice` event.
+The conductor is the one surface placement is used through. Its map is drawn by its own crate, which
+depends on `_core` here (the `ts` feature: its types in the overlay's `.d.ts`), so the model the
+browser runs and the payload it reads are checked against each other by the compiler: `Model::try_new`
+checks a payload's weights against the `rank::COEF` it was linked with. Everything else crosses as
+`sa_core::placement`. This repo keeps what training needs: the grids, the sources, `probe`'s plan,
+`fit`, `strength`; and what it trains on is what the conductor bought, never a search of its own.
 
 ## Two visual axes
 
@@ -125,18 +113,26 @@ legend's ticks move with the view.
 
 ## Behind the conductor
 
-`serve --behind-conductor` serves no page and holds no axis: it takes `--trades` and `--countries`
-and builds whatever definition the conductor's map hands in (`PUT /studies/{sha}`, then `GET`). Every
-request but `/mfe/*` carries the conductor's assertion for exactly its method and path, checked
-against `PANEL_ASSERTION_KEYS`; a pull needs `sa:placement:study:spend`, anything else
-`sa:placement:study:read`. Only a pull spends: a study whose answers are not in the work dir opens on
-what the work dir holds, and its notice says how many are missing. Either reads the queries cache.
+`serve` serves no page and holds no axis: it takes `--trades` and `--countries` and builds whatever
+definition the conductor hands in (`gmaps_optimal_placement_web`). Its operations are one
+`ev_lib::api` table: each row's gate is an `sa_auth::Gate` naming the permission it opens for, and a
+refusal is `{code, error}`. Every request carries the conductor's assertion for exactly its method
+and path, checked against `PANEL_ASSERTION_KEYS`; a pull's two operations need
+`sa:placement:study:spend`, anything else `sa:placement:study:read`. Nothing here buys: every
+study is built out of the work dir and the queries cache, and one whose sweep is not all there opens
+on what is, its notice saying how many searches it lacks at least.
 
-The conductor charges the person per Places search, so a pull names what it may buy
-(`?budget=<n>`, required) and is held to it at every search: a sweep the free walk counts past it
-is refused before the first with `402 {need, budget}`, and one that outgrows its count is stopped
-at the budget with the same. Every answer to a pull, refusals and failures included, carries
-`x-billed`: the searches it bought, which is what the person is charged.
+A pull is the conductor's: it asks `POST /studies/asks` what the study lacks — the first unanswered
+page down each branch of the sweep, as an `sa_core::placement::Ask` keyed as the work dir keys it —
+buys those into the queries cache, and asks again, since what lies behind a page (the next one, a
+tile's quarters) is known only once it is answered. Once none is lacking it asks `POST
+/studies/pull`, which builds the study again out of them. The conductor prices and charges every
+search it bought; placement never counts one.
+
+A pull re-asks every answer written before it began — unless one before it did not end whole, in
+which case it re-asks only those written before *that* one began (`{sha}.resume` beside the
+definition, its id, the `since` every `asks` answers with, gone on `/studies/pull`). What a stopped
+pull paid for is served to its retry, so a refunded failure is never bought twice.
 
 ## Invariants
 
@@ -166,22 +162,23 @@ at the budget with the same. Every answer to a pull, refusals and failures inclu
   entrant over the same orderings, held out by the region each was asked from, and refuses the table
   if counting every competitor the same predicts Google as well. An in-sample likelihood cannot tell
   a fitted weight from a memorised one, and a memorised one paints a map that looks decided.
-- **The study file is a seed, never a sink.** `serve` only reads it. Pins promoted or hidden on the
-  map are a diff beside it, under `XDG_DATA_HOME` — data, not cache, because a promoted candidate is
-  a decision and cache is what cleaners delete.
+- **The conductor is the one center of data ingestion.** A Places search is never bought here, for
+  a map or for training: the conductor buys what a pull lacks, and `fit` and `strength` read only
+  what it already holds. A study placement cannot build out of that says so and opens on the rest.
 - **A Google key is a slot of a billing account, and lives in the server's environment, never in an
   artifact.** The config's `google` is accounting's google.nix `accounts`, imported whole, so every
-  spend shows in that account's billing export; each slot names the variable holding its key.
+  keyword volume bought shows in that account's billing export; each slot names the variable holding
+  its key.
 - **A billed answer is bought once, wherever this runs.** Places, DataForSEO and Keyword Planner
   answers are kept in the conductor's queries cache (settings' `queries_cache`; site_conductor's
   docs/ARCHITECTURE.md, Queries cache), claimed there while bought; the work dir under `$XDG_CACHE_HOME/gmaps_optimal_placement` mirrors
   what it served, and a run goes on from that mirror with the cache out of reach until it needs an
-  answer the mirror lacks. `local` keeps them in the work dir alone. Bulk archives are free and cache there alone — the INSEE archive is ~87 MB.
+  answer the mirror lacks. `local` reads the work dir alone. Bulk archives are free and cache there alone — the INSEE archive is ~87 MB.
   A 200 that is a refusal is never kept: it would answer for its request everywhere.
 - **Nothing in that cache expires.** An answer older than its kind's configured age is served anyway,
   and its age rides onto the map beside the imputed flag. Google's daily search quota is the scarce
-  side, and refetching spends a day of it to learn what is mostly the same thing; `--refresh`, or the
-  map's re-ask, is the only thing that re-asks. Age is a caption and a changed tiling is a setting;
+  side, and refetching spends a day of it to learn what is mostly the same thing; a pull is the only
+  thing that re-asks. Age is a caption and a changed tiling is a setting;
   neither is a trigger.
 - **A cache key covers everything its answer depends on**, so a changed input is a different file
   rather than a stale one and nothing needs invalidating. An answer is keyed on the ground it is
@@ -189,11 +186,9 @@ at the budget with the same. Every answer to a pull, refusals and failures inclu
   share it. A derived answer is cached only where it is
   reproducible from what is kept: the grid extract keeps the archive's own rows and re-parses them,
   because caching the floats would need a round-trip no text format gives.
-- **What a run is about to spend is stated, never guessed at.** No API key can read what is left of
-  its project's `SearchTextRequestPerDayPerProject`, so a local tally could only ever refuse work
-  Google would have served. What the work dir is missing is counted and announced before anything is
-  bought; what remains is Google's to say, in the 429 — which moves the run on to the next account's
-  `places` key, in the list's order, until none is left.
+- **What a pull lacks is named, never guessed at.** No API key can read what is left of its
+  project's `SearchTextRequestPerDayPerProject`, so placement does not count one: it names the
+  searches a study lacks, and the conductor's keys and meters decide what buying them costs.
 
 ## Sources are an enum
 
@@ -216,8 +211,9 @@ without pretending the set is compile-time known.
 They agree on the string that names a place, because DataForSEO's `location_name` format *is*
 Google's `canonicalName`. Switching provider is a one-word study edit.
 
-Grouping is by essence, not by string: a study names seeds, the provider expands them semantically,
-a regex filters that expansion and the survivors sum into one line. The expansion is fuzzy, so every
+Grouping is by essence, not by string: the category's keywords are the seeds, the provider expands
+them semantically, each of the trade's groups is a regex over that one expansion, and its survivors
+sum into one line. The expansion is fuzzy, so every
 member and its own series survives into the page — a sum you cannot audit is a sum you cannot argue
 with. A keyword the provider has no data for is excluded from the sum, never zero-filled.
 

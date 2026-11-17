@@ -1,8 +1,8 @@
 # Worked studies
 
-There is no code here. A study is a **category over an area**: the category (`categories/*.json`,
-in the shape the conductor hands one in) names the trade file that studies it, and that trade is
-applied to the area — `import trades/cleaning.nix (import locations/Lyon.nix)`.
+There is no code here. A study is a **category over an area**: the category (the conductor's, as a
+definition it handed in carries it) names the trade file that studies it, and that trade is applied
+to the area — `import trades/cleaning.nix (import locations/Lyon.nix)`.
 
 ```
                      countries/FR.nix            grid, nv, cars, the base layers, the volume provider
@@ -12,7 +12,7 @@ applied to the area — `import trades/cleaning.nix (import locations/Lyon.nix)`
    trades/   car_detailing.nix  plumbing.nix  cleaning.nix
                                      `loc: { … }` — a function of the area it is handed
                    ^      ^      ^
-   categories/  car_detailing_FR.json  plumbing_FR.json  cleaning_FR.json
+   the conductor's category (its trade, country, `study`)
                 Google categories → the sweep's queries and the first tier's type
                 keywords          → the terms competitors are scored on, weighed by volume
 
@@ -36,7 +36,7 @@ for unpaid commute and the slider's *opening* position.
 
 ```fish
 nix run .#open                                   # the page opens on a picker: category and city, then Load
-nix run .#open -- -c examples/categories/plumbing_FR.json -l examples/locations/Clermont-Ferrand.nix  # or name one
+nix run .#open -- -c 'plumbing·FR (trade 1)' -l examples/locations/Clermont-Ferrand.nix  # or name one
 nix run .#searches                               # fzf twice; monthly volume per query group
 nix run .#study                                  # the detailing map, asserted in headless Chromium
 ```

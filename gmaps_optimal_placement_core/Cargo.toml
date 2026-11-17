@@ -7,6 +7,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# what the overlay tells its host, declared in its .d.ts
+ts = ["dep:tsify", "dep:wasm-bindgen"]
+
 [dependencies]
 evalexpr.workspace = true
 eyre.workspace = true
@@ -15,7 +19,8 @@ proj4rs.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
+tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
 
 [dev-dependencies]
 insta.workspace = true

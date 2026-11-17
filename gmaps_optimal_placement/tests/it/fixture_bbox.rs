@@ -3,22 +3,26 @@
 //!
 //! Reads the bulk archive out of the work dir, downloading it once if absent. No POI call
 //! is made: [`Study::cells`] stops before the billed half.
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use gmaps_optimal_placement::{Base, Study};
-use gmaps_optimal_placement_core::define::{Area, Category, Definition, Viewport};
 use gmaps_optimal_placement_sources::{Work, work::QueriesCache};
+use sa_core::{
+	gbp::Country,
+	geo::Viewport,
+	placement::{Area, Category, Definition, Gcid},
+};
 
 fn root() -> &'static Path {
 	Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("crate lives in the workspace")
 }
 
 /// The same few hundred cells every time, so two studies over them are comparable.
-fn narrowed(category: Option<PathBuf>) -> Study {
+fn narrowed(category: Option<Category>) -> Study {
 	let def = Definition {
 		area: Area::City {
 			slug: "clermont-ferrand".into(),
-			country: "FR".into(),
+			country: Country::FR,
 			viewport: Viewport {
 				south: 45.770,
 				west: 3.050,
@@ -27,14 +31,24 @@ fn narrowed(category: Option<PathBuf>) -> Study {
 			},
 			margin_m: 0.,
 		},
-		category: category.map(|c| serde_json::from_str::<Category>(&std::fs::read_to_string(c).unwrap()).unwrap()),
+		category,
 	};
 	gmaps_optimal_placement::load(&def, Base::Location(&root().join("examples/locations/Clermont-Ferrand.nix")), &root().join("examples/trades")).unwrap()
 }
 
 #[test]
 fn clermont_centre() {
-	let study = narrowed(Some(root().join("examples/categories/car_detailing_FR.json")));
+	let study = narrowed(Some(Category {
+		trade: 3,
+		country: Country::FR,
+		study: "car_detailing".into(),
+		keywords: vec!["lavage auto".into(), "nettoyage voiture".into()],
+		google_primary: Gcid {
+			id: "gcid:car_detailing_service".into(),
+			name: "Service d'esthétique automobile".into(),
+		},
+		google_additional: Vec::new(),
+	}));
 	assert_eq!(study.name, "car_detailing·FR·clermont-ferrand", "the study names itself off its trade, country and area");
 	let c = study.cells(&Work::at(v_utils::xdg_cache_dir!(""), QueriesCache::Local)).unwrap();
 	let sum = |v: &[f64]| v.iter().sum::<f64>();

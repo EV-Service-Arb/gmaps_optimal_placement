@@ -1,19 +1,14 @@
 //! The work dir: bulk archives and API responses, so a rerun costs nothing. A billed response is
 //! the conductor's queries cache's to keep (`sa_core::queries_cache`), so it is bought once wherever
 //! this runs; the work dir mirrors what the cache served, and runs on from that mirror while the
-//! cache is out of reach, until a response it does not hold is needed.
+//! cache is out of reach, until a response it does not hold is needed. A Places search is never
+//! bought here: the conductor buys what a study lacks ([`sa_core::placement::Ask`]), and this reads it.
 //!
 //! Nothing here expires. An answer past the age its kind allows is still served and its age is
 //! reported, because the alternative — refetching — spends a day of quota to learn the same thing,
 //! and the quota is the scarce side. What the ages buy is a map that says how old it is.
-//!
-//! Nothing here counts the quota either. `SearchTextRequestPerDayPerProject` is not readable with an
-//! API key, so a local tally is a guess about a number two other runs and yesterday's clock all move
-//! — and a guess that refuses is a guess that stops work Google would have served. What a sweep is
-//! about to ask for is stated before it asks, out of what the cache is missing; what is actually
-//! left is Google's to say, and it says it in the 429.
 use std::{
-	cell::{Cell, RefCell},
+	cell::RefCell,
 	fs,
 	io::Read,
 	path::{Path, PathBuf},
@@ -21,10 +16,9 @@ use std::{
 };
 
 use eyre::{Result, WrapErr, bail};
-use gmaps_optimal_placement_core::define::Unaffordable;
 use sa_core::{
 	prices::Item,
-	queries_cache::{Claim, ClaimBody, Key, Put, Scheme, Stored, under},
+	queries_cache::{Claim, ClaimBody, Key, Put, Scheme, Stored, gop, under},
 	usage::{Bill, Billed},
 };
 use sha2::{Digest, Sha256};
@@ -70,62 +64,10 @@ impl Default for Age {
 	}
 }
 const YEAR: Duration = Duration::from_secs(365 * 86_400);
-/// The one quota a sweep runs out of.
-const QUOTA: &str = "SearchTextRequestPerDayPerProject";
 
-/// Why a key can buy no more searches today. An API key cannot read either state ahead of time —
-/// `serviceusage` answers `API_KEY_SERVICE_BLOCKED` and `monitoring` refuses keys outright — so a
-/// refusal is the only place either is ever visible.
-#[derive(Clone, Debug)]
-pub enum Spent {
-	/// The project's `SearchTextRequestPerDayPerProject`, as the 429 spelled it.
-	Quota {
-		limit: String,
-		/// Unix seconds the window rolls over at.
-		reset: Option<u64>,
-	},
-	/// The project has no billing, which is what an ended trial looks like.
-	Billing,
-}
-impl std::fmt::Display for Spent {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::Quota { limit, reset } => {
-				write!(f, "its project's {limit} searches a day are used")?;
-				if let Some(r) = reset {
-					write!(f, ", until {:02}:{:02} UTC", r % 86_400 / 3600, r % 3600 / 60)?;
-				}
-				Ok(())
-			}
-			Self::Billing => write!(f, "its project's billing is disabled"),
-		}
-	}
-}
-
-/// Every configured key, spent. The one refusal this tool expects to meet.
-///
-/// Its own type because a caller painting a map has somewhere to go from here and a caller buying an
-/// inventory does not, and the two cannot tell a spent day from a malformed query through a string.
-#[derive(Debug)]
-pub struct Exhausted(pub Vec<Spent>);
-impl std::fmt::Display for Exhausted {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		let why: Vec<String> = self.0.iter().map(ToString::to_string).collect();
-		write!(
-			f,
-			"the day's Google Places searches are spent on every configured key ({}). Nothing already answered is re-asked, so a rerun pays only for the rest",
-			why.join("; ")
-		)
-	}
-}
-impl std::error::Error for Exhausted {}
-
-/// A run that buys nothing met paid questions the work dir has no answer for — Places searches, or
-/// keyword volumes. A refusal of the same shape as [`Exhausted`], so a map opens on what the work dir
-/// does hold for either.
+/// A run that buys nothing met keyword volumes the work dir has no answer for.
 #[derive(Debug)]
 pub struct Blocked {
-	/// At least this many: a tile at the cap opens four more nobody has counted.
 	pub missing: usize,
 }
 impl std::fmt::Display for Blocked {
@@ -146,23 +88,6 @@ pub struct Aged {
 impl std::fmt::Display for Aged {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(f, "oldest {:.1} d, median {:.1} d", days(self.oldest), days(self.median))
-	}
-}
-
-/// How many searches something is about to ask for. A sweep cannot say exactly — a tile at the
-/// result cap opens four more — so the two cases are distinguished rather than averaged into a
-/// number that reads as certain.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum Need {
-	Exact(usize),
-	AtLeast(usize),
-}
-impl std::fmt::Display for Need {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::Exact(n) => write!(f, "{n}"),
-			Self::AtLeast(n) => write!(f, "at least {n}"),
-		}
 	}
 }
 
@@ -190,27 +115,17 @@ impl std::str::FromStr for QueriesCache {
 pub struct Work {
 	dir: PathBuf,
 	cache: QueriesCache,
-	billed: Cell<usize>,
 	/// Configured rather than `ureq::post`: the default turns a 4xx into an error before the body is
-	/// read, and a Google error body is the only thing that says which quota ran out.
+	/// read, and a provider's error body is the only thing that says what went wrong.
 	agent: ureq::Agent,
 	age: Age,
 	tiling: crate::poi::Tiling,
-	/// Re-ask every billed request and overwrite what it answered. The only thing that spends on a
-	/// question already answered; age alone never does.
-	refresh: bool,
-	/// Buy what the work dir has no answer for; off, every such paid question is refused.
+	/// An answer written before this is as good as none: a pull's, which asks again what it is built from.
+	since: Option<SystemTime>,
+	/// Buy the keyword volumes the work dir has no answer for; off, every such question is refused.
 	spend: bool,
-	/// Places searches this run may buy at most; `None` is whatever the sweep needs.
-	budget: Option<usize>,
 	/// Age of every cached answer this run served, by kind.
 	served: RefCell<Vec<(Kind, Duration)>>,
-	/// Places keys in the order they are spent, each its own project's quota, beside the name of the
-	/// account (accounting's google.nix) it bills to.
-	keys: Vec<(String, String)>,
-	/// Why each of the first `len` keys can buy no more. Per `Work`, so the next run starts over on
-	/// the most preferred key: a 429 is not billed, and quota comes back the next day.
-	spent: RefCell<Vec<Spent>>,
 }
 
 impl Work {
@@ -218,26 +133,13 @@ impl Work {
 		Self {
 			dir: dir.into(),
 			cache,
-			billed: Cell::new(0),
 			agent: ureq::Agent::config_builder().http_status_as_error(false).build().new_agent(),
 			age: Age::default(),
 			tiling: crate::poi::Tiling::default(),
-			refresh: false,
+			since: None,
 			spend: false,
-			budget: None,
 			served: RefCell::default(),
-			keys: Vec::new(),
-			spent: RefCell::default(),
 		}
-	}
-
-	pub fn keys(mut self, keys: Vec<(String, String)>) -> Self {
-		assert!(
-			keys.iter().enumerate().all(|(i, (_, k))| keys[..i].iter().all(|(_, o)| o != k)),
-			"a key listed twice is one project's quota counted twice"
-		);
-		self.keys = keys;
-		self
 	}
 
 	/// The policy the CLI resolved out of its config. Plain values rather than the config type, so
@@ -253,8 +155,9 @@ impl Work {
 		self.tiling
 	}
 
-	pub fn refresh(mut self, yes: bool) -> Self {
-		self.refresh = yes;
+	/// Answers written before `since` are lacking.
+	pub fn since(mut self, since: Option<SystemTime>) -> Self {
+		self.since = since;
 		self
 	}
 
@@ -263,15 +166,9 @@ impl Work {
 		self
 	}
 
-	pub fn budget(mut self, searches: Option<usize>) -> Self {
-		self.budget = searches;
-		self
-	}
-
-	/// Whether an answer already on disk will be bought again — which is what a preflight has to
-	/// count, and the read-only walk that counts it is deliberately not affected.
-	pub fn refreshing(&self) -> bool {
-		self.refresh
+	/// Whether an answer written `at` is as good as none.
+	pub(crate) fn stale(&self, at: SystemTime) -> bool {
+		self.since.is_some_and(|since| at < since)
 	}
 
 	pub fn path(&self) -> &Path {
@@ -282,14 +179,8 @@ impl Work {
 		&self.cache
 	}
 
-	/// Places searches bought since this `Work` was made: what a budget is spent in.
-	pub fn billed(&self) -> usize {
-		self.billed.get()
-	}
-
 	/// Answers served for `kind`, paid or not — one per page, which is one unit of
-	/// `SearchTextRequestPerDayPerProject` whatever the mask. `billed` counts only the misses, so
-	/// this is what a keyless walk can report and that one cannot.
+	/// `SearchTextRequestPerDayPerProject` whatever the mask.
 	pub(crate) fn calls(&self, kind: Kind) -> usize {
 		self.served.borrow().iter().filter(|(k, _)| *k == kind).count()
 	}
@@ -310,41 +201,12 @@ impl Work {
 		})
 	}
 
-	/// Drop what has been recorded for `kind`. For a walk that read the cache to price a purchase
-	/// rather than to answer with it: what it served is not what the map is painted from.
-	pub fn forget(&self, kind: Kind) {
-		self.served.borrow_mut().retain(|(k, _)| *k != kind);
-	}
-
 	/// An answer was served, and this is when it was written. Called by whoever knows what the call
 	/// was about — the cache itself only sees a URL and a body.
 	pub fn record(&self, kind: Kind, at: SystemTime) {
 		// an mtime ahead of now is a clock that moved, and the answer is still not old
 		let age = SystemTime::now().duration_since(at).unwrap_or(Duration::ZERO);
 		self.served.borrow_mut().push((kind, age));
-	}
-
-	/// What this is about to ask Google for, said before it asks. A report and never a refusal:
-	/// what is left of the quota is not knowable from here, and a sweep stopped by a guess costs
-	/// exactly as much as one Google stopped, minus what it would have found.
-	pub(crate) fn announce(&self, what: &str, need: Need) {
-		match need {
-			Need::Exact(0) | Need::AtLeast(0) => eprintln!("{what}: answered in full from the work dir, nothing to buy"),
-			_ if !self.spend => eprintln!("{what}: {need} searches are not in the work dir, and without `--spend-real-quota-i-am-certain` none is bought"),
-			_ => eprintln!("{what}: {need} searches are not in the work dir and will be bought"),
-		}
-	}
-
-	/// Refused here, before the first request, when this run buys nothing and `missing` is not zero,
-	/// or when `missing` searches are past the budget.
-	pub(crate) fn may_buy(&self, missing: usize) -> Result<()> {
-		if !self.spend && missing > 0 {
-			return Err(Blocked { missing }.into());
-		}
-		match self.budget {
-			Some(budget) if missing > budget => Err(Unaffordable { need: missing, budget }.into()),
-			_ => Ok(()),
-		}
 	}
 
 	/// A path under the work dir for something derived from what is already there, named by a key its
@@ -394,13 +256,9 @@ impl Work {
 		Ok(dst)
 	}
 
-	/// A cached POST, and when the answer was written. The key is the request itself, so editing a
-	/// query refetches and rerunning does not. `refused` names what in a 200 is a refusal rather than
-	/// an answer: one kept would answer for its request everywhere, forever.
-	///
-	/// The key covers url and body but not headers, and a Places field mask is a header that changes
-	/// the response shape. Two callers asking the same body under different masks would share one
-	/// entry; today they do not, because they differ in the body as well.
+	/// A cached POST of keyword volumes, and when the answer was written. The key is the request
+	/// itself, so editing a query refetches and rerunning does not. `refused` names what in a 200 is
+	/// a refusal rather than an answer: one kept would answer for its request everywhere, forever.
 	pub fn cached_post(
 		&self,
 		item: Item,
@@ -409,27 +267,21 @@ impl Work {
 		headers: &[(&str, &str)],
 		refused: &dyn Fn(&serde_json::Value) -> Option<String>,
 	) -> Result<(serde_json::Value, SystemTime)> {
-		if !self.refresh
-			&& let Some(hit) = self.cached(url, body)?
+		if let Some(hit) = self.cached(url, body)?
+			&& !self.stale(hit.1)
 		{
 			return Ok(hit);
 		}
+		assert_ne!(url, crate::poi::SEARCH_TEXT, "a Places search is the conductor's to buy");
 		if !self.spend {
 			return Err(Blocked { missing: 1 }.into());
 		}
-		// before the claim: a claim granted is a search this run has undertaken to buy
-		if url == crate::poi::SEARCH_TEXT
-			&& let Some(budget) = self.budget
-			&& self.billed.get() >= budget
-		{
-			return Err(Unaffordable { need: budget + 1, budget }.into());
-		}
 		let canonical = serde_json::to_string(body)?;
-		let request = format!("{url}\n{canonical}");
+		let request = gop(url, &canonical);
 		let key = Key(Sha256::digest(request.as_bytes()).into());
 		let dst = self.post_path(key)?;
 		if let QueriesCache::Conductor(_) = self.cache {
-			let fresh_since = self.refresh.then(jiff::Timestamp::now);
+			let fresh_since = self.since.map(jiff::Timestamp::try_from).transpose().wrap_err("a pull dated before 1970")?;
 			loop {
 				match self.ask_cache("POST", &format!("{}/claim", under(Scheme::Gop, key)), &serde_json::to_vec(&ClaimBody { fresh_since })?)? {
 					(200, text) => match serde_json::from_str(&text).wrap_err("the queries cache's claim")? {
@@ -457,7 +309,7 @@ impl Work {
 				bought: Some(Billed {
 					item,
 					bill: Bill::Ours,
-					account: (url == crate::poi::SEARCH_TEXT).then(|| self.keys[self.spent.borrow().len()].0.clone()),
+					account: None,
 				}),
 			})?;
 			match self.ask_cache("PUT", &under(Scheme::Gop, key), &put)? {
@@ -474,56 +326,19 @@ impl Work {
 		Ok((answer, SystemTime::now()))
 	}
 
-	/// `canonical` POSTed to `url`, with the first key not spent when it is a Places search: the
-	/// answer, and its text. What is paid for and not an answer is kept beside `dst`.
+	/// `canonical` POSTed to `url`: the answer, and its text. What is paid for and not an answer is
+	/// kept beside `dst`.
 	fn buy(&self, url: &str, canonical: &str, headers: &[(&str, &str)], refused: &dyn Fn(&serde_json::Value) -> Option<String>, dst: &Path) -> Result<(serde_json::Value, String)> {
-		let places = url == crate::poi::SEARCH_TEXT;
-		#[cfg(debug_assertions)] // a test stands a stub in for Google; a release build only ever asks Google
-		let stub = std::env::var_os("GOP_PLACES_STUB").filter(|_| places).map(|s| s.into_string().expect("GOP_PLACES_STUB is a URL"));
-		#[cfg(not(debug_assertions))]
-		let stub: Option<String> = None;
-		let to = stub.as_deref().unwrap_or(url);
-		let (status, text) = loop {
-			let mut req = self.agent.post(to).header("Content-Type", "application/json");
-			for (k, v) in headers {
-				req = req.header(*k, *v);
-			}
-			if places {
-				let at = self.spent.borrow().len();
-				eyre::ensure!(
-					!self.keys.is_empty(),
-					"a Places search the work dir has no answer for needs an account in the config's `google` that provides `places`"
-				);
-				let Some((_, key)) = self.keys.get(at) else {
-					return Err(Exhausted(self.spent.borrow().clone()).into());
-				};
-				req = req.header("X-Goog-Api-Key", key);
-			}
-			let mut res = req.send(canonical.as_bytes()).wrap_err_with(|| format!("POST {to}"))?;
-			let status = res.status();
-			let mut text = String::new();
-			res.body_mut().as_reader().read_to_string(&mut text)?;
-			// the body of a refusal says which quota or which field, and it is never kept: one kept 429
-			// would answer for that request forever
-			if !status.is_success()
-				&& places && let Some(why) = Self::spent(&text)
-			{
-				let mut spent = self.spent.borrow_mut();
-				let tail = |k: &str| format!("…{}", &k[k.len().saturating_sub(4)..]);
-				match self.keys.get(spent.len() + 1) {
-					Some((_, next)) => eprintln!("key {} spent: {why}; moving to {}", tail(&self.keys[spent.len()].1), tail(next)),
-					None => eprintln!("key {} spent: {why}; no key left", tail(&self.keys[spent.len()].1)),
-				}
-				spent.push(why);
-				continue;
-			}
-			break (status, text);
-		};
+		let mut req = self.agent.post(url).header("Content-Type", "application/json");
+		for (k, v) in headers {
+			req = req.header(*k, *v);
+		}
+		let mut res = req.send(canonical.as_bytes()).wrap_err_with(|| format!("POST {url}"))?;
+		let status = res.status();
+		let mut text = String::new();
+		res.body_mut().as_reader().read_to_string(&mut text)?;
 		if !status.is_success() {
 			bail!("POST {url} -> {status}\n{}", text.trim());
-		}
-		if places {
-			self.billed.set(self.billed.get() + 1);
 		}
 		// billed already, so kept beside the cache rather than in it, where it would answer for the request forever
 		let kept = dst.with_extension("rejected");
@@ -542,25 +357,27 @@ impl Work {
 	}
 
 	/// The response to this exact request and when it was written, if it has been made before: out
-	/// of the work dir, else out of the queries cache, mirrored. Reading the probe's orderings back this way
-	/// is what keeps a refit from turning into a purchase.
+	/// of the work dir, else (or when that one is [stale](Self::stale)) out of the queries cache,
+	/// mirrored. Reading the probe's orderings back this way is what keeps a refit from turning into a
+	/// purchase.
 	pub fn cached(&self, url: &str, body: &serde_json::Value) -> Result<Option<(serde_json::Value, SystemTime)>> {
-		let key = Key(Sha256::digest(format!("{url}\n{}", serde_json::to_string(body)?).as_bytes()).into());
+		let key = Key(Sha256::digest(gop(url, &serde_json::to_string(body)?).as_bytes()).into());
 		let dst = self.post_path(key)?;
-		match fs::read_to_string(&dst) {
-			Ok(s) => {
-				let json = serde_json::from_str(&s).wrap_err_with(|| format!("cached response {} is not JSON", dst.display()))?;
-				return Ok(Some((json, mtime(&dst)?)));
-			}
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+		let mirrored = match fs::read_to_string(&dst) {
+			Ok(s) => Some((serde_json::from_str(&s).wrap_err_with(|| format!("cached response {} is not JSON", dst.display()))?, mtime(&dst)?)),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
 			Err(e) => return Err(e).wrap_err_with(|| format!("reading {}", dst.display())),
+		};
+		if mirrored.as_ref().is_some_and(|(_, at)| !self.stale(*at)) {
+			return Ok(mirrored);
 		}
 		if let QueriesCache::Local = self.cache {
-			return Ok(None);
+			return Ok(mirrored);
 		}
 		match self.ask_cache("GET", &under(Scheme::Gop, key), &[])? {
 			(200, text) => Ok(Some(self.mirror(&dst, serde_json::from_str(&text).wrap_err("the queries cache's answer")?)?)),
-			(404, _) => Ok(None),
+			// a mirror the cache never held: kept here before the cache was
+			(404, _) => Ok(mirrored),
 			(status, text) => bail!("the queries cache refused a read: {status}: {text}"),
 		}
 	}
@@ -608,21 +425,6 @@ impl Work {
 		Ok((json, SystemTime::now()))
 	}
 
-	/// What a refusal says about the key, if it says the key is done for the day. Anything else — a
-	/// malformed query, a key with the wrong referrer, a per-minute limit — is `None` and travels as
-	/// the body it arrived as.
-	fn spent(body: &str) -> Option<Spent> {
-		let v = serde_json::from_str::<serde_json::Value>(body).ok()?;
-		let details = v["error"]["details"].as_array()?;
-		if details.iter().any(|d| d["reason"].as_str() == Some("BILLING_DISABLED")) {
-			return Some(Spent::Billing);
-		}
-		let m = details.iter().map(|d| &d["metadata"]).find(|m| m["quota_limit"].as_str() == Some(QUOTA))?;
-		Some(Spent::Quota {
-			limit: m["quota_limit_value"].as_str().unwrap_or("?").to_owned(),
-			reset: m["window_start_time"].as_str().and_then(|s| s.parse::<u64>().ok()).map(|start| start + 86_400),
-		})
-	}
 }
 
 fn mtime(p: &Path) -> Result<SystemTime> {
@@ -641,64 +443,21 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
 	use super::*;
 
-	/// The body a spent window actually returns, trimmed to the detail the message reads.
-	const REFUSAL: &str = r#"{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[
-		{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED","metadata":{
-			"window_start_time":"1789369200","quota_limit_value":"100",
-			"quota_metric":"places.googleapis.com/SearchTextRequest",
-			"quota_limit":"SearchTextRequestPerDayPerProject"}}]}}"#;
-
-	/// What an ended trial returns.
-	const NO_BILLING: &str = r#"{"error":{"code":403,"status":"PERMISSION_DENIED","details":[
-		{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"BILLING_DISABLED","domain":"googleapis.com",
-			"metadata":{"consumer":"projects/1","service":"places.googleapis.com"}}]}}"#;
-
-	/// A refusal moves to the next key only when it says this key is done for the day: rotating on a
-	/// bad key or a bad query would spend the next project's quota on the same mistake. A malformed
-	/// refusal must not take the process down on the way to reporting the real error.
-	#[test]
-	fn a_refusal_is_read_for_what_it_says() {
-		let Some(Spent::Quota { limit, reset }) = Work::spent(REFUSAL) else {
-			panic!("the refusal names the daily search quota")
-		};
-		assert_eq!(limit, "100");
-		assert_eq!(reset, Some(1789369200 + 86_400));
-		assert!(matches!(Work::spent(NO_BILLING), Some(Spent::Billing)));
-		assert!(Work::spent(r#"{"error":{"code":400,"status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}"#).is_none());
-		assert!(Work::spent("not json at all").is_none());
-		assert!(Work::spent(r#"{"error":{}}"#).is_none());
-		assert!(Work::spent(r#"{"error":{"details":[{"metadata":{"quota_limit":"PlacesPerMinute"}}]}}"#).is_none());
-	}
-
-	/// A sweep wraps the refusal in a query and a tile on the way up, and a map falls back to the
-	/// grid on exactly this downcast: lose it and the page errors out instead.
-	#[test]
-	fn a_spent_day_is_still_itself_under_the_context_a_sweep_adds() {
-		let e = Err::<(), _>(eyre::Report::from(Exhausted(vec![Work::spent(REFUSAL).unwrap(), Spent::Billing])))
-			.wrap_err("sweeping \"plombier\"")
-			.wrap_err("plumbing in Lyon")
-			.unwrap_err();
-		assert!(e.downcast_ref::<Exhausted>().is_some());
-		assert!(format!("{e:#}").contains("spent"), "the chain carries what the day was refused for: {e:#}");
-	}
-
-	/// Without `spend` a Places miss is refused before it reaches the network, and what is on disk is still served.
+	/// Without `spend` a miss is refused before it reaches the network, and what is on disk is still served.
 	#[test]
 	fn a_blocked_run_serves_the_cache_and_buys_nothing() {
+		const IDEAS: &str = "https://api.dataforseo.invalid/v3/keywords_data/google_ads/keywords_for_keywords/live";
+		let item = Item::DataForSeo(sa_core::prices::DataForSeoTask::KeywordsForKeywords);
 		let dir = std::env::temp_dir().join(format!("gmaps_no_spend_{}", std::process::id()));
 		let work = Work::at(&dir, QueriesCache::Local);
-		let (hit, miss) = (serde_json::json!({"textQuery": "kept"}), serde_json::json!({"textQuery": "never asked"}));
-		let key = Key(Sha256::digest(format!("{}\n{}", crate::poi::SEARCH_TEXT, serde_json::to_string(&hit).unwrap())).into());
+		let (hit, miss) = (serde_json::json!({"keywords": ["kept"]}), serde_json::json!({"keywords": ["never asked"]}));
+		let key = Key(Sha256::digest(gop(IDEAS, &serde_json::to_string(&hit).unwrap())).into());
 		let dst = work.post_path(key).unwrap();
-		fs::write(&dst, r#"{"places":[]}"#).unwrap();
+		fs::write(&dst, r#"{"tasks":[]}"#).unwrap();
 
-		assert_eq!(
-			work.cached_post(crate::poi::SEARCH, crate::poi::SEARCH_TEXT, &hit, &[], &|_| None).unwrap().0,
-			serde_json::json!({"places": []})
-		);
-		let e = work.cached_post(crate::poi::SEARCH, crate::poi::SEARCH_TEXT, &miss, &[], &|_| None).unwrap_err();
+		assert_eq!(work.cached_post(item, IDEAS, &hit, &[], &|_| None).unwrap().0, serde_json::json!({"tasks": []}));
+		let e = work.cached_post(item, IDEAS, &miss, &[], &|_| None).unwrap_err();
 		assert!(e.downcast_ref::<Blocked>().is_some(), "{e:#}");
-		assert_eq!(work.billed(), 0);
 		fs::remove_dir_all(&dir).unwrap();
 	}
 }

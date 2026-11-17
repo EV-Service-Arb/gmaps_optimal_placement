@@ -2,17 +2,20 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use eyre::{Result, WrapErr, bail, ensure};
-use gmaps_optimal_placement_core::{define::Frame, grid::Bbox, payload::Poi};
+use gmaps_optimal_placement_core::{grid::Bbox, payload::Poi};
 use indexmap::IndexMap;
 use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::work::{Kind, Need, Work};
+pub use sa_core::placement::SEARCH_TEXT;
+use sa_core::placement::Ask;
 
-pub const SEARCH_TEXT: &str = "https://places.googleapis.com/v1/places:searchText";
-/// What Google bills [`SEARCH_TEXT`] as.
-pub const SEARCH: sa_core::prices::Item = sa_core::prices::Item::Places(sa_core::prices::PlacesRequest::Search);
+use crate::{
+	Frame,
+	work::{Kind, Work},
+};
+
 /// Enterprise SKU: `rating`, `websiteUri` and `nationalPhoneNumber` each pull the mask up a tier.
 /// The map displays all three.
 const FIELDS: &str = "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,\
@@ -172,19 +175,19 @@ pub enum Region {
 pub struct Inventory {
 	pub pois: Vec<Poi>,
 	pub obs: Vec<Ranking>,
-	/// (query, tile) pairs this walk found no answer for. A lower bound on what a buying sweep would
-	/// spend, because a tile that comes back at the cap opens four more. Zero once one has paid.
-	pub missing: usize,
-	/// Pages this walk was answered with: what a refresh asks again, if every tile fills as it did.
+	/// The first page this walk found no answer for down each branch, which is what the conductor
+	/// buys next: what lies behind it (the next page, a tile's quarters) is known only once it is answered.
+	pub asks: Vec<Ask>,
+	/// Pages this walk was answered with: what a pull asks again, if every tile fills as it did.
 	pub calls: usize,
 }
 
-/// One text search, paged, in rank order. The body and the field mask are the caller's, because
-/// they are what decides the SKU.
+/// One text search, paged, in rank order, out of what the work dir and the queries cache hold. The
+/// body and the field mask are the caller's, because they are what decides the SKU.
 ///
-/// Not buying is the read-only mode: pages come out of the work dir and the first miss ends the
-/// search, which is what lets the fit replay a sweep rather than pay for one.
-pub fn search_text(work: &Work, buy: bool, body: &serde_json::Value, mask: &str, pages: usize, kind: Kind) -> Result<Vec<(String, serde_json::Value, SystemTime)>> {
+/// The first page with no answer, or a [stale](Work::stale) one, ends the search: the hits before
+/// it, and it.
+pub fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pages: usize, kind: Kind) -> Result<(Vec<(String, serde_json::Value, SystemTime)>, Option<Ask>)> {
 	let mut out = Vec::new();
 	let mut token: Option<String> = None;
 	for _ in 0..pages {
@@ -192,12 +195,10 @@ pub fn search_text(work: &Work, buy: bool, body: &serde_json::Value, mask: &str,
 		if let Some(t) = &token {
 			body["pageToken"] = serde_json::Value::String(t.clone());
 		}
-		let (res, at) = match buy {
-			true => work.cached_post(SEARCH, SEARCH_TEXT, &body, &[("X-Goog-FieldMask", mask)], &|_| None)?,
-			false => match work.cached(SEARCH_TEXT, &body)? {
-				Some(hit) => hit,
-				None => break,
-			},
+		let (res, at) = match work.cached(SEARCH_TEXT, &body)? {
+			Some((_, at)) if work.stale(at) => return Ok((out, Some(lacking(&body, mask)?))),
+			Some(hit) => hit,
+			None => return Ok((out, Some(lacking(&body, mask)?))),
 		};
 		work.record(kind, at);
 		if let Some(e) = res.get("error") {
@@ -212,47 +213,19 @@ pub fn search_text(work: &Work, buy: bool, body: &serde_json::Value, mask: &str,
 			None => break,
 		}
 	}
-	Ok(out)
+	Ok((out, None))
 }
 
-/// The one place a search for `q` names, biased to `bbox` so a bare street address resolves in the
-/// frame it was typed over: `[lat, lon]` and Google's address for it. Cached like every Places
-/// answer, so a run that does not spend serves an address already looked up and refuses a new one.
-pub fn find(work: &Work, bbox: Bbox, q: &str) -> Result<Option<([f64; 2], String)>> {
-	let rect = serde_json::json!({
-		"low":  {"latitude": bbox.lat[0], "longitude": bbox.lon[0]},
-		"high": {"latitude": bbox.lat[1], "longitude": bbox.lon[1]},
-	});
-	let body = serde_json::json!({"textQuery": q, "pageSize": 1, "locationBias": {"rectangle": rect}});
-	let (res, _) = work.cached_post(SEARCH, SEARCH_TEXT, &body, &[("X-Goog-FieldMask", "places.location,places.formattedAddress")], &|_| None)?;
-	if let Some(e) = res.get("error") {
-		bail!("Places text search {q:?}: {e}");
-	}
-	let Some(p) = res["places"].as_array().and_then(|v| v.first()) else { return Ok(None) };
-	let (lat, lon) = (p["location"]["latitude"].as_f64(), p["location"]["longitude"].as_f64());
-	let (Some(lat), Some(lon), Some(addr)) = (lat, lon, p["formattedAddress"].as_str()) else {
-		bail!("Places answered {q:?} with a place missing its location or address: {p}");
-	};
-	Ok(Some(([lat, lon], addr.to_owned())))
+fn lacking(body: &serde_json::Value, mask: &str) -> Result<Ask> {
+	Ok(Ask {
+		mask: mask.to_owned(),
+		body: serde_json::to_string(body)?,
+	})
 }
 
-pub fn load(cfg: &PoiConfig, frame: Frame, what: &str, work: &Work) -> Result<Inventory> {
-	// the free walk first, so what this is about to buy is on screen before it buys it. It reads the
-	// cache and nothing else, and a sweep is a tenth of a second against the grid scan behind it
-	let missing = sweep(cfg, frame, false, work)?.missing;
-	work.announce(what, Need::AtLeast(missing));
-	work.may_buy(missing)?;
-	work.forget(Kind::Inventory);
-	sweep(cfg, frame, true, work)
-}
-
-/// The same sweep, restricted to what the work dir already holds. A pairing nobody ever harvested
+/// The sweep, out of what the work dir and the queries cache hold. A pairing nobody ever harvested
 /// yields nothing, which is how a refit reads evidence without turning into a purchase.
 pub fn cached(cfg: &PoiConfig, frame: Frame, work: &Work) -> Result<Inventory> {
-	sweep(cfg, frame, false, work)
-}
-
-fn sweep(cfg: &PoiConfig, frame: Frame, buy: bool, work: &Work) -> Result<Inventory> {
 	let PoiSource::GooglePlaces = cfg.source;
 	let drop = cfg.drop.as_ref().map(MatchSpec::compile).transpose()?;
 	let tiers: Vec<(&Tier, Matcher)> = cfg.tiers.iter().map(|t| Ok((t, t.spec.compile()?))).collect::<Result<_>>()?;
@@ -267,28 +240,24 @@ fn sweep(cfg: &PoiConfig, frame: Frame, buy: bool, work: &Work) -> Result<Invent
 	};
 	for q in &cfg.queries {
 		let (before, spent) = (found.raw.len(), work.calls(Kind::Inventory));
-		// every answer that arrived is already on disk and the recursion is deterministic, so whatever
-		// stopped this — a daily quota above all — a rerun picks up where it stopped and pays only for
-		// what is still missing
 		let typed = cfg.included_type.as_deref();
 		for &tile in &roots {
-			descend(work, buy, q, typed, tile, 0, &mut found).wrap_err_with(|| format!("sweeping {q:?}: a rerun resumes from here, and re-asks nothing already answered"))?;
+			descend(work, q, typed, tile, 0, &mut found).wrap_err_with(|| format!("sweeping {q:?}"))?;
 		}
 		// new, not returned: the queries overlap by design, and what the eighth one adds over the seven
 		// before it is what says whether it earns its calls
 		eprintln!(
-			"  {q:?}: {} new of {} calls, {} orderings, {} billed so far",
+			"  {q:?}: {} new of {} calls, {} orderings",
 			found.raw.len() - before,
 			work.calls(Kind::Inventory) - spent,
 			found.obs.len(),
-			work.billed()
 		);
 	}
-	let Found { raw, obs, censored, missing, calls } = found;
+	let Found { raw, obs, censored, asks, calls } = found;
 	if let Some(a) = work.age(Kind::Inventory) {
 		eprintln!("places: served from cache, {a}");
 		if a.stale {
-			eprintln!("  past `age.inventory` — shops have opened and closed since. `--refresh` re-asks, and costs a day's quota");
+			eprintln!("  past `age.inventory` — shops have opened and closed since. A pull re-asks, and costs a day's quota");
 		}
 	}
 	if !censored.is_empty() {
@@ -342,13 +311,7 @@ fn sweep(cfg: &PoiConfig, frame: Frame, buy: bool, work: &Work) -> Result<Invent
 		});
 	}
 	out.sort_by(|a, b| b.n_rev.total_cmp(&a.n_rev));
-	eprintln!(
-		"places: {} raw over {} searches ({} billed, {missing} not in the work dir), {} kept",
-		raw.len(),
-		obs.len(),
-		work.billed(),
-		out.len()
-	);
+	eprintln!("places: {} raw over {} searches ({} lacking), {} kept", raw.len(), obs.len(), asks.len(), out.len());
 	let (total, interior) = calls.iter().fold((0, 0), |(t, i), (c, q)| (t + c, i + q));
 	eprintln!("places: {total} calls, {interior} on tiles that quartered and were re-covered by their four children:");
 	for (d, (c, q)) in calls.iter().enumerate().filter(|(_, (c, _))| *c > 0) {
@@ -357,7 +320,7 @@ fn sweep(cfg: &PoiConfig, frame: Frame, buy: bool, work: &Work) -> Result<Invent
 	Ok(Inventory {
 		pois: out,
 		obs,
-		missing,
+		asks,
 		calls: total,
 	})
 }
@@ -386,19 +349,14 @@ fn ask(query: &str, typed: Option<&str>, tile: Bbox) -> serde_json::Value {
 ///
 /// Not a study's to state: the cap bites on competitor density, which is a fact about the trade and
 /// the ground together, and which no document knows before it asks.
-fn descend(work: &Work, buy: bool, query: &str, typed: Option<&str>, tile: Tile, depth: u32, found: &mut Found) -> Result<()> {
+fn descend(work: &Work, query: &str, typed: Option<&str>, tile: Tile, depth: u32, found: &mut Found) -> Result<()> {
 	let body = ask(query, typed, tile.bbox());
-	// asked here rather than inferred from an empty page: a tile nobody harvested and one Google
-	// returned nothing for read the same out of `search_text`, and only the first would cost anything
-	if work.refreshing() || work.cached(SEARCH_TEXT, &body)?.is_none() {
-		found.missing += 1;
-	}
 	let spent = work.calls(Kind::Inventory);
-	let page = search_text(work, buy, &body, FIELDS, 3, Kind::Inventory)?;
+	let (page, lacks) = search_text(work, &body, FIELDS, 3, Kind::Inventory)?;
+	found.asks.extend(lacks);
 	let paged = work.calls(Kind::Inventory) - spent;
 	found.calls[depth as usize].0 += paged;
-	// an ordering of nothing identifies nothing, and in a walk that does not buy it is also what a tile
-	// that was never harvested looks like
+	// an ordering of nothing identifies nothing, and it is also what a tile that was never harvested looks like
 	if page.is_empty() {
 		return Ok(());
 	}
@@ -421,7 +379,7 @@ fn descend(work: &Work, buy: bool, query: &str, typed: Option<&str>, tile: Tile,
 	}
 	found.calls[depth as usize].1 += paged;
 	for child in tile.children() {
-		descend(work, buy, query, typed, child, depth + 1, found)?;
+		descend(work, query, typed, child, depth + 1, found)?;
 	}
 	Ok(())
 }
@@ -433,7 +391,7 @@ struct Found {
 	obs: Vec<Ranking>,
 	/// Query and tile still at the cap at the depth floor: the inventory under them is partial.
 	censored: Vec<(String, Bbox)>,
-	missing: usize,
+	asks: Vec<Ask>,
 	/// Per depth: calls made, and how many of those were on a tile that then quartered.
 	calls: Vec<(usize, usize)>,
 }

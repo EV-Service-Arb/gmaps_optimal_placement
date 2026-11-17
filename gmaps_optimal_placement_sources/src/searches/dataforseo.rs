@@ -21,7 +21,7 @@ impl DataForSeo {
 
 impl SearchVolume for DataForSeo {
 	fn ideas(&self, seeds: &[String], place: &str, lang: &str, work: &Work) -> Result<Vec<Keyword>> {
-		ensure!(!seeds.is_empty(), "a group needs at least one seed");
+		ensure!((1..=super::SEEDS).contains(&seeds.len()), "an expansion takes 1..={} seeds, not {}", super::SEEDS, seeds.len());
 		let body = serde_json::json!([{"keywords": seeds, "location_name": place, "language_code": lang, "sort_by": "search_volume"}]);
 		// a refused task still answers 200
 		let refused = |res: &serde_json::Value| {

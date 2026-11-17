@@ -89,7 +89,7 @@ impl GoogleAds {
 
 impl SearchVolume for GoogleAds {
 	fn ideas(&self, seeds: &[String], place: &str, lang: &str, work: &Work) -> Result<Vec<Keyword>> {
-		ensure!(!seeds.is_empty(), "a group needs at least one seed");
+		ensure!((1..=super::SEEDS).contains(&seeds.len()), "an expansion takes 1..={} seeds, not {}", super::SEEDS, seeds.len());
 		let language = language(lang)?;
 		let geo = self.geo_target(place, lang, work)?;
 		let body = serde_json::json!({

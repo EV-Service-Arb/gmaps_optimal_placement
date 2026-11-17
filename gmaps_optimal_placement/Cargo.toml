@@ -15,9 +15,10 @@ gmaps_optimal_placement_core.workspace = true
 gmaps_optimal_placement_misc.workspace = true
 gmaps_optimal_placement_rank.workspace = true
 gmaps_optimal_placement_sources.workspace = true
-gmaps_optimal_placement_web = { workspace = true, features = ["ssr"] }
+gmaps_optimal_placement_web.workspace = true
 indexmap.workspace = true
 regex.workspace = true
+sa_core.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -28,6 +29,7 @@ v_utils.workspace = true
 base64.workspace = true
 insta.workspace = true
 sa_auth.workspace = true
+sha2.workspace = true
 ureq.workspace = true
 
 [lints]

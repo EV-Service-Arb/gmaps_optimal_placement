@@ -1,5 +1,5 @@
 /* What every French study shares regardless of area or trade: the grid, how INSEE spells the
-   numbers it publishes, and who prices a keyword in French. An area — a city file in [../locations/],
+   numbers it publishes, and who prices its keywords. An area — a city file in [../locations/],
    or one the conductor hands in — takes this and adds its frame; a trade in [../trades/] is a
    function of that. */
 {
@@ -45,6 +45,5 @@
 
   searches = {
     provider = "google_ads";
-    language = "fr";
   };
 }

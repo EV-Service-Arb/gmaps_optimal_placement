@@ -12,7 +12,6 @@ fn ideas() -> Vec<Keyword> {
 fn group() -> Group {
 	Group {
 		name: "detailing".to_owned(),
-		seed: vec!["car detailing".to_owned()],
 		pattern: Some("detail|esthetique|esthétique|polissage|céramique".to_owned()),
 		drop: Some("emploi|formation|stage".to_owned()),
 	}
