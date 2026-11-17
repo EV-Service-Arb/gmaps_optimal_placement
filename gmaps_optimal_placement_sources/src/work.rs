@@ -13,7 +13,8 @@
 //! about to ask for is stated before it asks, out of what the cache is missing; what is actually
 //! left is Google's to say, and it says it in the 429.
 use std::{
-	cell::{Cell, RefCell},
+	cell::RefCell,
+	collections::BTreeMap,
 	fs,
 	io::Read,
 	path::{Path, PathBuf},
@@ -190,7 +191,8 @@ impl std::str::FromStr for QueriesCache {
 pub struct Work {
 	dir: PathBuf,
 	cache: QueriesCache,
-	billed: Cell<usize>,
+	/// Every paid answer bought since this `Work` was made, by item.
+	bought: RefCell<BTreeMap<Item, usize>>,
 	/// Configured rather than `ureq::post`: the default turns a 4xx into an error before the body is
 	/// read, and a Google error body is the only thing that says which quota ran out.
 	agent: ureq::Agent,
@@ -218,7 +220,7 @@ impl Work {
 		Self {
 			dir: dir.into(),
 			cache,
-			billed: Cell::new(0),
+			bought: RefCell::default(),
 			agent: ureq::Agent::config_builder().http_status_as_error(false).build().new_agent(),
 			age: Age::default(),
 			tiling: crate::poi::Tiling::default(),
@@ -285,7 +287,12 @@ impl Work {
 
 	/// Places searches bought since this `Work` was made: what a budget is spent in.
 	pub fn billed(&self) -> usize {
-		self.billed.get()
+		self.bought.borrow().get(&crate::poi::SEARCH).copied().unwrap_or(0) // none bought yet
+	}
+
+	/// Every paid answer bought since this `Work` was made, by item: what a pull is charged.
+	pub fn bought(&self) -> BTreeMap<Item, usize> {
+		self.bought.borrow().clone()
 	}
 
 	/// Answers served for `kind`, paid or not — one per page, which is one unit of
@@ -421,7 +428,7 @@ impl Work {
 		// before the claim: a claim granted is a search this run has undertaken to buy
 		if url == crate::poi::SEARCH_TEXT
 			&& let Some(budget) = self.budget
-			&& self.billed.get() >= budget
+			&& self.billed() >= budget
 		{
 			return Err(Unaffordable { need: budget + 1, budget }.into());
 		}
@@ -442,7 +449,7 @@ impl Work {
 				}
 			}
 		}
-		let bought = self.buy(url, &canonical, headers, refused, &dst);
+		let bought = self.buy(item, url, &canonical, headers, refused, &dst);
 		if bought.is_err()
 			&& let QueriesCache::Conductor(_) = self.cache
 			&& let Err(e) = self.ask_cache("DELETE", &format!("{}/claim", under(Scheme::Gop, key)), &[])
@@ -477,7 +484,15 @@ impl Work {
 
 	/// `canonical` POSTed to `url`, with the first key not spent when it is a Places search: the
 	/// answer, and its text. What is paid for and not an answer is kept beside `dst`.
-	fn buy(&self, url: &str, canonical: &str, headers: &[(&str, &str)], refused: &dyn Fn(&serde_json::Value) -> Option<String>, dst: &Path) -> Result<(serde_json::Value, String)> {
+	fn buy(
+		&self,
+		item: Item,
+		url: &str,
+		canonical: &str,
+		headers: &[(&str, &str)],
+		refused: &dyn Fn(&serde_json::Value) -> Option<String>,
+		dst: &Path,
+	) -> Result<(serde_json::Value, String)> {
 		let places = url == crate::poi::SEARCH_TEXT;
 		#[cfg(debug_assertions)] // a test stands a stub in for Google; a release build only ever asks Google
 		let stub = std::env::var_os("GOP_PLACES_STUB").filter(|_| places).map(|s| s.into_string().expect("GOP_PLACES_STUB is a URL"));
@@ -523,9 +538,7 @@ impl Work {
 		if !status.is_success() {
 			bail!("POST {url} -> {status}\n{}", text.trim());
 		}
-		if places {
-			self.billed.set(self.billed.get() + 1);
-		}
+		*self.bought.borrow_mut().entry(item).or_default() += 1;
 		// billed already, so kept beside the cache rather than in it, where it would answer for the request forever
 		let kept = dst.with_extension("rejected");
 		let json: serde_json::Value = match serde_json::from_str(&text) {

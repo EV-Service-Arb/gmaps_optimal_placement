@@ -197,18 +197,20 @@ fn main() -> Result<()> {
 					let experts = experts.clone();
 					std::sync::Arc::new(move |def: &Definition| gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades).map(drop))
 				};
-				let build = std::sync::Arc::new(move |def: &Definition, pull: Option<gmaps_optimal_placement_web::serve::Pull>| -> (usize, Result<String>) {
-					let work = match worker(pull.as_ref().map(|p| p.since)) {
-						Ok(w) => w.budget(pull.map(|p| p.budget)),
-						Err(e) => return (0, Err(e)),
-					};
-					let built = (|| {
-						Ok(serde_json::to_string(
-							&gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades)?.build(&work)?,
-						)?)
-					})();
-					(work.billed(), built)
-				});
+				let build = std::sync::Arc::new(
+					move |def: &Definition, pull: Option<gmaps_optimal_placement_web::serve::Pull>| -> (gmaps_optimal_placement_web::serve::Bought, Result<String>) {
+						let work = match worker(pull.as_ref().map(|p| p.since)) {
+							Ok(w) => w.budget(pull.map(|p| p.budget)),
+							Err(e) => return (Default::default(), Err(e)),
+						};
+						let built = (|| {
+							Ok(serde_json::to_string(
+								&gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades)?.build(&work)?,
+							)?)
+						})();
+						(work.bought().into_iter().map(|(item, n)| (item.to_string(), n)).collect(), built)
+					},
+				);
 				return gmaps_optimal_placement_web::serve::serve(
 					addr,
 					gmaps_optimal_placement_web::serve::Mode::Conductor {

@@ -18,7 +18,7 @@
 //!   GET  /studies/{sha}          Read   the payload, built once; never spends
 //!   POST /studies/{sha}/pull     Spend  ?budget=<n>: the payload, built again buying at most n Places
 //!                                       searches; 402 {need, budget} when the sweep needs more.
-//!                                       Every answer carries x-billed: the searches it bought.
+//!                                       Every answer carries x-billed: what it bought, `{item: n}`.
 //!                                       After one that did not end 2xx, buys only what it did not
 //! ```
 use std::{
@@ -50,11 +50,14 @@ pub type Build = Arc<dyn Fn(Option<&std::path::Path>, &std::path::Path, bool) ->
 /// CLI's for the same reason `Build` is, and because what it may spend is the CLI's to say.
 pub type Find = Arc<dyn Fn(&std::path::Path, &str) -> Result<Option<([f64; 2], String)>> + Send + Sync>;
 
-/// A definition, to the serialised `Payload` of building it, and the Places searches that bought —
-/// counted whether it built or not, because they are paid either way. A pull's budget buys what the
+/// What a build bought, each priced item (`sa_core::prices`, `<tool>.<variant>`) with its count.
+pub type Bought = std::collections::BTreeMap<String, usize>;
+
+/// A definition, to the serialised `Payload` of building it, and what that bought — counted
+/// whether it built or not, because it is paid either way. A pull's budget buys what the
 /// work dir lacks; without one nothing is bought. `Err` before anything is read when the definition
 /// does not hold.
-pub type Built = Arc<dyn Fn(&Definition, Option<Pull>) -> (usize, Result<String>) + Send + Sync>;
+pub type Built = Arc<dyn Fn(&Definition, Option<Pull>) -> (Bought, Result<String>) + Send + Sync>;
 
 /// Whether a definition holds — its trade is served, its country has a base, the trade takes it —
 /// without building it.
@@ -260,7 +263,7 @@ fn conductor_api(catalog: String, studies: PathBuf, holds: Holds, build: Built) 
 				let (dir, slot, build) = (get_dir.clone(), get_slot(&sha), get_build.clone());
 				async move {
 					let (billed, built) = study(&dir, &sha, slot, build, None).await;
-					assert_eq!(billed, 0, "a GET is built with no budget");
+					assert!(billed.is_empty(), "a GET is built with no budget: {billed:?}");
 					built.map(json)
 				}
 			})
@@ -273,9 +276,10 @@ fn conductor_api(catalog: String, studies: PathBuf, holds: Holds, build: Built) 
 				async move {
 					let (billed, built) = match pull {
 						Ok(Query(Budget { budget })) => study(&dir, &sha, slot, build, Some(budget)).await,
-						Err(e) => (0, Err(e.into_response())),
+						Err(e) => (Bought::new(), Err(e.into_response())),
 					};
-					([(axum::http::HeaderName::from_static("x-billed"), billed.to_string())], built.map(json))
+					let billed = serde_json::to_string(&billed).expect("names and counts serialise");
+					([(axum::http::HeaderName::from_static("x-billed"), billed)], built.map(json))
 				}
 			}),
 		)
@@ -338,32 +342,40 @@ fn began(resume: &std::path::Path) -> std::io::Result<SystemTime> {
 /// Built on the first GET and kept. A pull re-asks Google everything it is built from, and that
 /// answer goes to the puller alone: one stopped part-way by the day's quota is a map with no
 /// competitors, while the work dir now holds every answer it paid for, so the next GET builds from
-/// that, and the next pull buys only what this one did not. Beside it, the Places searches bought,
-/// which is all a pull is charged on.
-async fn study(dir: &std::path::Path, sha: &str, slot: Slot, build: Built, budget: Option<usize>) -> (usize, Result<axum::body::Bytes, Response>) {
+/// that, and the next pull buys only what this one did not. Beside it, what it bought, which is what
+/// a pull is charged.
+async fn study(dir: &std::path::Path, sha: &str, slot: Slot, build: Built, budget: Option<usize>) -> (Bought, Result<axum::body::Bytes, Response>) {
 	let path = dir.join(format!("{sha}.json"));
 	let mut slot = slot.lock().await;
 	if budget.is_some() {
 		*slot = None;
 	}
 	if let Some(built) = &*slot {
-		return (0, Ok(built.clone()));
+		return (Bought::new(), Ok(built.clone()));
 	}
 	let def: Definition = match std::fs::read(&path).map(|b| serde_json::from_slice(&b)) {
 		Ok(Ok(def)) => def,
 		Ok(Err(e)) =>
 			return (
-				0,
+				Bought::new(),
 				Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{} is not a definition: {e}", path.display())).into_response()),
 			),
-		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (0, Err((StatusCode::NOT_FOUND, format!("no study {sha} was defined here: PUT it first")).into_response())),
-		Err(e) => return (0, Err((StatusCode::INTERNAL_SERVER_ERROR, format!("reading {}: {e}", path.display())).into_response())),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound =>
+			return (
+				Bought::new(),
+				Err((StatusCode::NOT_FOUND, format!("no study {sha} was defined here: PUT it first")).into_response()),
+			),
+		Err(e) =>
+			return (
+				Bought::new(),
+				Err((StatusCode::INTERNAL_SERVER_ERROR, format!("reading {}: {e}", path.display())).into_response()),
+			),
 	};
 	let name = def.name();
 	let resume = dir.join(format!("{sha}.resume"));
 	let pull = match budget.map(|budget| began(&resume).map(|since| Pull { budget, since })).transpose() {
 		Ok(pull) => pull,
-		Err(e) => return (0, Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{}: {e}", resume.display())).into_response())),
+		Err(e) => return (Bought::new(), Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{}: {e}", resume.display())).into_response())),
 	};
 	// a panicked build took what it bought with it, and no answer is better than an x-billed that guesses
 	let (billed, built) = tokio::task::spawn_blocking(move || build(&def, pull))

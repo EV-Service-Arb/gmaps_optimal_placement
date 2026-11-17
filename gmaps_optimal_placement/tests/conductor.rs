@@ -146,7 +146,8 @@ impl Served {
 		}
 	}
 
-	/// A pull of `at` for someone who may spend, `query` verbatim: its status, `x-billed` and body.
+	/// A pull of `at` for someone who may spend, `query` verbatim: its status, the searches its
+	/// `x-billed` names, and body.
 	fn pull(&self, at: &str, query: &str) -> (u16, Option<usize>, String) {
 		let path = format!("{at}/pull");
 		let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
@@ -155,7 +156,10 @@ impl Served {
 			.body(Vec::new())
 			.unwrap();
 		let mut r = agent.run(req).unwrap();
-		let billed = r.headers().get("x-billed").map(|v| v.to_str().unwrap().parse().unwrap());
+		let billed = r.headers().get("x-billed").map(|v| {
+			let billed: std::collections::BTreeMap<String, usize> = serde_json::from_str(v.to_str().unwrap()).unwrap();
+			billed.get("places.search").copied().unwrap_or(0) // a pull that bought no search names none
+		});
 		(r.status().as_u16(), billed, r.body_mut().read_to_string().unwrap())
 	}
 
