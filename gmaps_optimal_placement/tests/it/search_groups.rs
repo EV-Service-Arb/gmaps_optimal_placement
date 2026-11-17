@@ -3,7 +3,7 @@
 use gmaps_optimal_placement::{config::Group, fold};
 use gmaps_optimal_placement_sources::{Keyword, Month};
 
-const IDEAS: &str = include_str!("fixtures/detailing_ideas.json");
+const IDEAS: &str = include_str!("../fixtures/detailing_ideas.json");
 
 fn ideas() -> Vec<Keyword> {
 	serde_json::from_str(IDEAS).unwrap()
