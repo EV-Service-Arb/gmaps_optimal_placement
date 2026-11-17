@@ -1,91 +1,28 @@
 [package]
 name = "gmaps_optimal_placement_web"
-description = "The map: a Leptos island over a study's payload, and the server that feeds it"
+description = "The server behind the conductor: a Definition in, its payload out"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[package.metadata.leptos]
-output-name = "gmaps_optimal_placement_web"
-site-root = "target/site"
-site-pkg-dir = "pkg"
-site-addr = "127.0.0.1:8731"
-reload-port = 8732
-bin-package = "gmaps_optimal_placement"
-lib-package = "gmaps_optimal_placement_web"
-bin-features = ["ssr"]
-bin-default-features = false
-lib-features = ["hydrate"]
-lib-default-features = false
-lib-profile-release = "wasm-release"
-
-[package.metadata.cargo-all-features]
-skip_feature_sets = [["ssr", "hydrate"]]
-
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[features]
-# ssr + hydrate are mutually exclusive; plain `cargo b` must pick one.
-default = ["ssr"]
-hydrate = [
-    "dep:console_error_panic_hook",
-    "dep:gloo-net",
-    "dep:gmaps_optimal_placement_overlay",
-    "dep:js-sys",
-    "dep:wasm-bindgen",
-    "dep:wasm-bindgen-futures",
-    "dep:web-sys",
-    "leptos/hydrate",
-]
-ssr = [
-    "dep:any_spawner",
-    "dep:axum",
-    "dep:leptos_axum",
-    "dep:sa_auth",
-    "dep:sa_core",
-    "dep:schemars",
-    "dep:strum",
-    "ev_lib/api",
-    "dep:tokio",
-    "dep:tower-http",
-    "dep:xdg",
-    "leptos/ssr",
-]
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-ev_lib = { workspace = true, features = ["uikit_leptos", "wasm"] }
-
 [dependencies]
-any_spawner = { workspace = true, optional = true }
-axum = { workspace = true, optional = true }
-console_error_panic_hook = { workspace = true, optional = true }
-ev_lib = { workspace = true, features = ["uikit_leptos"] }
+axum.workspace = true
+ev_lib = { workspace = true, features = ["api"] }
 eyre.workspace = true
-gloo-net = { workspace = true, optional = true }
 gmaps_optimal_placement_core.workspace = true
-gmaps_optimal_placement_overlay = { workspace = true, optional = true }
-js-sys = { workspace = true, optional = true }
-leptos.workspace = true
-leptos_axum = { workspace = true, optional = true }
-sa_auth = { workspace = true, features = ["axum"], optional = true }
-sa_core = { workspace = true, features = ["api"], optional = true }
-schemars = { workspace = true, optional = true }
+sa_auth = { workspace = true, features = ["axum"] }
+sa_core = { workspace = true, features = ["api"] }
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-strum = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true }
-tower-http = { workspace = true, optional = true }
-wasm-bindgen = { workspace = true, optional = true }
-wasm-bindgen-futures = { workspace = true, optional = true }
-web-sys = { workspace = true, optional = true }
-xdg = { workspace = true, optional = true }
+strum.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
 
 [build-dependencies]
 ev_lib = { workspace = true, features = ["api_docs"] }
-ev_lib_classes.workspace = true
 
 [lints]
 workspace = true

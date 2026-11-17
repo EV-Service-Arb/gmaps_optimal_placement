@@ -3,7 +3,6 @@ members = [
     "gmaps_optimal_placement",
     "gmaps_optimal_placement_core",
     "gmaps_optimal_placement_misc",
-    "gmaps_optimal_placement_overlay",
     "gmaps_optimal_placement_rank",
     "gmaps_optimal_placement_sources",
     "gmaps_optimal_placement_web",
@@ -31,7 +30,6 @@ non_kebab_case_bins = "allow"
 [workspace.dependencies]
 gmaps_optimal_placement_core = { path = "gmaps_optimal_placement_core", version = "0.1.0" }
 gmaps_optimal_placement_misc = { path = "gmaps_optimal_placement_misc", version = "0.1.0" }
-gmaps_optimal_placement_overlay = { path = "gmaps_optimal_placement_overlay", version = "0.1.0" }
 gmaps_optimal_placement_rank = { path = "gmaps_optimal_placement_rank", version = "0.1.0" }
 gmaps_optimal_placement_sources = { path = "gmaps_optimal_placement_sources", version = "0.1.0" }
 gmaps_optimal_placement_web = { path = "gmaps_optimal_placement_web", version = "0.1.0" }
@@ -40,9 +38,7 @@ base64 = "0.22"
 clap = "4"
 color-eyre = "0.6"
 csv = "1"
-# `uikit_leptos` for the picker; the build script reads its class inventory and tokens
 ev_lib = { version = "0.33", default-features = false }
-ev_lib_classes = "0.17"
 evalexpr = "13"
 eyre = "0.6"
 flate2 = "1"
@@ -60,7 +56,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 strum = { version = "0.28", features = ["derive"] }
-# the overlay's TS types, in wasm-bindgen's .d.ts
+# core's types in the overlay's .d.ts (site_conductor's placement_overlay)
 tsify = "0.5"
 smart-default = "0.7"
 ureq = "3"
@@ -69,25 +65,7 @@ ureq = "3"
 v_utils = { version = "=2.18.0", default-features = false, features = ["cli", "macros"] }
 zip = "8"
 
-# The leptos family and the wasm toolchain are pinned exactly: a `wasm-bindgen` crate/CLI schema skew
-# is a hard error at bindgen time, and `cargo-leptos` must match the leptos crate.
-any_spawner = "=0.3.0"
 axum = "=0.8.9"
-console_error_panic_hook = "=0.1.7"
-gloo-net = { version = "=0.6.0", features = ["http"] }
-js-sys = "=0.3.103"
-leptos = { version = "=0.8.20", features = ["islands"] }
-leptos_axum = "=0.8.10"
 tokio = { version = "=1.53.1", features = ["net", "rt-multi-thread", "sync"] }
-tower-http = { version = "=0.7.0", features = ["fs", "compression-gzip"] }
-wasm-bindgen = "=0.2.126" #NB: version must match that of wasm-bindgen-cli (pinned in flake.nix)
-wasm-bindgen-futures = "=0.4.76"
-web-sys = { version = "=0.3.103", features = ["Clipboard", "CssStyleDeclaration", "Document", "DomRect", "Element", "EventTarget", "HtmlElement", "KeyboardEvent", "Navigator", "Window"] }
-xdg = "=3.0.0"
-
-[profile.wasm-release]
-inherits = "release"
-opt-level = 'z'
-lto = true
-codegen-units = 1
-panic = "abort"
+tower-http = { version = "=0.7.0", features = ["compression-gzip"] }
+wasm-bindgen = "=0.2.126" #NB: the overlay's host (site_conductor) pins wasm-bindgen-cli to it
