@@ -1,7 +1,8 @@
 //! What the conductor asks: one table of operations behind its assertion, the router and the
 //! document both derived from it (`ev_lib::api`). A definition comes in with every ask and its
 //! payload goes out; it is kept on disk under its id, so `fit` can read what it collected, and its
-//! payload in memory once built.
+//! payload in memory once built. Nothing here buys: a pull is the conductor asking what a study
+//! lacks, buying it into the queries cache, until it lacks nothing, then asking it built again.
 use std::{
 	collections::HashMap,
 	net::SocketAddr,
@@ -14,38 +15,31 @@ use axum::{
 	Json, Router,
 	body::Bytes,
 	extract::{FromRef, State},
-	http::{HeaderName, Method, StatusCode, header},
+	http::{Method, StatusCode, header},
 	response::{IntoResponse, Response},
 };
 use ev_lib::api::{
-	Body, ErrorCode, GenContext, OperationOutput, Params, Refusal, Refuses, Route,
+	Body, ErrorCode, GenContext, OperationOutput, Refusal, Refuses, Route,
 	openapi::{self, Operation},
 };
 use eyre::WrapErr;
-use gmaps_optimal_placement_core::{Payload, Unaffordable};
+use gmaps_optimal_placement_core::Payload;
 use sa_auth::{Gate, Study, Verifier};
 use sa_core::{
 	Invalid,
-	placement::{BILLED, Billed as Bought, Catalog, Definition, NEED},
+	placement::{Ask, Asks, Catalog, Definition},
 };
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-/// A definition, to the serialised `Payload` of building it, and what that bought — counted whether
-/// it built or not, because it is paid either way. A pull's budget buys what the work dir lacks;
-/// without one nothing is bought.
-pub type Built = Arc<dyn Fn(&Definition, Option<Pull>) -> (Bought, eyre::Result<String>) + Send + Sync>;
+/// A definition, to the serialised `Payload` of building it.
+pub type Built = Arc<dyn Fn(&Definition) -> eyre::Result<String> + Send + Sync>;
+
+/// A definition, to the Places searches it lacks: none fetched before `since` counts.
+pub type Asked = Arc<dyn Fn(&Definition, SystemTime) -> eyre::Result<Vec<Ask>> + Send + Sync>;
 
 /// Whether a definition holds — its trade is served, its country has a base, the trade takes it —
 /// without building it.
 pub type Holds = Arc<dyn Fn(&Definition) -> eyre::Result<()> + Send + Sync>;
-
-/// What a pull may buy, and the answers it re-asks: those written before `since`.
-pub struct Pull {
-	/// Places searches.
-	pub budget: usize,
-	pub since: SystemTime,
-}
 
 type Slot = Arc<tokio::sync::Mutex<Option<Bytes>>>;
 
@@ -56,6 +50,7 @@ pub struct Studies {
 	/// Every definition handed in, `<sha>.json`.
 	dir: PathBuf,
 	holds: Holds,
+	asks: Asked,
 	build: Built,
 	// shortcut: unbounded, one payload per area × category any operator opened; an LRU when the process grows
 	built: Arc<Mutex<HashMap<String, Slot>>>,
@@ -63,12 +58,13 @@ pub struct Studies {
 
 impl Studies {
 	/// `keys` are the ones the conductor signs every request it forwards with.
-	pub fn new(keys: sa_auth::Keys, catalog: Catalog, dir: PathBuf, holds: Holds, build: Built) -> Self {
+	pub fn new(keys: sa_auth::Keys, catalog: Catalog, dir: PathBuf, holds: Holds, asks: Asked, build: Built) -> Self {
 		Self {
 			verifier: Verifier::new(keys, sa_auth::Service::Placement),
 			catalog: Arc::new(catalog),
 			dir,
 			holds,
+			asks,
 			build,
 			built: Arc::default(),
 		}
@@ -93,8 +89,6 @@ pub enum Code {
 	/// The definition holds, but nothing served here studies it: no such trade, no base for its
 	/// country, or the trade refuses it.
 	Unstudied,
-	/// The pull needs more Places searches than its budget.
-	Unaffordable,
 	Internal,
 }
 
@@ -103,7 +97,6 @@ impl ErrorCode for Code {
 		match self {
 			Self::BadRequest => StatusCode::BAD_REQUEST,
 			Self::Unstudied => StatusCode::UNPROCESSABLE_ENTITY,
-			Self::Unaffordable => StatusCode::PAYMENT_REQUIRED,
 			Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
 		}
 	}
@@ -117,21 +110,12 @@ impl Refuses<Invalid> for Code {
 
 impl Refuses<eyre::Report> for Code {
 	fn refusal(e: eyre::Report) -> Refusal<Self> {
-		if let Some(u) = e.downcast_ref::<Unaffordable>() {
-			return Refusal::new(Self::Unaffordable, u.to_string());
-		}
 		eprintln!("{e:?}");
 		Refusal::new(Self::Internal, format!("{e:#}"))
 	}
 }
 
 type Answer<T> = Result<T, Refusal<Code>>;
-
-#[derive(Deserialize, JsonSchema)]
-pub struct Budget {
-	/// How many Places searches the pull may buy.
-	budget: usize,
-}
 
 /// A built `Payload`, as the bytes it is kept in.
 pub struct Studied(Bytes);
@@ -154,37 +138,6 @@ impl OperationOutput for Studied {
 	}
 }
 
-/// An answer and, on it whatever it is, `x-billed`: what it bought, which is what the conductor
-/// charges the puller; on one refused `unaffordable`, `x-need` beside it.
-pub struct Billed<T> {
-	bought: Bought,
-	need: Option<usize>,
-	answer: T,
-}
-
-impl<T: IntoResponse> IntoResponse for Billed<T> {
-	fn into_response(self) -> Response {
-		let bought = serde_json::to_string(&self.bought).expect("items and counts serialise");
-		let mut res = ([(HeaderName::from_static(BILLED), bought)], self.answer).into_response();
-		if let Some(need) = self.need {
-			res.headers_mut().insert(HeaderName::from_static(NEED), need.into());
-		}
-		res
-	}
-}
-
-impl<T: OperationOutput> OperationOutput for Billed<T> {
-	type Inner = T::Inner;
-
-	fn operation_response(ctx: &mut GenContext, op: &mut Operation) -> Option<openapi::Response> {
-		T::operation_response(ctx, op)
-	}
-
-	fn inferred_responses(ctx: &mut GenContext, op: &mut Operation) -> Vec<(Option<openapi::StatusCode>, openapi::Response)> {
-		T::inferred_responses(ctx, op)
-	}
-}
-
 /// What a category may be studied by, and where: the trade files and the country bases served.
 async fn trades(State(s): State<Studies>) -> Json<Catalog> {
 	Json(Catalog::clone(&s.catalog))
@@ -193,81 +146,68 @@ async fn trades(State(s): State<Studies>) -> Json<Catalog> {
 /// A study's payload.
 ///
 /// Refused unless the definition holds: its trade is served, its country has a base, the trade
-/// takes it. Built on the first ask and kept; never spends. A study whose answers are not all in
-/// the work dir opens on what it holds, and its notice says how many are missing.
+/// takes it. Built on the first ask and kept, out of what is held: a study whose answers are not
+/// all there opens on what is, and its notice says how many it lacks.
 async fn study(State(s): State<Studies>, Body(def): Body<Definition>) -> Answer<Studied> {
-	let (bought, need, built) = studied(&s, def, None).await;
-	assert!(bought.is_empty() && need.is_none(), "a study is built with no budget: {bought:?}");
-	built.map(Studied)
+	studied(&s, def, false).await.map(Studied)
 }
 
-/// Builds a study again, buying at most `budget` Places searches.
+/// The Places searches a pull of the study still lacks, the first down each branch of its sweep:
+/// what lies behind one is known once it is answered, so a pull asks again until none is lacking.
 ///
-/// Refused `unaffordable` before the first search when the sweep counts past the budget, and
-/// stopped with it when it outgrows its count. Every answer carries `x-billed`, what it bought.
-/// After a pull that did not end whole, re-asks only what was written before that one began.
-async fn pull(
-	State(s): State<Studies>,
-	Params(Budget { budget }): Params<Budget>,
-	Body(def): Body<Definition>,
-) -> Billed<Answer<Studied>> {
-	let (bought, need, built) = studied(&s, def, Some(budget)).await;
-	Billed {
-		bought,
-		need,
-		answer: built.map(Studied),
-	}
+/// Since the first pull after its last whole one began, every answer is lacking until asked again:
+/// a pull that stopped part-way has paid for what it bought.
+async fn asks(State(s): State<Studies>, Body(def): Body<Definition>) -> Answer<Json<Asks>> {
+	def.check().map_err(Code::refusal)?;
+	let (dir, holds, asked) = (s.dir.clone(), s.holds.clone(), s.asks.clone());
+	tokio::task::spawn_blocking(move || {
+		holds(&def).map_err(|e| Refusal::new(Code::Unstudied, format!("{e:#}")))?;
+		let sha = def.id();
+		keep(&dir.join(format!("{sha}.json")), &def).map_err(|e| Refusal::new(Code::Internal, e))?;
+		let resume = dir.join(format!("{sha}.resume"));
+		let since = began(&resume).map_err(|e| Refusal::new(Code::Internal, format!("{}: {e}", resume.display())))?;
+		let asks = asked(&def, since).map_err(Code::refusal)?;
+		let since = jiff::Timestamp::try_from(since).map_err(|e| Refusal::new(Code::Internal, format!("a pull begun at {since:?}: {e}")))?;
+		Ok(Json(Asks { since, asks }))
+	})
+	.await
+	.unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()))
 }
 
-/// Built on the first read and kept. A pull re-asks Google everything it is built from, and that
-/// answer goes to the puller alone: one stopped part-way by the day's quota is a map with no
-/// competitors, while the work dir now holds every answer it paid for, so the next read builds from
-/// that, and the next pull buys only what this one did not. Beside it, the Places searches bought,
-/// which is all a pull is charged on.
-async fn studied(s: &Studies, def: Definition, budget: Option<usize>) -> (Bought, Option<usize>, Answer<Bytes>) {
-	if let Err(e) = def.check() {
-		return (Bought::new(), None, Err(Code::refusal(e)));
+/// Builds a study again, out of what its pull bought: a whole pull, so the next one asks everything
+/// again.
+async fn pull(State(s): State<Studies>, Body(def): Body<Definition>) -> Answer<Studied> {
+	let built = studied(&s, def.clone(), true).await?;
+	let resume = s.dir.join(format!("{}.resume", def.id()));
+	match std::fs::remove_file(&resume) {
+		Ok(()) => {}
+		// a pull of the same study, alongside this one, ended whole first
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+		Err(e) => return Err(Refusal::new(Code::Internal, format!("{} outlived a whole pull: {e}", resume.display()))),
 	}
+	Ok(Studied(built))
+}
+
+/// Built on the first read and kept; `again`, built again and kept.
+async fn studied(s: &Studies, def: Definition, again: bool) -> Answer<Bytes> {
+	def.check().map_err(Code::refusal)?;
 	let sha = def.id();
 	let slot = s.slot(&sha);
 	let mut slot = slot.lock().await;
-	if budget.is_some() {
-		*slot = None;
-	}
-	if let Some(built) = &*slot {
-		return (Bought::new(), None, Ok(built.clone()));
+	if !again && let Some(built) = &*slot {
+		return Ok(built.clone());
 	}
 	let (dir, holds, build) = (s.dir.clone(), s.holds.clone(), s.build.clone());
-	// a panicked build took what it bought with it, and no answer is better than an x-billed that guesses
-	let (bought, need, built) = tokio::task::spawn_blocking(move || {
-		if let Err(e) = holds(&def) {
-			return (Bought::new(), None, Err(Refusal::new(Code::Unstudied, format!("{e:#}"))));
-		}
-		if let Err(e) = keep(&dir.join(format!("{sha}.json")), &def) {
-			return (Bought::new(), None, Err(Refusal::new(Code::Internal, e)));
-		}
-		let resume = dir.join(format!("{sha}.resume"));
-		let pull = match budget.map(|budget| began(&resume).map(|since| Pull { budget, since })).transpose() {
-			Ok(pull) => pull,
-			Err(e) => return (Bought::new(), None, Err(Refusal::new(Code::Internal, format!("{}: {e}", resume.display())))),
-		};
-		let (bought, built) = build(&def, pull);
-		let need = built.as_ref().err().and_then(|e| e.downcast_ref::<Unaffordable>()).map(|u| u.need);
-		let built = built.map_err(Code::refusal).and_then(|b| match budget {
-			Some(_) => std::fs::remove_file(&resume)
-				.map(|()| b)
-				.map_err(|e| Refusal::new(Code::Internal, format!("{} outlived a whole pull: {e}", resume.display()))),
-			None => Ok(b),
-		});
-		(bought, need, built)
+	let built = tokio::task::spawn_blocking(move || {
+		holds(&def).map_err(|e| Refusal::new(Code::Unstudied, format!("{e:#}")))?;
+		keep(&dir.join(format!("{sha}.json")), &def).map_err(|e| Refusal::new(Code::Internal, e))?;
+		build(&def).map_err(Code::refusal)
 	})
 	.await
-	.unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
-	let built = built.map(Bytes::from);
-	if let (None, Ok(b)) = (budget, &built) {
-		*slot = Some(b.clone());
-	}
-	(bought, need, built)
+	.unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()))?;
+	let built = Bytes::from(built);
+	*slot = Some(built.clone());
+	Ok(built)
 }
 
 /// Renamed into place: a reader never sees half a definition.
@@ -303,6 +243,7 @@ fn routes() -> Vec<Route<Studies, Gate>> {
 	vec![
 		Route::new(Method::GET, "/trades.json", read, trades),
 		Route::new(Method::POST, "/studies", read, study),
+		Route::new(Method::POST, "/studies/asks", spend, asks),
 		Route::new(Method::POST, "/studies/pull", spend, pull),
 	]
 }

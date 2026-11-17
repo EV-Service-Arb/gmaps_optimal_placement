@@ -16,7 +16,7 @@ of those documents, never to the code.
    │ gmaps_optimal_placement_sources        network, cache     │
    │   GridSource ─ INSEE Filosofi 200 m                       │
    │               GEOSTAT 1 km                                │
-   │   PoiSource  ─ Google Places                              │
+   │   PoiSource  ─ the conductor's queries cache (Places)     │
    │   probe      ─ the same, asked from a node                │
    │   SearchVolume ─ Google Ads · DataForSEO                  │
    └──────┬────────────────────────────────────┬───────────────┘
@@ -97,8 +97,8 @@ The conductor is the one surface placement is used through. Its map is drawn by 
 depends on `_core` here (the `ts` feature: its types in the overlay's `.d.ts`), so the model the
 browser runs and the payload it reads are checked against each other by the compiler: `Model::try_new`
 checks a payload's weights against the `rank::COEF` it was linked with. Everything else crosses as
-`sa_core::placement`. This repo keeps what training needs: the grids, the sources, `probe`, `fit`,
-`strength`.
+`sa_core::placement`. This repo keeps what training needs: the grids, the sources, `probe`'s plan,
+`fit`, `strength`; and what it trains on is what the conductor bought, never a search of its own.
 
 ## Two visual axes
 
@@ -117,21 +117,22 @@ legend's ticks move with the view.
 definition the conductor hands in (`gmaps_optimal_placement_web`). Its operations are one
 `ev_lib::api` table: each row's gate is an `sa_auth::Gate` naming the permission it opens for, and a
 refusal is `{code, error}`. Every request carries the conductor's assertion for exactly its method
-and path, checked against `PANEL_ASSERTION_KEYS`; a pull needs `sa:placement:study:spend`, anything
-else `sa:placement:study:read`. Only a pull spends. A study whose answers are not in the work dir
-opens on what the work dir holds, and its notice says how many are missing. Either reads the queries
-cache.
+and path, checked against `PANEL_ASSERTION_KEYS`; a pull's two operations need
+`sa:placement:study:spend`, anything else `sa:placement:study:read`. Nothing here buys: every
+study is built out of the work dir and the queries cache, and one whose sweep is not all there opens
+on what is, its notice saying how many searches it lacks at least.
 
-The conductor charges the person per Places search, so a pull names what it may buy
-(`?budget=<n>`, required) and is held to it at every search: a sweep the free walk counts past it
-is refused `unaffordable` (402) before the first, and one that outgrows its count is stopped at the
-budget with the same. Every answer to a pull that ran, refusals and failures included, carries
-`x-billed`: everything it bought, `{item: n}`, which is what the person is charged.
+A pull is the conductor's: it asks `POST /studies/asks` what the study lacks — the first unanswered
+page down each branch of the sweep, as an `sa_core::placement::Ask` keyed as the work dir keys it —
+buys those into the queries cache, and asks again, since what lies behind a page (the next one, a
+tile's quarters) is known only once it is answered. Once none is lacking it asks `POST
+/studies/pull`, which builds the study again out of them. The conductor prices and charges every
+search it bought; placement never counts one.
 
 A pull re-asks every answer written before it began — unless one before it did not end whole, in
 which case it re-asks only those written before *that* one began (`{sha}.resume` beside the
-definition, its id, gone on the first 2xx). What a stopped pull paid for is served to its retry, so a
-refunded failure is never bought twice, and the up-front count and the budget see the same cutoff.
+definition, its id, the `since` every `asks` answers with, gone on `/studies/pull`). What a stopped
+pull paid for is served to its retry, so a refunded failure is never bought twice.
 
 ## Invariants
 
@@ -161,19 +162,23 @@ refunded failure is never bought twice, and the up-front count and the budget se
   entrant over the same orderings, held out by the region each was asked from, and refuses the table
   if counting every competitor the same predicts Google as well. An in-sample likelihood cannot tell
   a fitted weight from a memorised one, and a memorised one paints a map that looks decided.
+- **The conductor is the one center of data ingestion.** A Places search is never bought here, for
+  a map or for training: the conductor buys what a pull lacks, and `fit` and `strength` read only
+  what it already holds. A study placement cannot build out of that says so and opens on the rest.
 - **A Google key is a slot of a billing account, and lives in the server's environment, never in an
   artifact.** The config's `google` is accounting's google.nix `accounts`, imported whole, so every
-  spend shows in that account's billing export; each slot names the variable holding its key.
+  keyword volume bought shows in that account's billing export; each slot names the variable holding
+  its key.
 - **A billed answer is bought once, wherever this runs.** Places, DataForSEO and Keyword Planner
   answers are kept in the conductor's queries cache (settings' `queries_cache`; site_conductor's
   docs/ARCHITECTURE.md, Queries cache), claimed there while bought; the work dir under `$XDG_CACHE_HOME/gmaps_optimal_placement` mirrors
   what it served, and a run goes on from that mirror with the cache out of reach until it needs an
-  answer the mirror lacks. `local` keeps them in the work dir alone. Bulk archives are free and cache there alone — the INSEE archive is ~87 MB.
+  answer the mirror lacks. `local` reads the work dir alone. Bulk archives are free and cache there alone — the INSEE archive is ~87 MB.
   A 200 that is a refusal is never kept: it would answer for its request everywhere.
 - **Nothing in that cache expires.** An answer older than its kind's configured age is served anyway,
   and its age rides onto the map beside the imputed flag. Google's daily search quota is the scarce
-  side, and refetching spends a day of it to learn what is mostly the same thing; `--refresh`, or the
-  map's re-ask, is the only thing that re-asks. Age is a caption and a changed tiling is a setting;
+  side, and refetching spends a day of it to learn what is mostly the same thing; a pull is the only
+  thing that re-asks. Age is a caption and a changed tiling is a setting;
   neither is a trigger.
 - **A cache key covers everything its answer depends on**, so a changed input is a different file
   rather than a stale one and nothing needs invalidating. An answer is keyed on the ground it is
@@ -181,11 +186,9 @@ refunded failure is never bought twice, and the up-front count and the budget se
   share it. A derived answer is cached only where it is
   reproducible from what is kept: the grid extract keeps the archive's own rows and re-parses them,
   because caching the floats would need a round-trip no text format gives.
-- **What a run is about to spend is stated, never guessed at.** No API key can read what is left of
-  its project's `SearchTextRequestPerDayPerProject`, so a local tally could only ever refuse work
-  Google would have served. What the work dir is missing is counted and announced before anything is
-  bought; what remains is Google's to say, in the 429 — which moves the run on to the next account's
-  `places` key, in the list's order, until none is left.
+- **What a pull lacks is named, never guessed at.** No API key can read what is left of its
+  project's `SearchTextRequestPerDayPerProject`, so placement does not count one: it names the
+  searches a study lacks, and the conductor's keys and meters decide what buying them costs.
 
 ## Sources are an enum
 

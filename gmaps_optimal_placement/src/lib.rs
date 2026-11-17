@@ -18,10 +18,10 @@ pub use gmaps_optimal_placement_core::{Payload, payload};
 pub use gmaps_optimal_placement_misc as misc;
 use gmaps_optimal_placement_rank::Observed;
 pub use gmaps_optimal_placement_sources as sources;
-use gmaps_optimal_placement_sources::{Frame, Keyword, Ranking, Work, grid, poi, probe, searches};
+use gmaps_optimal_placement_sources::{Frame, Keyword, Work, grid, poi, probe, searches};
 use indexmap::IndexMap;
 use regex::Regex;
-use sa_core::placement::{Area, Category, Definition};
+use sa_core::placement::{Area, Ask, Category, Definition};
 use serde::Serialize;
 
 use crate::config::Group;
@@ -161,23 +161,6 @@ impl Study {
 		Observed::new(inv.pois, places, &obs).map(Some)
 	}
 
-	pub fn probe(&self, work: &Work, dry: bool) -> Result<Vec<Ranking>> {
-		let nodes = self.nodes(&self.cells(work)?)?;
-		let plan = probe::plan(&at(&nodes), &self.terms()?, self.radius_m()?);
-		if dry {
-			for n in &nodes {
-				eprintln!("  {:.5}, {:.5}   {:.1}% of demand", n.at[0], n.at[1], 100. * n.share);
-			}
-			eprintln!("{} nodes, biased {:.1} km", nodes.len(), self.radius_m()? / 1000.);
-			let need = probe::unanswered(work, &plan)?;
-			eprintln!("{} searches, {need} still unanswered: {need} Text Search Essentials", plan.len());
-			return Ok(Vec::new());
-		}
-		let out = probe::run(work, &self.name, plan)?;
-		eprintln!("probe: {} orderings over {} billed calls", out.len(), work.bought().values().sum::<usize>());
-		Ok(out)
-	}
-
 	/// The `locationBias` circle: one stratum's worth of ground, as a circle. `rank.nodes` cuts the
 	/// frame into equal shares of demand, so this is how far a searcher standing at one of them is
 	/// from its edge on average — which is the distance the coefficient is identified over. Not a
@@ -199,8 +182,15 @@ impl Study {
 		rank::nodes(&at, self.demand(cells)?, self.trade()?.2.nodes)
 	}
 
-	/// A location opened without a trade stops at the grid: nothing below reaches `poi::load`, so it
-	/// spends no Places call and no day of the quota.
+	/// The Places searches this study lacks, the first down each branch of its sweep; none for a
+	/// location opened without a trade.
+	pub fn asks(&self, work: &Work) -> Result<Vec<Ask>> {
+		let Some(poi) = &self.poi else { return Ok(Vec::new()) };
+		Ok(poi::cached(poi, Frame::from(&self.area), work)?.asks)
+	}
+
+	/// Out of what the work dir and the queries cache hold: a study whose sweep is not all there
+	/// opens on what is, and its notice says how many searches it lacks at least.
 	pub fn build(&self, work: &Work) -> Result<Payload> {
 		let cells = self.cells(work)?;
 		let n = cells.grid.len();
@@ -225,39 +215,22 @@ impl Study {
 				let (poi_cfg, _, _) = self.trade()?;
 				let frame = Frame::from(&self.area);
 				let terms = self.weigh()?;
-				match poi::load(poi_cfg, frame, &self.name, work) {
-					Ok(inv) => (Some(self.billed(&cells, &place, inv, terms, work)?), None),
-					// the refusals that are neither this tool's fault nor a study that will not build: the map opens on
-					// what the work dir holds and says what it is missing
-					Err(e) => match refusal(e)? {
-						Refusal::Blocked(blocked) => {
-							let held = poi::cached(poi_cfg, frame, work)?;
-							let missing = Some(blocked.missing);
-							match held.pois.len() {
-								0 => (
-									None,
-									Some(Notice {
-										text: format!("{blocked}. {EMPTY}"),
-										missing,
-									}),
-								),
-								n => (
-									Some(self.billed(&cells, &place, held, terms, work)?),
-									Some(Notice {
-										text: format!("{blocked}. The {n} competitors on this map are the part of the sweep it does hold."),
-										missing,
-									}),
-								),
-							}
-						}
-						Refusal::Spent(spent) => (
-							None,
-							Some(Notice {
-								text: format!("{spent}. {EMPTY}"),
-								missing: None,
-							}),
-						),
-					},
+				let inv = poi::cached(poi_cfg, frame, work)?;
+				let notice = match inv.asks.len() {
+					0 => None,
+					missing => Some(Notice {
+						text: match inv.pois.len() {
+							0 => format!("At least {missing} Places searches this study is built from are not held, and a pull buys them. {EMPTY}"),
+							n => format!(
+								"At least {missing} Places searches this study is built from are not held, and a pull buys them. The {n} competitors on this map are the part of the sweep that is."
+							),
+						},
+						missing: Some(missing),
+					}),
+				};
+				match (notice.is_some(), inv.pois.is_empty()) {
+					(true, true) => (None, notice),
+					_ => (Some(self.billed(&cells, &place, inv, terms, work)?), notice),
 				}
 			}
 		};
@@ -292,7 +265,7 @@ impl Study {
 		})
 	}
 
-	/// The billed half, over an inventory already bought or already held.
+	/// The billed half, over the inventory held.
 	fn billed(&self, cells: &Cells, place: &[String], inv: poi::Inventory, terms: Terms, work: &Work) -> Result<payload::Trade> {
 		let (poi_cfg, model_cfg, _) = self.trade()?;
 		let model = Rank::try_new(feats(place, &inv.pois)?, rank::COEF)?;
@@ -638,20 +611,6 @@ pub struct Terms {
 	pub weighted: Vec<(String, f64)>,
 	/// No volume data, or nobody searched it.
 	pub unweighted: Vec<String>,
-}
-
-enum Refusal {
-	Blocked(sources::work::Blocked),
-	Spent(sources::work::Exhausted),
-}
-
-/// The refusals a map opens through rather than fails on; anything else is the error it was.
-fn refusal(e: eyre::Report) -> Result<Refusal> {
-	let e = match e.downcast::<sources::work::Blocked>() {
-		Ok(b) => return Ok(Refusal::Blocked(b)),
-		Err(e) => e,
-	};
-	e.downcast::<sources::work::Exhausted>().map(Refusal::Spent)
 }
 
 fn at(nodes: &[rank::Node]) -> Vec<[f64; 2]> {

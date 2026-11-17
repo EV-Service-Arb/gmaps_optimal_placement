@@ -11,8 +11,8 @@ Two Nix files describe it. A location gives an area and the statistical grid beh
 applied to that location — gives what counts as a competitor and how demand follows from the columns
 the grid publishes. `gmaps_optimal_placement` paints that demand under the competitors already on the
 ground and serves the map. How much any one competitor counts is fitted, not guessed:
-`gmaps_optimal_placement probe` asks Google the study's own queries from equal-demand points across the area,
-and `gmaps_optimal_placement fit` estimates what its ordering rewards. `gmaps_optimal_placement
+`gmaps_optimal_placement fit` estimates what Google's ordering rewards, over the orderings the
+conductor's queries cache already holds. `gmaps_optimal_placement
 strength` is what says that estimate is worth painting: every candidate model cross-validated over
 the same orderings, and a refusal if counting every competitor the same does as well.
 
@@ -44,9 +44,8 @@ cargo install --path gmaps_optimal_placement
 ```sh
 # Every Google key is a slot of a billing account in accounting's google.nix, each read from the
 # environment so it never lands in a file; ~/.config/gmaps_optimal_placement.nix imports the list whole.
-# Places searches are bought on the accounts that provide `places`, in list order, moving on as each
-# one's day is spent; Keyword Planner uses the one account
-# that provides `ads`. What is bought is counted against the account's `name`:
+# Keyword Planner uses the one account that provides `ads`; no Places search is bought here, the
+# conductor buys what a pull lacks:
 #   google = (import ~/s/ev/_sa/accounting/google.nix).accounts;
 # and where what is bought is cached for everyone, so no machine buys the same query twice: the
 # Service-Arb conductor's queries cache, or `local` for this machine's work dir alone:

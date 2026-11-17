@@ -12,6 +12,7 @@ axum.workspace = true
 ev_lib = { workspace = true, features = ["api"] }
 eyre.workspace = true
 gmaps_optimal_placement_core.workspace = true
+jiff.workspace = true
 sa_auth = { workspace = true, features = ["axum"] }
 sa_core = { workspace = true, features = ["api"] }
 schemars.workspace = true

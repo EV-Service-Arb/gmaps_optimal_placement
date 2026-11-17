@@ -5,11 +5,12 @@ Search-volume providers are the exception and are a trait — see `docs/ARCHITEC
 - [`grid::load`] returns a [`gmaps_optimal_placement_core::Grid`] whose columns are whatever the chosen archive
   publishes. The bbox filter reads the cell corner out of the id, so only surviving cells are ever
   reprojected.
-- [`poi::load`] returns competitors already sorted into the study's tiers, and every [`Ranking`] the
-  searches that found them handed back. Tiering is the study's, not ours: [`PoiConfig`] is
-  deserialized straight from the study document.
-- [`probe::plan`] is the request plan and is pure, so a dry run and a cache lookup both read it
-  without a key; [`probe::run`] spends. A [`Ranking`] carries the [`Region`] it was asked from, which
+- [`poi::cached`] returns competitors already sorted into the study's tiers, every [`Ranking`] the
+  searches that found them handed back, and the searches it lacks (`asks`), out of what the
+  conductor's queries cache holds: nothing here buys a Places search. Tiering is the study's, not
+  ours: [`PoiConfig`] is deserialized straight from the study document.
+- [`probe::plan`] is the request plan and is pure, so a cache lookup reads it without a key;
+  [`probe::cached`] reads what of it was ever answered. A [`Ranking`] carries the [`Region`] it was asked from, which
   is what says who could have been returned — and, for a rectangle, that nobody was standing in it.
 - [`searches::provider`] resolves a name to a [`searches::SearchVolume`]. A [`Keyword`] the provider
   has no data for carries `monthly: None`, which is not zero and must not be summed as one.
@@ -17,7 +18,5 @@ Search-volume providers are the exception and are a trait — see `docs/ARCHITEC
   [`work::Kind`] may get before it is reported as old. Bulk archives download once, POST responses are
   keyed by the request, so editing a query refetches and rerunning does not. Anything computed out of
   those is kept under a key its own inputs decide — the grid extract is one. Nothing expires and
-  nothing here refuses: [`Work::age`] reports how old an answer is, a sweep states what it is about
-  to buy before buying it, and `--refresh` is the only thing that re-asks.
-
-[`poi::load`] buys with the keys given to [`Work::keys`], in that order.
+  nothing here refuses: [`Work::age`] reports how old an answer is, and a pull is the only thing
+  that re-asks.

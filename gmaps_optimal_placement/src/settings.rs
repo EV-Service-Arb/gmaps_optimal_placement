@@ -16,26 +16,24 @@ pub struct AppConfig {
 	pub age: Age,
 	#[settings(flatten)]
 	pub sweep: Sweep,
-	/// accounting's google.nix `accounts`, imported whole: every Google key is a slot of one of them.
+	/// accounting's google.nix `accounts`, imported whole: the Keyword Planner's credentials are one of them.
 	#[serde(default)]
 	#[settings(skip)]
 	pub google: Vec<Account>,
 	/// Where what is bought is cached for everyone: the conductor's `<origin>/api/queries_cache`,
-	/// so no machine buys the same query twice; or `local`, this machine's work dir alone.
+	/// where it buys a study's Places searches, so no machine buys the same query twice; or `local`,
+	/// this machine's work dir alone, which holds no search the conductor did not buy.
 	pub queries_cache: String,
 }
 
 #[derive(Clone, ConfigJsonSchema, Debug, MyConfigPrimitives)]
 pub struct Account {
-	/// What a search bought on its keys is counted against.
 	pub name: String,
 	pub provides: Provides,
 }
 
 #[derive(Clone, ConfigJsonSchema, Debug, MyConfigPrimitives)]
 pub struct Provides {
-	/// Places searches.
-	pub places: Option<Key>,
 	/// The map's Maps JS.
 	pub browser: Option<Key>,
 	/// Keyword Planner.
@@ -68,12 +66,6 @@ impl From<&Ads> for searches::Ads {
 	}
 }
 
-impl From<&AppConfig> for Vec<(String, String)> {
-	fn from(cfg: &AppConfig) -> Self {
-		cfg.google.iter().filter_map(|a| a.provides.places.as_ref().map(|p| (a.name.clone(), p.key.clone()))).collect()
-	}
-}
-
 /// How the competitor sweep tiles the ground. Every answer is cached under the exact quadtree tile it
 /// was asked for, so a changed `zoom` asks a new set of tiles; a deeper `depth` asks the finer tiles
 /// under whatever came back at the cap.
@@ -96,7 +88,7 @@ impl From<&Sweep> for Tiling {
 
 /// How old an answer may get before the map says so. Nothing is evicted and nothing is refetched:
 /// a refetch spends a day of Google's quota to learn what is mostly the same thing, so age is
-/// reported and `--refresh` is the only thing that re-asks.
+/// reported and a pull is the only thing that re-asks.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, SettingsNested, SmartDefault)]
 #[serde(default)]
 pub struct Age {

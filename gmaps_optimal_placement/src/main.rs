@@ -8,16 +8,15 @@ use gmaps_optimal_placement::{
 };
 use gmaps_optimal_placement_rank::{League, Observed, Ordering, fit, pooled};
 use gmaps_optimal_placement_sources::{Work, work::QueriesCache};
-use sa_core::placement::{Billed, Catalog, Category, Definition};
+use sa_core::placement::{Catalog, Category, Definition};
 
 #[derive(Parser)]
 #[command(about = "Paint a study's demand model over the competitors already on the ground")]
 struct Cli {
 	#[clap(flatten)]
 	settings: SettingsFlags,
-	/// Buy what the work dir lacks, on real Google quota. Without it Places answers come out of the
-	/// work dir or not at all: a map missing any of its inventory opens on what the work dir holds and
-	/// says how much is missing, and a probe stops at its first miss
+	/// Buy the keyword volumes the work dir lacks, on real Ads or DataForSEO quota. A Places search
+	/// is never bought here: a pull at the conductor buys what a study lacks
 	#[arg(long, global = true)]
 	spend_real_quota_i_am_certain: bool,
 	#[command(subcommand)]
@@ -56,8 +55,8 @@ struct Experts {
 #[derive(Subcommand)]
 enum Cmd {
 	/// Serve the conductor: every request carries its assertion, checked against the keys in
-	/// `PANEL_ASSERTION_KEYS`, and only a pull spends. A study is a definition it hands in, over
-	/// `--trades` and `--countries`
+	/// `PANEL_ASSERTION_KEYS`. A study is a definition it hands in, over `--trades` and
+	/// `--countries`; nothing is bought, the conductor buys what a pull lacks
 	Serve {
 		#[command(flatten)]
 		experts: Experts,
@@ -71,18 +70,6 @@ enum Cmd {
 		/// Defaults to `<work dir>/out/<study name>-searches.html`
 		#[arg(short, long)]
 		out: Option<PathBuf>,
-	},
-	/// Ask Google the study's terms from equal-demand nodes, so the ranking model has orderings a
-	/// searcher could have produced
-	Probe {
-		#[command(flatten)]
-		at: Pair,
-		/// Print the node placement and the call budget, spend nothing
-		#[arg(long)]
-		dry_run: bool,
-		/// Ask every node again rather than serve the orderings on disk
-		#[arg(long)]
-		refresh: bool,
 	},
 	/// Refit the ranking model over every ordering in the work dir, and print the table that goes
 	/// into `gmaps_optimal_placement_core::rank::COEF`. How Google ranks is one mechanism, so this takes the
@@ -133,18 +120,10 @@ fn main() -> Result<()> {
 		AppConfig::handle_settings_command(cmd, cli.settings);
 	}
 	let cfg = AppConfig::try_build(cli.settings)?;
-	let refresh = matches!(cli.cmd, Cmd::Probe { refresh: true, .. });
-	let spend = cli.spend_real_quota_i_am_certain;
-	eyre::ensure!(!refresh || spend, "`--refresh` buys every answer again, which only `--spend-real-quota-i-am-certain` does");
-	// a served study never spends: a pull, a POST, is the one way to buy
-	let serving = matches!(cli.cmd, Cmd::Serve { .. });
-	let keys: Vec<(String, String)> = (&cfg).into();
 	let cache: QueriesCache = cfg.queries_cache.parse()?;
 	let work = Work::at(v_utils::xdg_cache_dir!(""), cache.clone())
 		.policy((&cfg.age).into(), (&cfg.sweep).into())
-		.keys(keys.clone())
-		.refresh(refresh.then(std::time::SystemTime::now))
-		.spend(spend && !serving);
+		.spend(cli.spend_real_quota_i_am_certain);
 	match cli.cmd {
 		Cmd::Config { .. } => unreachable!("handled above, and `handle_settings_command` exits"),
 		Cmd::Schema => {
@@ -165,19 +144,23 @@ fn main() -> Result<()> {
 				let experts = experts.clone();
 				std::sync::Arc::new(move |def: &Definition| gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades).map(drop))
 			};
-			let (keys, cache) = (keys.clone(), cache.clone());
-			let build = std::sync::Arc::new(move |def: &Definition, pull: Option<gmaps_optimal_placement_web::studies::Pull>| -> (Billed, Result<String>) {
-				if pull.is_some() && !spend {
-					return (Billed::new(), Err(eyre::eyre!("this server buys nothing: it was started without `--spend-real-quota-i-am-certain`")));
+			let studied = {
+				let experts = experts.clone();
+				move |def: &Definition, since: Option<std::time::SystemTime>| -> Result<(Study, Work)> {
+					let work = Work::at(dir.clone(), cache.clone()).policy(age, tiling).since(since);
+					Ok((gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades)?, work))
 				}
-				let work = Work::at(dir.clone(), cache.clone())
-					.policy(age, tiling)
-					.keys(keys.clone())
-					.refresh(pull.as_ref().map(|p| p.since))
-					.spend(pull.is_some())
-					.budget(pull.map(|p| p.budget));
-				let built = (|| Ok(serde_json::to_string(&gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades)?.build(&work)?)?))();
-				(work.bought().into_iter().map(|(item, n)| (item, n as u64)).collect(), built)
+			};
+			let asks = {
+				let studied = studied.clone();
+				std::sync::Arc::new(move |def: &Definition, since| {
+					let (study, work) = studied(def, Some(since))?;
+					study.asks(&work)
+				})
+			};
+			let build = std::sync::Arc::new(move |def: &Definition| {
+				let (study, work) = studied(def, None)?;
+				Ok(serde_json::to_string(&study.build(&work)?)?)
 			});
 			gmaps_optimal_placement_web::studies::serve(
 				SocketAddr::from(([127, 0, 0, 1], port)),
@@ -186,14 +169,10 @@ fn main() -> Result<()> {
 					catalog,
 					work.path().join("studies"),
 					holds,
+					asks,
 					build,
 				),
 			)
-		}
-		Cmd::Probe { at, dry_run, refresh: _ } => {
-			let (category, location) = picked(&at, &work)?;
-			study(Some(&category), &location, &at.experts)?.probe(&work, dry_run)?;
-			Ok(())
 		}
 		Cmd::Fit { at } => {
 			let (studies, observed) = harvest(&at, &work)?;

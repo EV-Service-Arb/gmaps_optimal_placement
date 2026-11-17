@@ -1,17 +1,11 @@
 //! `serve`, through the binary and over HTTP: what the conductor meets.
 //!
-//! A server that spends buys from a stub standing in for Places, in a work dir of its own beside the
-//! real one's archives; any other has no Places key, so a build that tried to buy would fail rather
-//! than spend. The grid is the same few hundred Clermont cells `fixture_bbox` reads, so the archive
-//! is downloaded at most once.
+//! Each server runs in a work dir of its own beside the real one's archives, its queries cache that
+//! dir alone, which the test answers into as the conductor would. The grid is the same few hundred
+//! Clermont cells `fixture_bbox` reads, so the archive is downloaded at most once.
 use std::{
-	io::{BufRead, BufReader, Read, Write},
 	path::{Path, PathBuf},
 	process::{Child, Command},
-	sync::{
-		Arc,
-		atomic::{AtomicUsize, Ordering},
-	},
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -20,8 +14,10 @@ use sa_auth::{Assertion, Principal, Service, Signer, Study, User};
 use sa_core::{
 	gbp::Country,
 	geo::LatLng,
-	placement::{Area, Category, Definition, Gcid},
+	placement::{Area, Ask, Asks, Category, Definition, Gcid, SEARCH_TEXT},
+	queries_cache::gop,
 };
+use sha2::{Digest, Sha256};
 
 fn root() -> &'static Path {
 	Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("crate lives in the workspace")
@@ -37,8 +33,7 @@ struct Served {
 }
 
 impl Served {
-	/// Spending on `places` when given one, and on nothing otherwise.
-	fn start(name: &str, places: Option<&Stub>) -> Self {
+	fn start(name: &str) -> Self {
 		let dir = std::env::temp_dir().join(format!("gmaps_conductor_{name}_{}", std::process::id()));
 		if dir.exists() {
 			std::fs::remove_dir_all(&dir).unwrap(); // a killed run's
@@ -46,14 +41,9 @@ impl Served {
 		for sub in ["trades", "countries"] {
 			std::fs::create_dir_all(dir.join(sub)).unwrap();
 		}
-		// no `google` without a stub: there is no key to buy with
-		let google = match places {
-			Some(_) => r#"google = [ { name = "stub"; provides = { places = { key = "stub"; }; }; } ];"#,
-			None => "",
-		};
 		std::fs::write(
 			dir.join("config.nix"),
-			format!(r#"{{ age = {{ communes = "1y"; inventory = "1w"; ordering = "1y"; }}; sweep = {{ depth = 3; zoom = 12; }}; queries_cache = "local"; {google} }}"#),
+			r#"{ age = { communes = "1y"; inventory = "1w"; ordering = "1y"; }; sweep = { depth = 3; zoom = 12; }; queries_cache = "local"; }"#,
 		)
 		.unwrap();
 		std::fs::write(dir.join("countries/FR.nix"), format!("import {}", root().join("examples/countries/FR.nix").display())).unwrap();
@@ -80,20 +70,16 @@ impl Served {
 			.arg("--countries")
 			.arg(dir.join("countries"))
 			.env("PANEL_ASSERTION_KEYS", panel.public())
+			.env("XDG_CACHE_HOME", dir.join("cache"))
 			.env_remove("GMAPS_OPTIMAL_PLACEMENT_QUERIES_CACHE");
-		if let Some(stub) = places {
-			// the stub's answers are kept in a work dir of their own, and never answer for Google's
-			let (real, own) = (v_utils::xdg_cache_dir!("").join("data"), dir.join("cache/gmaps_optimal_placement/data"));
-			std::fs::create_dir_all(&own).unwrap();
-			for e in std::fs::read_dir(&real).unwrap() {
-				let e = e.unwrap();
-				if e.file_name() != "places_cache" {
-					std::os::unix::fs::symlink(e.path(), own.join(e.file_name())).unwrap();
-				}
+		// the test's answers are kept in a work dir of their own, and never answer for Google's
+		let (real, own) = (v_utils::xdg_cache_dir!("").join("data"), dir.join(OWN).join("data"));
+		std::fs::create_dir_all(own.join("places_cache")).unwrap();
+		for e in std::fs::read_dir(&real).unwrap() {
+			let e = e.unwrap();
+			if e.file_name() != "places_cache" {
+				std::os::unix::fs::symlink(e.path(), own.join(e.file_name())).unwrap();
 			}
-			cmd.arg("--spend-real-quota-i-am-certain")
-				.env("XDG_CACHE_HOME", dir.join("cache"))
-				.env("GOP_PLACES_STUB", format!("http://{}/v1/places:searchText", stub.at));
 		}
 		let child = cmd.spawn().unwrap();
 		let mut served = Self { child, dir, port, panel };
@@ -112,7 +98,16 @@ impl Served {
 	fn assertion(&self, method: &str, path: &str, held: &[Study]) -> String {
 		sign(&self.panel, method, path, held)
 	}
+
+	/// `ask` answered with `answer`, as the conductor buys it into the queries cache.
+	fn answer(&self, ask: &Ask, answer: serde_json::Value) {
+		let key: String = Sha256::digest(gop(SEARCH_TEXT, &ask.body)).iter().map(|b| format!("{b:02x}")).collect();
+		std::fs::write(self.dir.join(OWN).join(format!("data/places_cache/{key}.json")), answer.to_string()).unwrap();
+	}
 }
+
+/// The server's work dir, under its dir.
+const OWN: &str = "cache/gmaps_optimal_placement";
 
 fn sign(panel: &Signer, method: &str, path: &str, held: &[Study]) -> String {
 	let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
@@ -151,33 +146,13 @@ impl Served {
 		}
 	}
 
-	/// A pull of `def` for someone who may spend, `query` verbatim: its status, the searches its
-	/// `x-billed` names, its `x-need`, and body.
-	fn pull(&self, def: &Definition, query: &str) -> (u16, Option<usize>, Option<usize>, String) {
-		let path = "/studies/pull";
-		let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
-		let req = ureq::http::Request::post(format!("http://127.0.0.1:{}{path}{query}", self.port))
-			.header(sa_auth::HEADER, self.assertion("POST", path, &[Study::Read, Study::Spend]))
-			.header("content-type", "application/json")
-			.body(serde_json::to_vec(def).unwrap())
-			.unwrap();
-		let mut r = agent.run(req).unwrap();
-		let billed = r.headers().get("x-billed").map(|v| {
-			let billed: std::collections::BTreeMap<String, usize> = serde_json::from_str(v.to_str().unwrap()).unwrap();
-			billed.get("places.search").copied().unwrap_or(0) // a pull that bought no search names none
-		});
-		let need = r.headers().get(sa_core::placement::NEED).map(|v| v.to_str().unwrap().parse().unwrap());
-		(r.status().as_u16(), billed, need, r.body_mut().read_to_string().unwrap())
-	}
-
 	/// `method path`, signed for exactly that, for someone holding `held`.
 	fn signed(&self, method: &str, path: &str, held: &[Study], body: Option<&str>) -> (u16, String) {
 		self.send(method, path, Some(&self.assertion(method, path, held)), body)
 	}
 }
 
-/// A few hundred Clermont cells, as the conductor would hand them in. Named per run: what is defined
-/// is kept in the real work dir, beside the archive these share.
+/// A few hundred Clermont cells, as the conductor would hand them in.
 fn definition(study: Option<&str>) -> Definition {
 	Definition {
 		area: Area::Circle {
@@ -212,7 +187,7 @@ impl Drop for Served {
 /// The conductor signs every request for exactly itself.
 #[test]
 fn behind_the_conductor_only_an_assertion_gets_in() {
-	let s = Served::start("guard", None);
+	let s = Served::start("guard");
 	let path = "/trades.json";
 	assert_eq!(s.get(path, None).0, 401, "no assertion");
 	let stranger: Signer = format!("k1:{}", base64::engine::general_purpose::STANDARD.encode([9u8; 32])).parse().unwrap();
@@ -232,10 +207,10 @@ fn behind_the_conductor_only_an_assertion_gets_in() {
 	);
 }
 
-/// A study is read by its definition, reading buys nothing, and only a pull may spend.
+/// A study is read by its definition, opens on what is held, and says what it lacks.
 #[test]
-fn a_study_is_read_and_only_a_pull_spends() {
-	let s = Served::start("read", None);
+fn a_study_is_read_and_says_what_it_lacks() {
+	let s = Served::start("read");
 	let def = definition(Some("never_asked"));
 	let body = serde_json::to_string(&def).unwrap();
 
@@ -248,24 +223,15 @@ fn a_study_is_read_and_only_a_pull_spends() {
 	let notice = payload["notice"]["text"].as_str().unwrap();
 	assert!(payload["notice"]["missing"].as_u64().is_some_and(|n| n > 0), "the sweep it lacks is counted: {notice}");
 
-	let read = s.assertion("POST", "/studies/pull", &[Study::Read]);
-	assert_eq!(s.send("POST", "/studies/pull?budget=1000", Some(&read), Some(&body)).0, 403, "a pull spends, and reading is not spending");
-	let (status, billed, _, text) = s.pull(&def, "?budget=1000");
-	assert!(
-		status >= 400 && billed == Some(0),
-		"a server started without spending buys nothing, whatever the budget: {status} {text}"
-	);
-	forget(&def.id());
-}
-
-fn forget(id: &str) {
-	std::fs::remove_file(v_utils::xdg_cache_dir!("").join("studies").join(format!("{id}.json"))).unwrap();
+	for path in ["/studies/asks", "/studies/pull"] {
+		assert_eq!(s.signed("POST", path, &[Study::Read], Some(&body)).0, 403, "{path} is a pull's, and reading is not pulling");
+	}
 }
 
 /// A definition the served trades cannot take is refused, and an area on its own is the grid.
 #[test]
 fn a_definition_that_does_not_hold_is_refused() {
-	let s = Served::start("holds", None);
+	let s = Served::start("holds");
 	let def = definition(Some("not_a_trade"));
 	let (status, text) = s.signed("POST", "/studies", &[Study::Read], Some(&serde_json::to_string(&def).unwrap()));
 	assert_eq!(status, 422, "{text}");
@@ -278,119 +244,51 @@ fn a_definition_that_does_not_hold_is_refused() {
 	assert_eq!(status, 200, "{text}");
 	let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
 	assert!(payload["trade"].is_null() && payload["notice"].is_null(), "an area on its own is the grid, and asks nothing");
-	forget(&bare.id());
 }
 
-/// Places, as far as a sweep can tell: one rated competitor in every tile, and a second page behind
-/// the first answer when `paged`. Counts what it served.
-struct Stub {
-	at: std::net::SocketAddr,
-	served: Arc<AtomicUsize>,
-}
-
-impl Stub {
-	fn start(paged: bool) -> Self {
-		let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-		let (at, served) = (listener.local_addr().unwrap(), Arc::<AtomicUsize>::default());
-		let counted = served.clone();
-		// detached: it lives as long as the test binary, and answers nothing once its server is gone
-		std::thread::spawn(move || {
-			for conn in listener.incoming() {
-				let mut conn = BufReader::new(conn.unwrap());
-				let mut len = 0;
-				loop {
-					let mut line = String::new();
-					conn.read_line(&mut line).unwrap();
-					if line == "\r\n" {
-						break;
-					}
-					if let Some((k, v)) = line.split_once(':')
-						&& k.eq_ignore_ascii_case("content-length")
-					{
-						len = v.trim().parse().unwrap();
-					}
-				}
-				conn.read_exact(&mut vec![0; len]).unwrap();
-				let n = counted.fetch_add(1, Ordering::SeqCst);
-				let mut answer = serde_json::json!({"places": [{
-					"id": "stub", "displayName": {"text": "Stub plombier"}, "rating": 4.5, "userRatingCount": 10,
-					"location": {"latitude": 45.78, "longitude": 3.07},
-				}]});
-				if paged && n == 0 {
-					answer["nextPageToken"] = "more".into();
-				}
-				let body = answer.to_string();
-				write!(
-					conn.get_mut(),
-					"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-					body.len()
-				)
-				.unwrap();
-			}
-		});
-		Self { at, served }
-	}
-
-	fn served(&self) -> usize {
-		self.served.load(Ordering::SeqCst)
-	}
-}
-
-/// `study` read on `s` under a Places query of its own: its definition, and the searches its sweep
-/// counts it lacks, as a read's notice says.
-fn defined(s: &Served, study: &str) -> (Definition, usize) {
-	let def = definition(Some(study));
-	let (status, text) = s.signed("POST", "/studies", &[Study::Read], Some(&serde_json::to_string(&def).unwrap()));
+/// `def`'s asks, for someone who may pull.
+fn asks(s: &Served, def: &Definition) -> Asks {
+	let (status, text) = s.signed("POST", "/studies/asks", &[Study::Read, Study::Spend], Some(&serde_json::to_string(def).unwrap()));
 	assert_eq!(status, 200, "{text}");
-	let missing = serde_json::from_str::<serde_json::Value>(&text).unwrap()["notice"]["missing"].as_u64().unwrap();
-	(def, missing as usize)
+	serde_json::from_str(&text).unwrap()
 }
 
-/// A pull says up front how many searches it may buy, and one that needs more is refused before the
-/// first is bought; what it did buy rides on its answer, for the conductor to charge.
+/// A pull's searches are named a round at a time, each round what lies behind the last one's
+/// answers, until none is lacking; the pull then builds out of them alone, and the next pull asks
+/// everything again.
 #[test]
-fn a_pull_buys_within_its_budget_and_says_what_it_bought() {
-	let places = Stub::start(false);
-	let s = Served::start("budget", Some(&places));
-	let (def, need) = defined(&s, "never_asked");
-	assert!(need > 0, "nothing is held yet");
+fn a_pull_is_asked_what_lies_behind_each_answer_until_none_is_lacking() {
+	let s = Served::start("asks");
+	let def = definition(Some("never_asked"));
+	let place = serde_json::json!({
+		"id": "stub", "displayName": {"text": "Stub plombier"}, "rating": 4.5, "userRatingCount": 10,
+		"location": {"latitude": 45.78, "longitude": 3.07},
+	});
 
-	for malformed in ["", "?budget=-1"] {
-		let (status, billed, _, text) = s.pull(&def, malformed);
-		assert_eq!((status, billed), (400, None), "a budget is named, never assumed, and a pull not run bought nothing: {text}");
+	let first = asks(&s, &def);
+	assert!(!first.asks.is_empty(), "nothing is held yet");
+	assert!(first.asks.iter().all(|a| !a.body.contains("pageToken")), "a first page down each branch: {:?}", first.asks);
+	for (i, a) in first.asks.iter().enumerate() {
+		let mut answer = serde_json::json!({ "places": [place] });
+		if i == 0 {
+			answer["nextPageToken"] = "more".into();
+		}
+		s.answer(a, answer);
 	}
-	let (status, billed, needs, text) = s.pull(&def, "?budget=0");
-	assert_eq!((status, billed, needs), (402, Some(0), Some(need)), "{text}");
-	assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap()["code"], "unaffordable", "{text}");
-	assert_eq!(places.served(), 0, "refused before the first search");
 
-	let (status, billed, _, text) = s.pull(&def, &format!("?budget={need}"));
+	let second = asks(&s, &def);
+	assert_eq!(second.since, first.since, "one pull, until it ends whole");
+	let [behind] = second.asks.as_slice() else { panic!("only the second page is behind what was answered: {:?}", second.asks) };
+	assert!(behind.body.contains(r#""pageToken":"more""#), "{behind:?}");
+	s.answer(behind, serde_json::json!({ "places": [] }));
+	assert!(asks(&s, &def).asks.is_empty(), "the sweep is held whole");
+
+	let (status, text) = s.signed("POST", "/studies/pull", &[Study::Read, Study::Spend], Some(&serde_json::to_string(&def).unwrap()));
 	assert_eq!(status, 200, "{text}");
-	assert_eq!(billed, Some(places.served()), "every search bought is charged, and nothing else");
-	assert_eq!(places.served(), need, "a sweep that opens nothing past what it counted buys exactly that");
-}
+	let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
+	assert!(payload["notice"].is_null() && payload["trade"]["pois"].as_array().is_some_and(|p| p.len() == 1), "built of what was answered: {text}");
 
-/// What a sweep counts up front is a floor — a second page, a tile at the cap — so the budget is
-/// held at every search, not only before the first. A pull stopped part-way has paid for what it
-/// bought, so the next buys only the rest; once one ends whole, the one after re-asks everything.
-#[test]
-fn a_pull_never_buys_past_its_budget_and_a_retry_buys_only_the_rest() {
-	let places = Stub::start(true);
-	let s = Served::start("over_budget", Some(&places));
-	let (def, need) = defined(&s, "never_asked");
-	let (status, billed, _, text) = s.pull(&def, &format!("?budget={need}"));
-	assert_eq!(status, 402, "the first answer's second page is one search more than was counted: {text}");
-	assert_eq!((billed, places.served()), (Some(need), need), "bought up to the budget and charged for it: {text}");
-
-	let (status, billed, _, text) = s.pull(&def, "?budget=1000");
-	assert_eq!(status, 200, "{text}");
-	assert_eq!(
-		(billed, places.served()),
-		(Some(1), need + 1),
-		"the retry buys the one search the stopped pull did not, and is charged for that alone"
-	);
-
-	let (status, billed, _, text) = s.pull(&def, "?budget=1000");
-	assert_eq!(status, 200, "{text}");
-	assert_eq!((billed, places.served()), (Some(need), 2 * need + 1), "after a whole pull, every tile is asked again");
+	let next = asks(&s, &def);
+	assert!(next.since > first.since, "a whole pull's answers are what the next one asks again");
+	assert_eq!(next.asks, first.asks);
 }

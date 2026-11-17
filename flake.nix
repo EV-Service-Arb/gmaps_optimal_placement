@@ -43,8 +43,8 @@
         combined = v_flakes.utils.combine { inherit rust; modules = [ rs github readme ]; };
 
         # `conductor --port <p> [-t <trades>] [--countries <dir>]` — the conductor's peer: the studies
-        # behind its assertion. Run from this checkout; needs PANEL_ASSERTION_KEYS, and the config's
-        # keys for what a pull buys under `--spend-real-quota-i-am-certain` (without it a pull is refused).
+        # behind its assertion. Run from this checkout; needs PANEL_ASSERTION_KEYS. Buys nothing: the
+        # conductor buys what a pull lacks.
         conductor = pkgs.writeShellApplication {
           name = "conductor";
           runtimeInputs = with pkgs; [ rust git pkg-config openssl mold nix ];

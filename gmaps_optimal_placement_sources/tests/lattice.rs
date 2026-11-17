@@ -58,7 +58,7 @@ fn an_overlapping_area_pays_only_for_new_ground() {
 	let shared = b.iter().filter(|t| a.contains(t)).count();
 	assert!(shared > 0 && shared < b.len(), "the two circles overlap on part of the lattice: {a:?} vs {b:?}");
 
-	assert_eq!(poi::cached(&cfg, Frame::from(&first), &work).unwrap().missing, a.len(), "nothing is on disk yet");
+	assert_eq!(poi::cached(&cfg, Frame::from(&first), &work).unwrap().asks.len(), a.len(), "nothing is on disk yet");
 	for &t in &a {
 		let places = match t == a[0] {
 			true =>
@@ -67,9 +67,9 @@ fn an_overlapping_area_pays_only_for_new_ground() {
 		};
 		answer(&dir, t, places);
 	}
-	assert_eq!(poi::cached(&cfg, Frame::from(&first), &work).unwrap().missing, 0, "the first area is answered in full");
+	assert_eq!(poi::cached(&cfg, Frame::from(&first), &work).unwrap().asks.len(), 0, "the first area is answered in full");
 	assert_eq!(
-		poi::cached(&cfg, Frame::from(&second), &work).unwrap().missing,
+		poi::cached(&cfg, Frame::from(&second), &work).unwrap().asks.len(),
 		b.len() - shared,
 		"the second pays only for what the first did not ask"
 	);

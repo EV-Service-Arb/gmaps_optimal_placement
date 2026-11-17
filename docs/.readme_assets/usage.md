@@ -1,9 +1,8 @@
 ```sh
 # Every Google key is a slot of a billing account in accounting's google.nix, each read from the
 # environment so it never lands in a file; ~/.config/gmaps_optimal_placement.nix imports the list whole.
-# Places searches are bought on the accounts that provide `places`, in list order, moving on as each
-# one's day is spent; Keyword Planner uses the one account
-# that provides `ads`. What is bought is counted against the account's `name`:
+# Keyword Planner uses the one account that provides `ads`; no Places search is bought here, the
+# conductor buys what a pull lacks:
 #   google = (import ~/s/ev/_sa/accounting/google.nix).accounts;
 # and where what is bought is cached for everyone, so no machine buys the same query twice: the
 # Service-Arb conductor's queries cache, or `local` for this machine's work dir alone:
