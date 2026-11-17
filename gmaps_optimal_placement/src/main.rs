@@ -7,8 +7,8 @@ use gmaps_optimal_placement::{
 	settings::{AppConfig, SettingsCommand, SettingsFlags},
 };
 use gmaps_optimal_placement_rank::{League, Observed, Ordering, fit, pooled};
-use gmaps_optimal_placement_sources::{Frame, Work, work::QueriesCache};
-use sa_core::placement::{Category, Definition};
+use gmaps_optimal_placement_sources::{Work, work::QueriesCache};
+use sa_core::placement::{Billed, Catalog, Category, Definition};
 
 #[derive(Parser)]
 #[command(about = "Paint a study's demand model over the competitors already on the ground")]
@@ -55,27 +55,14 @@ struct Experts {
 
 #[derive(Subcommand)]
 enum Cmd {
-	/// Where the people are: demand under the competitors, as a map served from here. The page picks
-	/// a category and a city out of the two directories, a field per axis; naming both as files opens
-	/// the one tab, already built. The category field also offers none, which serves the city off the
-	/// statistical archive alone and spends nothing
+	/// Serve the conductor: every request carries its assertion, checked against the keys in
+	/// `PANEL_ASSERTION_KEYS`, and only a pull spends. A study is a definition it hands in, over
+	/// `--trades` and `--countries`
 	Serve {
 		#[command(flatten)]
-		at: Pair,
+		experts: Experts,
 		#[arg(short, long, default_value_t = 8731)]
 		port: u16,
-		/// Point the desktop browser at it once it is up
-		#[arg(long)]
-		open: bool,
-		/// Buy the competitor inventory again rather than serve what is on disk. The only thing that
-		/// spends on a question already answered — an answer past its `age` is reported, never refetched
-		#[arg(long)]
-		refresh: bool,
-		/// Serve the conductor instead of a page: every request but `/mfe/*` carries its assertion,
-		/// checked against the keys in `PANEL_ASSERTION_KEYS`, and only a pull spends. Studies are the
-		/// definitions it hands in, over `--trades` and `--countries`; the two axes are not read
-		#[arg(long, conflicts_with_all = ["open", "refresh"])]
-		behind_conductor: bool,
 	},
 	/// How many people ask for it: monthly volume per query group, as one HTML chart
 	Searches {
@@ -130,9 +117,6 @@ enum Cmd {
 	/// Print the study document's JSON schema. What the tool's own settings look like is `config
 	/// schema` — a study is the question, the settings are what asking it costs
 	Schema,
-	/// Print the document of what `serve --behind-conductor` answers, as the conductor's catalog
-	/// pulls it. `nix run .#gen` keeps `docs/openapi.json` this
-	Openapi,
 	/// The tool's own settings: write defaults, diff against them, and generate the JSON Schema /
 	/// Nix module an editor reads
 	Config {
@@ -148,147 +132,62 @@ fn main() -> Result<()> {
 		// never returns
 		AppConfig::handle_settings_command(cmd, cli.settings);
 	}
-	if let Cmd::Openapi = cli.cmd {
-		println!("{}", serde_json::to_string_pretty(&gmaps_optimal_placement_web::studies::document())?);
-		return Ok(());
-	}
 	let cfg = AppConfig::try_build(cli.settings)?;
-	let refresh = matches!(cli.cmd, Cmd::Serve { refresh, .. } | Cmd::Probe { refresh, .. } if refresh);
+	let refresh = matches!(cli.cmd, Cmd::Probe { refresh: true, .. });
 	let spend = cli.spend_real_quota_i_am_certain;
 	eyre::ensure!(!refresh || spend, "`--refresh` buys every answer again, which only `--spend-real-quota-i-am-certain` does");
-	// behind the conductor a GET never spends: "Pull latest", a POST, is the one way to buy
-	let behind = matches!(cli.cmd, Cmd::Serve { behind_conductor: true, .. });
+	// a served study never spends: a pull, a POST, is the one way to buy
+	let serving = matches!(cli.cmd, Cmd::Serve { .. });
 	let keys: Vec<(String, String)> = (&cfg).into();
 	let cache: QueriesCache = cfg.queries_cache.parse()?;
 	let work = Work::at(v_utils::xdg_cache_dir!(""), cache.clone())
 		.policy((&cfg.age).into(), (&cfg.sweep).into())
 		.keys(keys.clone())
 		.refresh(refresh.then(std::time::SystemTime::now))
-		.spend(spend && !behind);
+		.spend(spend && !serving);
 	match cli.cmd {
 		Cmd::Config { .. } => unreachable!("handled above, and `handle_settings_command` exits"),
-		Cmd::Openapi => unreachable!("printed above, before the settings it does not need"),
 		Cmd::Schema => {
 			println!("{}", serde_json::to_string_pretty(&schemars::schema_for!(gmaps_optimal_placement::Study))?);
 			Ok(())
 		}
-		Cmd::Serve {
-			at,
-			port,
-			open,
-			refresh: _,
-			behind_conductor: _,
-		} => {
-			let addr = SocketAddr::from(([127, 0, 0, 1], port));
+		Cmd::Serve { experts, port } => {
 			// the work dir rather than `work` itself: `Work` holds a `Cell`, and the server calls this
-			// from whichever blocking thread a request landed on. `--refresh` does not come along: it
-			// belongs to the run that asked for it, and a tab switch is not one — the page's own reload
-			// is. Spending does, because it is about the server and not about a run
+			// from whichever blocking thread a request landed on
 			let (dir, age, tiling) = (work.path().to_owned(), (&cfg.age).into(), (&cfg.sweep).into());
-			let worker = {
-				let (keys, cache) = (keys.clone(), cache.clone());
-				move |refresh: Option<std::time::SystemTime>| -> Result<Work> {
-					eyre::ensure!(refresh.is_none() || spend, "this server buys nothing: it was started without `--spend-real-quota-i-am-certain`");
-					Ok(Work::at(dir.clone(), cache.clone())
-						.policy(age, tiling)
-						.keys(keys.clone())
-						.refresh(refresh)
-						.spend(spend && refresh.is_some()))
-				}
+			let conductor = std::env::var("PANEL_ASSERTION_KEYS").map_err(|e| eyre::eyre!("`serve` checks every request against PANEL_ASSERTION_KEYS: {e}"))?;
+			let stems = |dir: &std::path::Path| -> Result<Vec<String>> { Ok(gmaps_optimal_placement::files(dir)?.iter().map(|p| gmaps_optimal_placement::stem(p).to_owned()).collect()) };
+			let catalog = Catalog {
+				trades: stems(&experts.trades)?,
+				countries: stems(&experts.countries)?.iter().map(|c| c.parse()).collect::<Result<_, _>>()?,
 			};
-			let experts = at.experts.clone();
-			if behind {
-				let keys = std::env::var("PANEL_ASSERTION_KEYS").map_err(|e| eyre::eyre!("`--behind-conductor` checks every request against PANEL_ASSERTION_KEYS: {e}"))?;
-				let stems = |dir: &std::path::Path| -> Result<Vec<String>> { Ok(gmaps_optimal_placement::files(dir)?.iter().map(|p| gmaps_optimal_placement::stem(p).to_owned()).collect()) };
-				let served = gmaps_optimal_placement_web::studies::Served {
-					trades: stems(&experts.trades)?,
-					countries: stems(&experts.countries)?.iter().map(|c| c.parse()).collect::<Result<_, _>>()?,
-				};
-				let holds = {
-					let experts = experts.clone();
-					std::sync::Arc::new(move |def: &Definition| gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades).map(drop))
-				};
-				let build = std::sync::Arc::new(move |def: &Definition, pull: Option<gmaps_optimal_placement_web::studies::Pull>| -> (usize, Result<String>) {
-					let work = match worker(pull.as_ref().map(|p| p.since)) {
-						Ok(w) => w.budget(pull.map(|p| p.budget)),
-						Err(e) => return (0, Err(e)),
-					};
-					let built = (|| {
-						Ok(serde_json::to_string(
-							&gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades)?.build(&work)?,
-						)?)
-					})();
-					(work.billed(), built)
-				});
-				return gmaps_optimal_placement_web::serve::serve(
-					addr,
-					gmaps_optimal_placement_web::serve::Mode::Conductor(gmaps_optimal_placement_web::studies::Studies::new(
-						keys.parse().map_err(|e| eyre::eyre!("PANEL_ASSERTION_KEYS: {e}"))?,
-						served,
-						work.path().join("studies"),
-						holds,
-						build,
-					)),
-				);
-			}
-			// the page picks out of the two directories, so `fzf` is not one of two pickers to learn. A
-			// pair named as files is built here instead: its statistics print, and a study that will not
-			// build fails before the listener binds
-			let (categories, locations) = (categories(&at, &work)?, gmaps_optimal_placement::files(&at.locations)?);
-			let prebuilt = match (categories.as_slice(), locations.as_slice()) {
-				([(key, category)], [location]) => {
-					let payload = study(Some(category), location, &experts)?.build(&work)?;
-					report(gmaps_optimal_placement::stats(&payload));
-					vec![(Some(key.clone()), gmaps_optimal_placement::stem(location).to_owned(), serde_json::to_string(&payload)?)]
-				}
-				_ => Vec::new(),
+			let holds = {
+				let experts = experts.clone();
+				std::sync::Arc::new(move |def: &Definition| gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades).map(drop))
 			};
-			let located = locations
-				.iter()
-				.map(|l| {
-					let s = study(None, l, &experts)?;
-					let b = Frame::from(&s.area).bbox;
-					Ok(gmaps_optimal_placement_web::serve::Location {
-						path: l.clone(),
-						bbox: [b.lon[0], b.lat[0], b.lon[1], b.lat[1]],
-						country: s.country,
-					})
-				})
-				.collect::<Result<Vec<_>>>()?;
-			let key = cfg
-				.google
-				.iter()
-				.find_map(|a| a.provides.browser.as_ref())
-				.ok_or_else(|| eyre::eyre!("the map loads Google's script with a `browser` key, and no account in the config's `google` provides one"))?
-				.key
-				.clone();
-			let build = std::sync::Arc::new({
-				let (experts, worker) = (experts.clone(), worker.clone());
-				move |category: Option<&Category>, location: &std::path::Path, refresh: bool| {
-					// gop's own page buys on a GET, as it always has; only behind the conductor does a GET read alone
-					let work = match refresh {
-						true => worker(Some(std::time::SystemTime::now()))?,
-						false => worker(None)?.spend(spend),
-					};
-					let payload = study(category, location, &experts)?.build(&work)?;
-					Ok(serde_json::to_string(&payload)?)
+			let (keys, cache) = (keys.clone(), cache.clone());
+			let build = std::sync::Arc::new(move |def: &Definition, pull: Option<gmaps_optimal_placement_web::studies::Pull>| -> (Billed, Result<String>) {
+				if pull.is_some() && !spend {
+					return (Billed::new(), Err(eyre::eyre!("this server buys nothing: it was started without `--spend-real-quota-i-am-certain`")));
 				}
+				let work = Work::at(dir.clone(), cache.clone())
+					.policy(age, tiling)
+					.keys(keys.clone())
+					.refresh(pull.as_ref().map(|p| p.since))
+					.spend(pull.is_some())
+					.budget(pull.map(|p| p.budget));
+				let built = (|| Ok(serde_json::to_string(&gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades)?.build(&work)?)?))();
+				(work.bought().into_iter().map(|(item, n)| (item, n as u64)).collect(), built)
 			});
-			let find = std::sync::Arc::new(move |location: &std::path::Path, q: &str| {
-				let frame = Frame::from(&study(None, location, &experts)?.area).bbox;
-				gmaps_optimal_placement_sources::poi::find(&worker(None)?.spend(spend), frame, q)
-			});
-			gmaps_optimal_placement_web::serve::serve(
-				addr,
-				gmaps_optimal_placement_web::serve::Mode::Page {
-					key,
-					open,
-					categories,
-					locations: located,
-					prebuilt,
+			gmaps_optimal_placement_web::studies::serve(
+				SocketAddr::from(([127, 0, 0, 1], port)),
+				gmaps_optimal_placement_web::studies::Studies::new(
+					conductor.parse().map_err(|e| eyre::eyre!("PANEL_ASSERTION_KEYS: {e}"))?,
+					catalog,
+					work.path().join("studies"),
+					holds,
 					build,
-					find,
-				},
+				),
 			)
 		}
 		Cmd::Probe { at, dry_run, refresh: _ } => {

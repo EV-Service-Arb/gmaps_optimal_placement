@@ -174,7 +174,7 @@ impl Study {
 			return Ok(Vec::new());
 		}
 		let out = probe::run(work, &self.name, plan)?;
-		eprintln!("probe: {} orderings over {} billed calls", out.len(), work.billed());
+		eprintln!("probe: {} orderings over {} billed calls", out.len(), work.bought().values().sum::<usize>());
 		Ok(out)
 	}
 

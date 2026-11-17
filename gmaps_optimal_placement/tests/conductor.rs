@@ -1,4 +1,4 @@
-//! `serve --behind-conductor`, through the binary and over HTTP: what the conductor's forward meets.
+//! `serve`, through the binary and over HTTP: what the conductor meets.
 //!
 //! A server that spends buys from a stub standing in for Places, in a work dir of its own beside the
 //! real one's archives; any other has no Places key, so a build that tried to buy would fail rather
@@ -43,7 +43,7 @@ impl Served {
 		if dir.exists() {
 			std::fs::remove_dir_all(&dir).unwrap(); // a killed run's
 		}
-		for sub in ["trades", "countries", "site/mfe"] {
+		for sub in ["trades", "countries"] {
 			std::fs::create_dir_all(dir.join(sub)).unwrap();
 		}
 		// no `google` without a stub: there is no key to buy with
@@ -56,7 +56,6 @@ impl Served {
 			format!(r#"{{ age = {{ communes = "1y"; inventory = "1w"; ordering = "1y"; }}; sweep = {{ depth = 3; zoom = 12; }}; queries_cache = "local"; {google} }}"#),
 		)
 		.unwrap();
-		std::fs::write(dir.join("site/mfe/gmaps_optimal_placement_overlay.js"), "export default async function init() {}").unwrap();
 		std::fs::write(dir.join("countries/FR.nix"), format!("import {}", root().join("examples/countries/FR.nix").display())).unwrap();
 		for t in ["never_asked", "never_asked_either"] {
 			std::fs::write(
@@ -76,13 +75,12 @@ impl Served {
 		let mut cmd = Command::new(env!("CARGO_BIN_EXE_gmaps_optimal_placement"));
 		cmd.arg("--config")
 			.arg(dir.join("config.nix"))
-			.args(["serve", "--behind-conductor", "--port", &port.to_string(), "-t"])
+			.args(["serve", "--port", &port.to_string(), "-t"])
 			.arg(dir.join("trades"))
 			.arg("--countries")
 			.arg(dir.join("countries"))
 			.env("PANEL_ASSERTION_KEYS", panel.public())
-			.env_remove("GMAPS_OPTIMAL_PLACEMENT_QUERIES_CACHE")
-			.env("LEPTOS_SITE_ROOT", dir.join("site"));
+			.env_remove("GMAPS_OPTIMAL_PLACEMENT_QUERIES_CACHE");
 		if let Some(stub) = places {
 			// the stub's answers are kept in a work dir of their own, and never answer for Google's
 			let (real, own) = (v_utils::xdg_cache_dir!("").join("data"), dir.join("cache/gmaps_optimal_placement/data"));
@@ -100,7 +98,7 @@ impl Served {
 		let child = cmd.spawn().unwrap();
 		let mut served = Self { child, dir, port, panel };
 		for _ in 0..240 {
-			if served.get("/mfe/gmaps_optimal_placement_overlay.js", None).0 == 200 {
+			if served.get("/trades.json", None).0 == 401 {
 				return served;
 			}
 			if let Some(exit) = served.child.try_wait().unwrap() {
@@ -153,16 +151,21 @@ impl Served {
 		}
 	}
 
-	/// A pull of `at` for someone who may spend, `query` verbatim: its status, `x-billed` and body.
-	fn pull(&self, at: &str, query: &str) -> (u16, Option<usize>, String) {
-		let path = format!("{at}/pull");
+	/// A pull of `def` for someone who may spend, `query` verbatim: its status, the searches its
+	/// `x-billed` names, and body.
+	fn pull(&self, def: &Definition, query: &str) -> (u16, Option<usize>, String) {
+		let path = "/studies/pull";
 		let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
 		let req = ureq::http::Request::post(format!("http://127.0.0.1:{}{path}{query}", self.port))
-			.header(sa_auth::HEADER, self.assertion("POST", &path, &[Study::Read, Study::Spend]))
-			.body(Vec::new())
+			.header(sa_auth::HEADER, self.assertion("POST", path, &[Study::Read, Study::Spend]))
+			.header("content-type", "application/json")
+			.body(serde_json::to_vec(def).unwrap())
 			.unwrap();
 		let mut r = agent.run(req).unwrap();
-		let billed = r.headers().get("x-billed").map(|v| v.to_str().unwrap().parse().unwrap());
+		let billed = r.headers().get("x-billed").map(|v| {
+			let billed: std::collections::BTreeMap<String, usize> = serde_json::from_str(v.to_str().unwrap()).unwrap();
+			billed.get("places.search").copied().unwrap_or(0) // a pull that bought no search names none
+		});
 		(r.status().as_u16(), billed, r.body_mut().read_to_string().unwrap())
 	}
 
@@ -205,8 +208,7 @@ impl Drop for Served {
 	}
 }
 
-/// The forward signs every request for exactly itself; the module the conductor's page imports is
-/// the one thing open.
+/// The conductor signs every request for exactly itself.
 #[test]
 fn behind_the_conductor_only_an_assertion_gets_in() {
 	let s = Served::start("guard", None);
@@ -218,7 +220,7 @@ fn behind_the_conductor_only_an_assertion_gets_in() {
 		401,
 		"signed by a key the server does not hold"
 	);
-	assert_eq!(s.get(path, Some(&s.assertion("GET", "/studies/x", &[Study::Read]))).0, 401, "signed for another request");
+	assert_eq!(s.get(path, Some(&s.assertion("POST", "/studies", &[Study::Read]))).0, 401, "signed for another request");
 	assert_eq!(s.get(path, Some(&s.assertion("GET", path, &[]))).0, 403, "signed, for someone who may not read studies");
 
 	let (status, body) = s.signed("GET", path, &[Study::Read], None);
@@ -227,25 +229,17 @@ fn behind_the_conductor_only_an_assertion_gets_in() {
 		serde_json::from_str::<serde_json::Value>(&body).unwrap(),
 		serde_json::json!({"trades": ["never_asked", "never_asked_either"], "countries": ["FR"]})
 	);
-	assert_eq!(s.get("/mfe/gmaps_optimal_placement_overlay.js", None).0, 200, "the module is open");
 }
 
-/// A definition is addressed by its own hash, defining one buys nothing, and only a pull may spend.
+/// A study is read by its definition, reading buys nothing, and only a pull may spend.
 #[test]
-fn a_study_is_defined_then_read_and_only_a_pull_spends() {
-	let s = Served::start("define", None);
+fn a_study_is_read_and_only_a_pull_spends() {
+	let s = Served::start("read", None);
 	let def = definition(Some("never_asked"));
-	let (id, body) = (def.id(), serde_json::to_string(&def).unwrap());
-	let at = format!("/studies/{id}");
+	let body = serde_json::to_string(&def).unwrap();
 
-	assert_eq!(s.signed("GET", &at, &[Study::Read], None).0, 404, "nothing is defined yet");
-	let wrong = format!("/studies/{}", definition(Some("never_asked_either")).id());
-	assert_eq!(s.signed("PUT", &wrong, &[Study::Read], Some(&body)).0, 400, "a body under someone else's hash");
-	assert_eq!(s.signed("PUT", &at, &[], Some(&body)).0, 403, "defining is reading");
-	let (status, text) = s.signed("PUT", &at, &[Study::Read], Some(&body));
-	assert_eq!(status, 204, "{text}");
-
-	let (status, text) = s.signed("GET", &at, &[Study::Read], None);
+	assert_eq!(s.signed("POST", "/studies", &[], Some(&body)).0, 403, "for someone who may not read studies");
+	let (status, text) = s.signed("POST", "/studies", &[Study::Read], Some(&body));
 	assert_eq!(status, 200, "a refusal is a notice, not an error: {text}");
 	let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
 	assert!(payload["trade"].is_null(), "nothing that scores a competitor was held or bought");
@@ -253,35 +247,33 @@ fn a_study_is_defined_then_read_and_only_a_pull_spends() {
 	let notice = payload["notice"]["text"].as_str().unwrap();
 	assert!(payload["notice"]["missing"].as_u64().is_some_and(|n| n > 0), "the sweep it lacks is counted: {notice}");
 
-	let pull = format!("{at}/pull");
-	assert_eq!(s.signed("POST", &pull, &[Study::Read], None).0, 403, "a pull spends, and reading is not spending");
-	let (status, billed, text) = s.pull(&at, "?budget=1000");
+	let read = s.assertion("POST", "/studies/pull", &[Study::Read]);
+	assert_eq!(s.send("POST", "/studies/pull?budget=1000", Some(&read), Some(&body)).0, 403, "a pull spends, and reading is not spending");
+	let (status, billed, text) = s.pull(&def, "?budget=1000");
 	assert!(
 		status >= 400 && billed == Some(0),
 		"a server started without spending buys nothing, whatever the budget: {status} {text}"
 	);
-	forget(&id);
+	forget(&def.id());
 }
 
 fn forget(id: &str) {
 	std::fs::remove_file(v_utils::xdg_cache_dir!("").join("studies").join(format!("{id}.json"))).unwrap();
 }
 
-/// A definition the served trades cannot take is refused when it is handed in, not when it is read.
+/// A definition the served trades cannot take is refused, and an area on its own is the grid.
 #[test]
-fn a_definition_that_does_not_hold_is_refused_on_put() {
+fn a_definition_that_does_not_hold_is_refused() {
 	let s = Served::start("holds", None);
 	let def = definition(Some("not_a_trade"));
-	let (status, text) = s.signed("PUT", &format!("/studies/{}", def.id()), &[Study::Read], Some(&serde_json::to_string(&def).unwrap()));
+	let (status, text) = s.signed("POST", "/studies", &[Study::Read], Some(&serde_json::to_string(&def).unwrap()));
 	assert_eq!(status, 422, "{text}");
 	let refused: serde_json::Value = serde_json::from_str(&text).unwrap();
 	assert_eq!(refused["code"], "unstudied", "{text}");
 	assert!(refused["error"].as_str().unwrap().contains("not_a_trade"), "{text}");
 
 	let bare = definition(None);
-	let at = format!("/studies/{}", bare.id());
-	assert_eq!(s.signed("PUT", &at, &[Study::Read], Some(&serde_json::to_string(&bare).unwrap())).0, 204);
-	let (status, text) = s.signed("GET", &at, &[Study::Read], None);
+	let (status, text) = s.signed("POST", "/studies", &[Study::Read], Some(&serde_json::to_string(&bare).unwrap()));
 	assert_eq!(status, 200, "{text}");
 	let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
 	assert!(payload["trade"].is_null() && payload["notice"].is_null(), "an area on its own is the grid, and asks nothing");
@@ -343,17 +335,14 @@ impl Stub {
 	}
 }
 
-/// `study` defined on `s` under a Places query of its own: its path, and the searches its sweep
+/// `study` read on `s` under a Places query of its own: its definition, and the searches its sweep
 /// counts it lacks, as a read's notice says.
-fn defined(s: &Served, study: &str) -> (String, usize) {
+fn defined(s: &Served, study: &str) -> (Definition, usize) {
 	let def = definition(Some(study));
-	let at = format!("/studies/{}", def.id());
-	let (status, text) = s.signed("PUT", &at, &[Study::Read], Some(&serde_json::to_string(&def).unwrap()));
-	assert_eq!(status, 204, "{text}");
-	let (status, text) = s.signed("GET", &at, &[Study::Read], None);
+	let (status, text) = s.signed("POST", "/studies", &[Study::Read], Some(&serde_json::to_string(&def).unwrap()));
 	assert_eq!(status, 200, "{text}");
 	let missing = serde_json::from_str::<serde_json::Value>(&text).unwrap()["notice"]["missing"].as_u64().unwrap();
-	(at, missing as usize)
+	(def, missing as usize)
 }
 
 /// A pull says up front how many searches it may buy, and one that needs more is refused before the
@@ -362,19 +351,19 @@ fn defined(s: &Served, study: &str) -> (String, usize) {
 fn a_pull_buys_within_its_budget_and_says_what_it_bought() {
 	let places = Stub::start(false);
 	let s = Served::start("budget", Some(&places));
-	let (at, need) = defined(&s, "never_asked");
+	let (def, need) = defined(&s, "never_asked");
 	assert!(need > 0, "nothing is held yet");
 
 	for malformed in ["", "?budget=-1"] {
-		let (status, billed, text) = s.pull(&at, malformed);
+		let (status, billed, text) = s.pull(&def, malformed);
 		assert_eq!((status, billed), (400, None), "a budget is named, never assumed, and a pull not run bought nothing: {text}");
 	}
-	let (status, billed, text) = s.pull(&at, "?budget=0");
+	let (status, billed, text) = s.pull(&def, "?budget=0");
 	assert_eq!((status, billed), (402, Some(0)), "{text}");
 	assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap()["code"], "unaffordable", "{text}");
 	assert_eq!(places.served(), 0, "refused before the first search");
 
-	let (status, billed, text) = s.pull(&at, &format!("?budget={need}"));
+	let (status, billed, text) = s.pull(&def, &format!("?budget={need}"));
 	assert_eq!(status, 200, "{text}");
 	assert_eq!(billed, Some(places.served()), "every search bought is charged, and nothing else");
 	assert_eq!(places.served(), need, "a sweep that opens nothing past what it counted buys exactly that");
@@ -387,12 +376,12 @@ fn a_pull_buys_within_its_budget_and_says_what_it_bought() {
 fn a_pull_never_buys_past_its_budget_and_a_retry_buys_only_the_rest() {
 	let places = Stub::start(true);
 	let s = Served::start("over_budget", Some(&places));
-	let (at, need) = defined(&s, "never_asked");
-	let (status, billed, text) = s.pull(&at, &format!("?budget={need}"));
+	let (def, need) = defined(&s, "never_asked");
+	let (status, billed, text) = s.pull(&def, &format!("?budget={need}"));
 	assert_eq!(status, 402, "the first answer's second page is one search more than was counted: {text}");
 	assert_eq!((billed, places.served()), (Some(need), need), "bought up to the budget and charged for it: {text}");
 
-	let (status, billed, text) = s.pull(&at, "?budget=1000");
+	let (status, billed, text) = s.pull(&def, "?budget=1000");
 	assert_eq!(status, 200, "{text}");
 	assert_eq!(
 		(billed, places.served()),
@@ -400,7 +389,7 @@ fn a_pull_never_buys_past_its_budget_and_a_retry_buys_only_the_rest() {
 		"the retry buys the one search the stopped pull did not, and is charged for that alone"
 	);
 
-	let (status, billed, text) = s.pull(&at, "?budget=1000");
+	let (status, billed, text) = s.pull(&def, "?budget=1000");
 	assert_eq!(status, 200, "{text}");
 	assert_eq!((billed, places.served()), (Some(need), 2 * need + 1), "after a whole pull, every tile is asked again");
 }

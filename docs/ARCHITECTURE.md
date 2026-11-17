@@ -4,7 +4,7 @@ Where should a service business open. An area and the country base under it desc
 and the statistical grid behind it; a trade, applied to that area, describes how demand follows from
 whatever columns that grid publishes and how to read a competitor's name; the conductor's category —
 a trade in a country — says what the trade is called on Google and what its customers type. The
-tool serves a map that answers it.
+tool builds the payload that answers it; the conductor's map draws it.
 
 The question is the input. Retargeting an area, a country, a trade or a category is an edit to one
 of those documents, never to the code.
@@ -37,18 +37,15 @@ of those documents, never to the code.
            │  every expression                     │  every slider
    ┌───────┴──────────────────────────┐   ┌────────┴──────────────────────┐
    │ gmaps_optimal_placement          │   │ gmaps_optimal_placement_web   │
-   │   CLI, study, settings, HTML     │──▶│   ssr: axum + server fns      │
-   │   categories × areas             │   │   hydrate: the MapView island │
-   └───────┬──────────────────────────┘   │   map_core.js: map, pins      │
-           │  the orderings on disk       └────────┬──────────────────────┘
-   ┌───────┴──────────────────────────┐   ┌────────┴──────────────────────┐
-   │ gmaps_optimal_placement_rank     │   │ gmaps_optimal_placement_overlay│
-   │   Observed · Strategy · Strength │   │   Scene: heat · field · dots  │
-   │   Adam, k-fold, the league table │   │   paint.js: the canvases      │
-   └──────────────────────────────────┘   │   /mfe: any host, typed .d.ts │
-                                          └────────┬──────────────────────┘
-                                                   ▼
-                          gop's own map · the conductor's map · one <name>-searches.html
+   │   CLI, study, settings, HTML     │──▶│   the conductor's API:        │
+   │   categories × areas             │   │   Definition in, Payload out  │
+   └───────┬──────────────────────────┘   └────────┬──────────────────────┘
+           │  the orderings on disk                 ▼
+   ┌───────┴──────────────────────────┐   site_conductor: its map's overlay links
+   │ gmaps_optimal_placement_rank     │   `_core` (Payload, Model) at build time
+   │   Observed · Strategy · Strength │
+   │   Adam, k-fold, the league table │
+   └──────────────────────────────────┘
 ```
 
 A study is an `sa_core::placement::Definition`: an area (a city's viewport or a circle, and a margin, as
@@ -64,15 +61,10 @@ category is that function's identity — the area's own attrset is already a stu
 is the one `Option` that says so, and everything behind it is everything that is billed. A city can
 therefore be looked at before any of the Places quota goes on it.
 
-gop's own page holds two axes, the conductor's categories and `--locations` (files), and picks a
-point on their product — one field per axis, both live at once, because a coordinate is known in
-either order; a separate Load spends the pair. A category is the latest the conductor handed in
-(the definitions under the work dir's `studies/`): gop never reads the conductor, and a copy of a
-category kept beside the trades would drift from it. Naming one of each (`-c <key>`, a location
-file) builds it before the listener binds, which is what keeps a scripted run off the picker. What
-a study is *called* — `<study>·<CC>·<slug>` — is the definition's; the web crate keys the page on
-the category's key and the location's stem and the pin file keys on the name, so neither has a
-second spelling of it to keep in step.
+The CLI's commands other than `serve` hold two axes, the conductor's categories and `--locations`
+(files): a category is the latest the conductor handed in (the definitions under the work dir's
+`studies/`), because gop never reads the conductor, and a copy of a category kept beside the trades
+would drift from it. What a study is *called* — `<study>·<CC>·<slug>` — is the definition's.
 
 The map answers where the people are. It does not answer how many are looking for the thing, which
 is what `searches` is for: a cell can be dense, affluent and uncontested and still sit under a trade
@@ -99,22 +91,14 @@ carry whatever it needs without that landing in the browser or beside the HTTP s
 Both sides are Rust. `gmaps_optimal_placement_core` is wasm-safe and holds the model, so the same code that
 `cargo t` pins against a fixture is the code the browser runs.
 
-## The line between Rust and JavaScript
+## The line between this repo and the conductor
 
-What is painted over a map is `gmaps_optimal_placement_overlay`'s, and there is one path for it:
-`Scene` decides every number, `paint.js` projects and fills, because filling needs
-`fromLatLngToDivPixel` every frame. gop's Leptos map and the conductor's page both draw through it;
-`map_core.js` keeps what is gop's page alone — the map instance, the pins, the pan. The pattern is
-`v_utils::lwc`'s.
-
-The conductor imports the overlay from `/mfe/` (wasm-bindgen's module; its `.d.ts`, generated from
-the Rust types, is the host's types) onto a `google.maps.Map` it owns: the map, its styles and
-its own markers stay the host's. The module comes from the same build as the payloads it reads, so
-`Model::try_new` checks their weights against the `rank::COEF` it was linked with.
-
-Nothing throws across either boundary for a data problem. Under `panic=abort` a rejected promise
-reaching wasm kills the app, so `map_core.js`'s `mount` returns a banner string; the overlay turns a
-payload that will not arrive, parse or build into a `notice` event.
+The conductor is the one surface placement is used through. Its map is drawn by its own crate, which
+depends on `_core` here (the `ts` feature: its types in the overlay's `.d.ts`), so the model the
+browser runs and the payload it reads are checked against each other by the compiler: `Model::try_new`
+checks a payload's weights against the `rank::COEF` it was linked with. Everything else crosses as
+`sa_core::placement`. This repo keeps what training needs: the grids, the sources, `probe`, `fit`,
+`strength`.
 
 ## Two visual axes
 
@@ -129,28 +113,24 @@ legend's ticks move with the view.
 
 ## Behind the conductor
 
-`serve --behind-conductor` serves no page and holds no axis: it takes `--trades` and `--countries`
-and builds whatever definition the conductor hands in (`PUT /studies/{sha}`, then `GET`). Its
-operations are one `ev_lib::api` table (`web::studies`): the router and the document
-(`/openapi.json`, which the conductor's catalog pulls; committed as `docs/openapi.json` by
-`nix run .#gen`) both come from it, each row's gate is an `sa_auth::Gate` naming the permission it
-opens for, and a refusal is `{code, error}`. Every request but `/mfe/*` carries the conductor's
-assertion for exactly its method and path, checked against `PANEL_ASSERTION_KEYS`; a pull needs
-`sa:placement:study:spend`, anything else `sa:placement:study:read`. Only a pull spends, and its
-`x-spends` says what: `placement.search`, what the person is charged, beside the volume providers'
-metered calls — not `places.search`, which is what placement pays Google. A study whose answers
-are not in the work dir opens on what the work dir holds, and its notice says how many are
-missing. Either reads the queries cache.
+`serve` serves no page and holds no axis: it takes `--trades` and `--countries` and builds whatever
+definition the conductor hands in (`gmaps_optimal_placement_web`). Its operations are one
+`ev_lib::api` table: each row's gate is an `sa_auth::Gate` naming the permission it opens for, and a
+refusal is `{code, error}`. Every request carries the conductor's assertion for exactly its method
+and path, checked against `PANEL_ASSERTION_KEYS`; a pull needs `sa:placement:study:spend`, anything
+else `sa:placement:study:read`. Only a pull spends. A study whose answers are not in the work dir
+opens on what the work dir holds, and its notice says how many are missing. Either reads the queries
+cache.
 
 The conductor charges the person per Places search, so a pull names what it may buy
 (`?budget=<n>`, required) and is held to it at every search: a sweep the free walk counts past it
 is refused `unaffordable` (402) before the first, and one that outgrows its count is stopped at the
 budget with the same. Every answer to a pull that ran, refusals and failures included, carries
-`x-billed`: the searches it bought, which is what the person is charged.
+`x-billed`: everything it bought, `{item: n}`, which is what the person is charged.
 
 A pull re-asks every answer written before it began — unless one before it did not end whole, in
 which case it re-asks only those written before *that* one began (`{sha}.resume` beside the
-definition, gone on the first 2xx). What a stopped pull paid for is served to its retry, so a
+definition, its id, gone on the first 2xx). What a stopped pull paid for is served to its retry, so a
 refunded failure is never bought twice, and the up-front count and the budget see the same cutoff.
 
 ## Invariants
@@ -181,9 +161,6 @@ refunded failure is never bought twice, and the up-front count and the budget se
   entrant over the same orderings, held out by the region each was asked from, and refuses the table
   if counting every competitor the same predicts Google as well. An in-sample likelihood cannot tell
   a fitted weight from a memorised one, and a memorised one paints a map that looks decided.
-- **The study file is a seed, never a sink.** `serve` only reads it. Pins promoted or hidden on the
-  map are a diff beside it, under `XDG_DATA_HOME` — data, not cache, because a promoted candidate is
-  a decision and cache is what cleaners delete.
 - **A Google key is a slot of a billing account, and lives in the server's environment, never in an
   artifact.** The config's `google` is accounting's google.nix `accounts`, imported whole, so every
   spend shows in that account's billing export; each slot names the variable holding its key.
