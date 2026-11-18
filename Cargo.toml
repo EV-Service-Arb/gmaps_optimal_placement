@@ -20,8 +20,11 @@ readme = "README.md"
 [workspace.lints.clippy]
 float_cmp = "allow"
 len_zero = "allow"
+if_not_else = "warn"
+integer_division = "warn"
 
 [workspace.lints.rust]
+stable_features = "allow"
 unused_features = "allow"
 
 [workspace.lints.cargo]
