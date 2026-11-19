@@ -23,6 +23,7 @@ use sa_core::{
 };
 use sha2::{Digest, Sha256};
 
+const YEAR: Duration = Duration::from_secs(365 * 86_400);
 /// What an answer is about, which is what says how old it may get before the map says so.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Kind {
@@ -35,11 +36,11 @@ pub enum Kind {
 }
 
 /// How old an answer of each kind may get before it is reported as old.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Age {
-	pub inventory: Duration,
-	pub ordering: Duration,
-	pub communes: Duration,
+	pub inventory: Duration = Self::INVENTORY,
+	pub ordering: Duration = Self::ORDERING,
+	pub communes: Duration = Self::COMMUNES,
 }
 impl Age {
 	pub const COMMUNES: Duration = YEAR;
@@ -54,29 +55,12 @@ impl Age {
 		}
 	}
 }
-impl Default for Age {
-	fn default() -> Self {
-		Self {
-			inventory: Self::INVENTORY,
-			ordering: Self::ORDERING,
-			communes: Self::COMMUNES,
-		}
-	}
-}
-const YEAR: Duration = Duration::from_secs(365 * 86_400);
 
 /// A run that buys nothing met keyword volumes the work dir has no answer for.
 #[derive(Debug)]
 pub struct Blocked {
 	pub missing: usize,
 }
-impl std::fmt::Display for Blocked {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		let s = if self.missing == 1 { "" } else { "s" };
-		write!(f, "at least {} paid answer{s} the work dir does not hold, and this run buys none", self.missing)
-	}
-}
-impl std::error::Error for Blocked {}
 
 /// Oldest and median age of the answers one run served for a kind.
 pub struct Aged {
@@ -84,11 +68,6 @@ pub struct Aged {
 	pub median: Duration,
 	/// The oldest is past what the config allows. Reported, never acted on.
 	pub stale: bool,
-}
-impl std::fmt::Display for Aged {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "oldest {:.1} d, median {:.1} d", days(self.oldest), days(self.median))
-	}
 }
 
 /// Where the responses a run pays for are cached: the settings' `queries_cache`.
@@ -99,17 +78,6 @@ pub enum QueriesCache {
 	/// The conductor's queries cache at this URL (`<origin>/api/queries_cache`); the work dir
 	/// mirrors it.
 	Conductor(String),
-}
-impl std::str::FromStr for QueriesCache {
-	type Err = eyre::Report;
-
-	fn from_str(s: &str) -> Result<Self> {
-		match s.trim() {
-			"local" => Ok(Self::Local),
-			url if url.starts_with("http://") || url.starts_with("https://") => Ok(Self::Conductor(url.trim_end_matches('/').to_owned())),
-			other => bail!("queries_cache is `local` or the conductor's `<origin>/api/queries_cache`, not {other:?}"),
-		}
-	}
 }
 
 pub struct Work {
@@ -127,7 +95,6 @@ pub struct Work {
 	/// Age of every cached answer this run served, by kind.
 	served: RefCell<Vec<(Kind, Duration)>>,
 }
-
 impl Work {
 	pub fn at(dir: impl Into<PathBuf>, cache: QueriesCache) -> Self {
 		Self {
@@ -277,7 +244,7 @@ impl Work {
 			return Err(Blocked { missing: 1 }.into());
 		}
 		let canonical = serde_json::to_string(body)?;
-		let request = gop(url, &canonical);
+		let request = request(url, &canonical);
 		let key = Key(Sha256::digest(request.as_bytes()).into());
 		let dst = self.post_path(key)?;
 		if let QueriesCache::Conductor(_) = self.cache {
@@ -361,7 +328,7 @@ impl Work {
 	/// mirrored. Reading the probe's orderings back this way is what keeps a refit from turning into a
 	/// purchase.
 	pub fn cached(&self, url: &str, body: &serde_json::Value) -> Result<Option<(serde_json::Value, SystemTime)>> {
-		let key = Key(Sha256::digest(gop(url, &serde_json::to_string(body)?).as_bytes()).into());
+		let key = Key(Sha256::digest(request(url, &serde_json::to_string(body)?).as_bytes()).into());
 		let dst = self.post_path(key)?;
 		let mirrored = match fs::read_to_string(&dst) {
 			Ok(s) => Some((serde_json::from_str(&s).wrap_err_with(|| format!("cached response {} is not JSON", dst.display()))?, mtime(&dst)?)),
@@ -424,7 +391,34 @@ impl Work {
 		fs::write(&dst, &text)?;
 		Ok((json, SystemTime::now()))
 	}
+}
 
+/// What a request's key digests: [`gop`] for a Places search, the conductor's key for what it buys; the URL and body for keyword volumes, which only placement keys.
+fn request(url: &str, canonical: &str) -> String {
+	if url == crate::poi::SEARCH_TEXT { gop(canonical) } else { format!("{url}\n{canonical}") }
+}
+impl std::fmt::Display for Blocked {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let s = if self.missing == 1 { "" } else { "s" };
+		write!(f, "at least {} paid answer{s} the work dir does not hold, and this run buys none", self.missing)
+	}
+}
+impl std::error::Error for Blocked {}
+impl std::fmt::Display for Aged {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "oldest {:.1} d, median {:.1} d", days(self.oldest), days(self.median))
+	}
+}
+impl std::str::FromStr for QueriesCache {
+	type Err = eyre::Report;
+
+	fn from_str(s: &str) -> Result<Self> {
+		match s.trim() {
+			"local" => Ok(Self::Local),
+			url if url.starts_with("http://") || url.starts_with("https://") => Ok(Self::Conductor(url.trim_end_matches('/').to_owned())),
+			other => bail!("queries_cache is `local` or the conductor's `<origin>/api/queries_cache`, not {other:?}"),
+		}
+	}
 }
 
 fn mtime(p: &Path) -> Result<SystemTime> {
