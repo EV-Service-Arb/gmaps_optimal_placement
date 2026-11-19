@@ -81,7 +81,7 @@ fn corpus(pois: &[Poi]) -> Vec<Ranking> {
 #[test]
 fn the_table_earns_its_numbers() {
 	let pois = pois();
-	let observed = Observed::new(pois.clone(), places(), &corpus(&pois)).unwrap();
+	let observed = Observed::try_new(pois.clone(), places(), &corpus(&pois)).unwrap();
 	let all = observed.orderings();
 	assert_eq!(all.len(), NODES * TERMS.len());
 

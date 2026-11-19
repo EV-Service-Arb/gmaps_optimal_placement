@@ -234,7 +234,8 @@ fn the_view_sets_the_scale() {
 
 	let whole = colorise(&press, &m.payload.imputed, false, false, &everywhere(&m));
 	let zoomed = colorise(&press, &m.payload.imputed, false, false, &centre);
-	assert!(zoomed.count < whole.count && zoomed.ticks[0] > whole.ticks[0], "the centre is a narrower, hotter range");
+	assert!(zoomed.count < whole.count, "the centre is a narrower, hotter range");
+	assert!(zoomed.ticks[0] > whole.ticks[0], "the centre is a narrower, hotter range");
 
 	let f = field(&press, &centre).expect("the centre is under pressure");
 	let mut by: Vec<(f64, u8)> = press.iter().copied().zip(f.alpha.iter().copied()).collect();

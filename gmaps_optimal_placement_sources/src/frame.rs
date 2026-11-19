@@ -12,38 +12,6 @@ pub struct Frame {
 	pub center: [f64; 2],
 	circle: Option<(LatLng, f64)>,
 }
-
-impl From<&Area> for Frame {
-	fn from(area: &Area) -> Self {
-		match *area {
-			Area::City { viewport: v, margin_m, .. } => {
-				let dlat = margin_m / M_PER_DEG;
-				let dlon = margin_m / (M_PER_DEG * ((v.south + v.north) / 2.).to_radians().cos());
-				Self {
-					bbox: Bbox {
-						lat: [v.south - dlat, v.north + dlat],
-						lon: [v.west - dlon, v.east + dlon],
-					},
-					center: [(v.south + v.north) / 2., (v.west + v.east) / 2.],
-					circle: None,
-				}
-			}
-			Area::Circle { center: c, radius_m, margin_m, .. } => {
-				let r = radius_m + margin_m;
-				let (dlat, dlon) = (r / M_PER_DEG, r / (M_PER_DEG * c.lat.to_radians().cos()));
-				Self {
-					bbox: Bbox {
-						lat: [c.lat - dlat, c.lat + dlat],
-						lon: [c.lng - dlon, c.lng + dlon],
-					},
-					center: [c.lat, c.lng],
-					circle: Some((c, r)),
-				}
-			}
-		}
-	}
-}
-
 impl Frame {
 	pub fn contains(&self, lat: f64, lng: f64) -> bool {
 		let b = self.bbox;
@@ -76,5 +44,36 @@ impl Frame {
 		let b = self.bbox;
 		let span = (b.lon[1] - b.lon[0]).max((b.lat[1] - b.lat[0]) / ((b.lat[0] + b.lat[1]) / 2.).to_radians().cos());
 		(1000. / 256. * 360. / span).log2().floor().clamp(0., 18.) as u8
+	}
+}
+
+impl From<&Area> for Frame {
+	fn from(area: &Area) -> Self {
+		match *area {
+			Area::City { viewport: v, margin_m, .. } => {
+				let dlat = margin_m / M_PER_DEG;
+				let dlon = margin_m / (M_PER_DEG * ((v.south + v.north) / 2.).to_radians().cos());
+				Self {
+					bbox: Bbox {
+						lat: [v.south - dlat, v.north + dlat],
+						lon: [v.west - dlon, v.east + dlon],
+					},
+					center: [(v.south + v.north) / 2., (v.west + v.east) / 2.],
+					circle: None,
+				}
+			}
+			Area::Circle { center: c, radius_m, margin_m, .. } => {
+				let r = radius_m + margin_m;
+				let (dlat, dlon) = (r / M_PER_DEG, r / (M_PER_DEG * c.lat.to_radians().cos()));
+				Self {
+					bbox: Bbox {
+						lat: [c.lat - dlat, c.lat + dlat],
+						lon: [c.lng - dlon, c.lng + dlon],
+					},
+					center: [c.lat, c.lng],
+					circle: Some((c, r)),
+				}
+			}
+		}
 	}
 }

@@ -16,9 +16,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::work::{Kind, Work};
 
-/// Distinguishes one in-flight scan from another inside a process, as the pid does across them.
-static PARTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub enum GridSource {
 	/// INSEE Filosofi — France, 200 m, households / housing type / standard of living.
@@ -104,70 +101,6 @@ pub fn load(source: GridSource, vintage: u16, bbox: Bbox, work: &Work) -> Result
 	Ok(grid)
 }
 
-/// Every row inside the frame, as cells. `keep` is where a scan of the whole archive writes the rows
-/// it is keeping; reading those back comes through here again with nothing to write.
-fn collect<R: std::io::Read>(a: &Archive, frame: [f64; 4], proj: &Reproject, rdr: &mut csv::Reader<R>, mut keep: Option<&mut csv::Writer<std::fs::File>>) -> Result<Grid> {
-	let [x0, y0, x1, y1] = frame;
-	let header: Vec<String> = rdr.headers()?.iter().map(str::to_owned).collect();
-	let at = |name: &str| {
-		header
-			.iter()
-			.position(|h| h == name)
-			.ok_or_else(|| eyre::eyre!("{:?} has no column {name:?}; header is {}", a.member, header.join(", ")))
-	};
-	let (i_id, i_place) = (at(a.id_col)?, at(a.place_col)?);
-	let i_imputed = a.imputed_col.map(&at).transpose()?;
-	for t in a.text_cols {
-		at(t)?;
-	}
-	let numeric: Vec<usize> = (0..header.len()).filter(|i| !a.text_cols.contains(&header[*i].as_str())).collect();
-	if let Some(w) = keep.as_deref_mut() {
-		w.write_record(&header)?;
-	}
-
-	let mut grid = Grid::default();
-	let (mut scanned, mut row) = (0usize, csv::StringRecord::new());
-	let mut values: Vec<(&str, f64)> = Vec::with_capacity(numeric.len());
-	while rdr.read_record(&mut row)? {
-		scanned += 1;
-		let id = &row[i_id];
-		let cell = CellId::parse(id).wrap_err_with(|| format!("row {scanned} of {:?}", a.member))?;
-		ensure!(cell.res_m == a.res_m, "{id} is a {} m cell, {:?} is meant to be {} m", cell.res_m, a.member, a.res_m);
-		let (e, n) = (cell.east as f64, cell.north as f64);
-		if e < x0 || e > x1 || n < y0 || n > y1 {
-			continue;
-		}
-		values.clear();
-		for &i in &numeric {
-			let raw = &row[i];
-			let v: f64 = raw.parse().wrap_err_with(|| format!("column {:?} of cell {id} is {raw:?}, not a number", header[i]))?;
-			values.push((&header[i], v));
-		}
-		let imputed = match i_imputed {
-			Some(i) => match &row[i] {
-				"1" => true,
-				"0" => false,
-				other => bail!("provenance flag {:?} of cell {id} is {other:?}, expected 0 or 1", a.imputed_col),
-			},
-			None => false,
-		};
-		if let Some(w) = keep.as_deref_mut() {
-			w.write_record(row.iter())?;
-		}
-		let cell = Cell {
-			id: id.to_owned(),
-			place: row[i_place].split(',').next().unwrap_or_default().to_owned(),
-			ring: cell.ring(proj)?,
-			imputed,
-		};
-		grid.push(cell, &values)?;
-	}
-	if keep.is_some() {
-		eprintln!("{:?}: scanned {scanned} cells, kept {}", a.member, grid.len());
-	}
-	Ok(grid)
-}
-
 /// One administrative unit of the source's own place column: every numeric column summed over its
 /// cells, and where those cells are.
 #[derive(Clone, Debug)]
@@ -247,6 +180,73 @@ pub fn places(source: GridSource, vintage: u16, work: &Work) -> Result<IndexMap<
 		}
 	}
 	Ok(out)
+}
+
+/// Distinguishes one in-flight scan from another inside a process, as the pid does across them.
+static PARTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Every row inside the frame, as cells. `keep` is where a scan of the whole archive writes the rows
+/// it is keeping; reading those back comes through here again with nothing to write.
+fn collect<R: std::io::Read>(a: &Archive, frame: [f64; 4], proj: &Reproject, rdr: &mut csv::Reader<R>, mut keep: Option<&mut csv::Writer<std::fs::File>>) -> Result<Grid> {
+	let [x0, y0, x1, y1] = frame;
+	let header: Vec<String> = rdr.headers()?.iter().map(str::to_owned).collect();
+	let at = |name: &str| {
+		header
+			.iter()
+			.position(|h| h == name)
+			.ok_or_else(|| eyre::eyre!("{:?} has no column {name:?}; header is {}", a.member, header.join(", ")))
+	};
+	let (i_id, i_place) = (at(a.id_col)?, at(a.place_col)?);
+	let i_imputed = a.imputed_col.map(&at).transpose()?;
+	for t in a.text_cols {
+		at(t)?;
+	}
+	let numeric: Vec<usize> = (0..header.len()).filter(|i| !a.text_cols.contains(&header[*i].as_str())).collect();
+	if let Some(w) = keep.as_deref_mut() {
+		w.write_record(&header)?;
+	}
+
+	let mut grid = Grid::default();
+	let (mut scanned, mut row) = (0usize, csv::StringRecord::new());
+	let mut values: Vec<(&str, f64)> = Vec::with_capacity(numeric.len());
+	while rdr.read_record(&mut row)? {
+		scanned += 1;
+		let id = &row[i_id];
+		let cell = CellId::parse(id).wrap_err_with(|| format!("row {scanned} of {:?}", a.member))?;
+		ensure!(cell.res_m == a.res_m, "{id} is a {} m cell, {:?} is meant to be {} m", cell.res_m, a.member, a.res_m);
+		let (e, n) = (cell.east as f64, cell.north as f64);
+		if e < x0 || e > x1 || n < y0 || n > y1 {
+			continue;
+		}
+		values.clear();
+		for &i in &numeric {
+			let raw = &row[i];
+			let v: f64 = raw.parse().wrap_err_with(|| format!("column {:?} of cell {id} is {raw:?}, not a number", header[i]))?;
+			values.push((&header[i], v));
+		}
+		let imputed = match i_imputed {
+			Some(i) => match &row[i] {
+				"1" => true,
+				"0" => false,
+				other => bail!("provenance flag {:?} of cell {id} is {other:?}, expected 0 or 1", a.imputed_col),
+			},
+			None => false,
+		};
+		if let Some(w) = keep.as_deref_mut() {
+			w.write_record(row.iter())?;
+		}
+		let cell = Cell {
+			id: id.to_owned(),
+			place: row[i_place].split(',').next().unwrap_or_default().to_owned(),
+			ring: cell.ring(proj)?,
+			imputed,
+		};
+		grid.push(cell, &values)?;
+	}
+	if keep.is_some() {
+		eprintln!("{:?}: scanned {scanned} cells, kept {}", a.member, grid.len());
+	}
+	Ok(grid)
 }
 
 struct Archive {

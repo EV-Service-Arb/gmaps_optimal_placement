@@ -1,6 +1,8 @@
 //! Two areas that overlap share every answer either bought: the sweep asks tiles of one quadtree,
 //! never tiles of the area that asked, so a second area over the same ground pays only for the
 //! ground the first did not cover.
+use std::path::Path;
+
 use gmaps_optimal_placement_core::grid::Bbox;
 use gmaps_optimal_placement_sources::{
 	Frame, Work,
@@ -13,7 +15,7 @@ use sha2::{Digest, Sha256};
 const ZOOM: u32 = 12;
 
 /// Where `Work` keeps the answer to the first page of "plombier" over `tile`.
-fn answer(dir: &std::path::Path, tile: Tile, places: serde_json::Value) {
+fn answer(dir: &Path, tile: Tile, places: serde_json::Value) {
 	let b: Bbox = tile.bbox();
 	let rect = serde_json::json!({
 		"low":  {"latitude": b.lat[0], "longitude": b.lon[0]},
@@ -56,7 +58,8 @@ fn an_overlapping_area_pays_only_for_new_ground() {
 	let (first, second) = (circle("a", 45.77, 3.08), circle("b", 45.77, 3.16));
 	let (a, b) = (Tile::covering(Frame::from(&first).bbox, ZOOM), Tile::covering(Frame::from(&second).bbox, ZOOM));
 	let shared = b.iter().filter(|t| a.contains(t)).count();
-	assert!(shared > 0 && shared < b.len(), "the two circles overlap on part of the lattice: {a:?} vs {b:?}");
+	assert!(shared > 0, "the two circles overlap on part of the lattice: {a:?} vs {b:?}");
+	assert!(shared < b.len(), "the two circles overlap on part of the lattice: {a:?} vs {b:?}");
 
 	assert_eq!(poi::cached(&cfg, Frame::from(&first), &work).unwrap().asks.len(), a.len(), "nothing is on disk yet");
 	for &t in &a {

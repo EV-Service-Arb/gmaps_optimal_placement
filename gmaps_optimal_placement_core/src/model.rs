@@ -13,6 +13,10 @@ use crate::{
 	rank::{self, Biz, Feats, Rank},
 };
 
+/// The field's iso-lines, as quantiles of the pressure among the cells in view.
+pub const LEVELS: [f64; 3] = [0.5, 0.75, 0.9];
+/// The field's colour. Nothing in [`ramp`] comes near it.
+pub const HAZE: [u8; 3] = [37, 99, 235];
 const R: f64 = 6378137.;
 /// Beyond 3λ the exponential contributes under 5 % of one competitor — not worth the distance.
 const CUTOFF: f64 = 3.;
@@ -29,8 +33,6 @@ const RAMP: [[f64; 3]; 8] = [
 	[250., 186., 31.],
 	[245., 245., 145.],
 ];
-/// The field's iso-lines, as quantiles of the pressure among the cells in view.
-pub const LEVELS: [f64; 3] = [0.5, 0.75, 0.9];
 /// Web-Mercator world coords, 256 px at zoom 0. Precomputed so a redraw is arithmetic instead of
 /// 40k projection calls per frame.
 pub fn world_x(lng: f64) -> f64 {
@@ -115,22 +117,6 @@ pub struct Model {
 	quads: Vec<[usize; 4]>,
 	/// Present exactly when `payload.trade` is.
 	trade: Option<TradeState>,
-}
-
-/// What projecting and rescoring the trade half bought. Paired with `Payload::trade` and never
-/// without it.
-struct TradeState {
-	comps: Vec<Comp>,
-	/// Probe nodes in the cells' frame, in `Trade::nodes` order. Empty for an unprobed study.
-	nx: Vec<f64>,
-	ny: Vec<f64>,
-	/// The same fitted model `build` weighted the competitors with, so the what-if is scored on the
-	/// scale the map is already painted in.
-	rank: Rank,
-	terms: Vec<(String, f64)>,
-	/// The divisor `build` normalised the first tier by. A newcomer is measured against direct
-	/// competition, which is what the study's first tier is.
-	scale: f64,
 }
 impl Model {
 	pub fn try_new(payload: Payload) -> Result<Self> {
@@ -446,7 +432,6 @@ pub struct Traded<'a> {
 	pub trade: &'a Trade,
 	state: &'a TradeState,
 }
-
 impl<'a> Traded<'a> {
 	/// Σ over competitors of weight × exp(−distance/λ).
 	pub fn pressure(self, lambda: f64, tiers: &[TierState]) -> Vec<f64> {
@@ -766,6 +751,7 @@ pub fn ramp(t: f64) -> [f64; 3] {
 	let (a, b) = (RAMP[i], RAMP[i + 1]);
 	[a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f]
 }
+
 pub struct Colorised {
 	/// `n * 3` RGB. Only the entries `shown` marks are meaningful.
 	pub colors: Vec<u8>,
@@ -821,12 +807,6 @@ pub fn colorise(values: &[f64], imputed: &[u8], hide_imputed: bool, linear: bool
 		count,
 	}
 }
-
-/// Rank within `sorted`, 0..=1; a value past either end is at that end.
-fn percentile(sorted: &[f64], v: f64) -> f64 {
-	(sorted.partition_point(|&s| s < v) as f64 / if sorted.len() > 1 { (sorted.len() - 1) as f64 } else { 1. }).min(1.)
-}
-
 /// The pressure field over the cells in view: an alpha per cell rising with its percentile there,
 /// and the values at [`LEVELS`] its iso-lines are drawn at. `None` when no cell in view is under any
 /// pressure.
@@ -834,6 +814,7 @@ pub struct Field {
 	pub alpha: Vec<u8>,
 	pub levels: [f64; 3],
 }
+
 pub fn field(values: &[f64], in_view: &[bool]) -> Option<Field> {
 	assert_eq!(in_view.len(), values.len(), "one view flag per cell");
 	let mut sorted: Vec<f64> = values.iter().zip(in_view).filter(|(v, seen)| **seen && **v > 0.).map(|(v, _)| *v).collect();
@@ -853,14 +834,11 @@ pub fn field(values: &[f64], in_view: &[bool]) -> Option<Field> {
 		levels: LEVELS.map(|q| sorted[(q * (sorted.len() - 1) as f64).floor() as usize]),
 	})
 }
-/// The field's colour. Nothing in [`ramp`] comes near it.
-pub const HAZE: [u8; 3] = [37, 99, 235];
 /// The haze's alpha at percentile `p` of the pressure in view. Low enough that the yellow end of the
 /// heat does not wash out under it: the iso-lines carry the reading, the haze only says where.
 pub fn haze(p: f64) -> f64 {
 	0.3 * p.powf(1.6)
 }
-
 /// A Google category, as Google files it — not as the study's `tier` rules read it. The tiers are
 /// the study's argument about what competes; this is the evidence they were argued from, and the
 /// two disagreeing is worth being able to see.
@@ -922,37 +900,6 @@ pub struct Summary {
 	pub layers: Vec<LayerRow>,
 	pub trade: Option<TradeSummary>,
 }
-
-#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct LayerRow {
-	pub id: String,
-	pub name: String,
-	pub note: String,
-	pub trade: bool,
-}
-
-#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct TradeSummary {
-	pub lambda_m: f64,
-	pub tiers: Vec<TierRow>,
-	pub categories: Vec<Category>,
-	pub queries: Vec<crate::payload::QueryOut>,
-	pub terms: Vec<crate::payload::TermOut>,
-	pub unweighted: Vec<String>,
-	pub searches: usize,
-}
-
-#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct TierRow {
-	pub name: String,
-	pub weight: f64,
-	/// Unix seconds of the freshest answer naming each competitor of the tier.
-	pub fetched_s: Vec<u64>,
-}
-
 impl Summary {
 	pub fn of(m: &Model) -> Self {
 		let p = &m.payload;
@@ -991,6 +938,36 @@ impl Summary {
 	}
 }
 
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct LayerRow {
+	pub id: String,
+	pub name: String,
+	pub note: String,
+	pub trade: bool,
+}
+
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TradeSummary {
+	pub lambda_m: f64,
+	pub tiers: Vec<TierRow>,
+	pub categories: Vec<Category>,
+	pub queries: Vec<crate::payload::QueryOut>,
+	pub terms: Vec<crate::payload::TermOut>,
+	pub unweighted: Vec<String>,
+	pub searches: usize,
+}
+
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TierRow {
+	pub name: String,
+	pub weight: f64,
+	/// Unix seconds of the freshest answer naming each competitor of the tier.
+	pub fetched_s: Vec<u64>,
+}
+
 /// A layer's id: lowercase ASCII, every run of anything else one `-`, none at either end.
 pub fn layer_id(name: &str) -> String {
 	let mut out = String::new();
@@ -1018,6 +995,27 @@ pub fn fmt(n: f64) -> String {
 	} else {
 		format!("{n:.2}")
 	}
+}
+
+/// What projecting and rescoring the trade half bought. Paired with `Payload::trade` and never
+/// without it.
+struct TradeState {
+	comps: Vec<Comp>,
+	/// Probe nodes in the cells' frame, in `Trade::nodes` order. Empty for an unprobed study.
+	nx: Vec<f64>,
+	ny: Vec<f64>,
+	/// The same fitted model `build` weighted the competitors with, so the what-if is scored on the
+	/// scale the map is already painted in.
+	rank: Rank,
+	terms: Vec<(String, f64)>,
+	/// The divisor `build` normalised the first tier by. A newcomer is measured against direct
+	/// competition, which is what the study's first tier is.
+	scale: f64,
+}
+
+/// Rank within `sorted`, 0..=1; a value past either end is at that end.
+fn percentile(sorted: &[f64], v: f64) -> f64 {
+	(sorted.partition_point(|&s| s < v) as f64 / if sorted.len() > 1 { (sorted.len() - 1) as f64 } else { 1. }).min(1.)
 }
 /// One competitor, reduced to what the model reads.
 struct Comp {

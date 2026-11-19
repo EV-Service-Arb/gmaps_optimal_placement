@@ -14,7 +14,7 @@ version = "0.1.0"
 edition = "2024"
 authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
 license = "BlueOak-1.0.0"
-repository = "https://github.com/Service-Arb/gmaps_optimal_placement"
+repository = "https://github.com/EV-Service-Arb/gmaps_optimal_placement"
 readme = "README.md"
 
 [workspace.lints.clippy]
@@ -58,10 +58,10 @@ schemars = { version = "1", features = ["indexmap2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
+smart-default = "0.7"
 strum = { version = "0.28", features = ["derive"] }
 # core's types in the overlay's .d.ts (site_conductor's placement_overlay)
 tsify = "0.5"
-smart-default = "0.7"
 ureq = "3"
 # the CLI's own settings, and `Timeframe` for the cache ages. Only the top crate depends on it:
 # `_sources` is handed resolved durations, so `_core`/`_web` and the wasm build stay clear of it.

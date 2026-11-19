@@ -72,52 +72,6 @@ pub struct Compiled {
 	/// Above the floor, ordered by rate, densest first. Units the cadastre has no layer for sort last.
 	pub units: Vec<Unit>,
 }
-
-/// Roll the country up by administrative unit, drop everything under the floor, and count the tally
-/// in what is left. The floor comes first because it is the only thing that keeps this from
-/// downloading a country: four fifths of French communes are under 2 000 inhabitants.
-pub fn compile(country: Country, tally: Tally, per: &str, floor: f64, work: &Work) -> Result<Compiled> {
-	ensure!(floor >= 0., "floor {floor} is negative");
-	let (source, vintage) = country.grid();
-	let places = grid::places(source, vintage, work)?;
-
-	let first = places.values().next().expect("grid::places errors on an empty archive");
-	ensure!(
-		first.sum.contains_key(per),
-		"{source:?} publishes no column {per:?}; it has {}",
-		first.sum.keys().cloned().collect::<Vec<_>>().join(", ")
-	);
-	let kept: Vec<&grid::Place> = places.values().filter(|p| p.sum[per] >= floor && p.sum[per] > 0.).collect();
-	ensure!(
-		!kept.is_empty(),
-		"no unit reaches a {per} of {floor}; the largest is {:.0}",
-		places.values().map(|p| p.sum[per]).fold(0., f64::max)
-	);
-	eprintln!("{} of {} places clear {per} >= {floor}", kept.len(), places.len());
-
-	let codes: Vec<String> = kept.iter().map(|p| p.code.clone()).collect();
-	let counts = country.count(tally, &codes, work)?;
-	let mut units: Vec<Unit> = kept
-		.iter()
-		.zip(counts)
-		.map(|(p, tally)| Unit {
-			code: p.code.clone(),
-			name: p.name.clone(),
-			at: p.at,
-			per: round(p.sum[per], 1),
-			tally,
-		})
-		.collect();
-	units.sort_by(|a, b| b.rate().unwrap_or(f64::MIN).total_cmp(&a.rate().unwrap_or(f64::MIN)));
-	Ok(Compiled {
-		country,
-		tally,
-		per: per.to_owned(),
-		floor,
-		units,
-	})
-}
-
 impl Compiled {
 	pub fn name(&self) -> String {
 		format!("{:?}-{:?}-per-{}", self.country, self.tally, self.per).to_lowercase()
@@ -180,6 +134,51 @@ impl Compiled {
 	fn label(&self) -> String {
 		format!("{:?}s", self.tally).to_lowercase()
 	}
+}
+
+/// Roll the country up by administrative unit, drop everything under the floor, and count the tally
+/// in what is left. The floor comes first because it is the only thing that keeps this from
+/// downloading a country: four fifths of French communes are under 2 000 inhabitants.
+pub fn compile(country: Country, tally: Tally, per: &str, floor: f64, work: &Work) -> Result<Compiled> {
+	ensure!(floor >= 0., "floor {floor} is negative");
+	let (source, vintage) = country.grid();
+	let places = grid::places(source, vintage, work)?;
+
+	let first = places.values().next().expect("grid::places errors on an empty archive");
+	ensure!(
+		first.sum.contains_key(per),
+		"{source:?} publishes no column {per:?}; it has {}",
+		first.sum.keys().cloned().collect::<Vec<_>>().join(", ")
+	);
+	let kept: Vec<&grid::Place> = places.values().filter(|p| p.sum[per] >= floor && p.sum[per] > 0.).collect();
+	ensure!(
+		!kept.is_empty(),
+		"no unit reaches a {per} of {floor}; the largest is {:.0}",
+		places.values().map(|p| p.sum[per]).fold(0., f64::max)
+	);
+	eprintln!("{} of {} places clear {per} >= {floor}", kept.len(), places.len());
+
+	let codes: Vec<String> = kept.iter().map(|p| p.code.clone()).collect();
+	let counts = country.count(tally, &codes, work)?;
+	let mut units: Vec<Unit> = kept
+		.iter()
+		.zip(counts)
+		.map(|(p, tally)| Unit {
+			code: p.code.clone(),
+			name: p.name.clone(),
+			at: p.at,
+			per: round(p.sum[per], 1),
+			tally,
+		})
+		.collect();
+	units.sort_by(|a, b| b.rate().unwrap_or(f64::MIN).total_cmp(&a.rate().unwrap_or(f64::MIN)));
+	Ok(Compiled {
+		country,
+		tally,
+		per: per.to_owned(),
+		floor,
+		units,
+	})
 }
 
 fn round(x: f64, places: i32) -> f64 {

@@ -1,4 +1,8 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{
+	net::SocketAddr,
+	path::{Path, PathBuf},
+	sync::Arc,
+};
 
 use clap::{Parser, Subcommand};
 use eyre::Result;
@@ -21,35 +25,6 @@ struct Cli {
 	spend_real_quota_i_am_certain: bool,
 	#[command(subcommand)]
 	cmd: Cmd,
-}
-
-/// The two axes a study is a point on, and the expert half each category names. The categories are
-/// the conductor's, as the definitions it handed in carry them; the locations are files. Naming one
-/// of each is how a scripted run gets past the picker.
-#[derive(Clone, clap::Args)]
-struct Pair {
-	/// One of the conductor's categories, by its key as the picker shows it (`<study>·<CC> (trade
-	/// <id>)`); without it, every category a definition in the work dir carries
-	#[arg(short, long)]
-	category: Option<String>,
-	/// Where: the frame, the statistics office behind it, the premises in mind; a file or a
-	/// directory of them
-	#[arg(short, long, default_value = "examples/locations")]
-	locations: PathBuf,
-	#[command(flatten)]
-	experts: Experts,
-}
-
-/// What only an expert writes, looked up by name: the trades a category's `study` names, and the
-/// country bases an area handed in at runtime stands on.
-#[derive(Clone, clap::Args)]
-struct Experts {
-	/// `<study>.nix` each: the demand model, the tier vocabulary, λ
-	#[arg(short, long, default_value = "examples/trades")]
-	trades: PathBuf,
-	/// `<ISO 3166-1 alpha-2>.nix` each: the grid, its columns and layers, the volume provider
-	#[arg(long, default_value = "examples/countries")]
-	countries: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -112,6 +87,43 @@ enum Cmd {
 	},
 }
 
+/// The two axes a study is a point on, and the expert half each category names. The categories are
+/// the conductor's, as the definitions it handed in carry them; the locations are files. Naming one
+/// of each is how a scripted run gets past the picker.
+#[derive(Clone, clap::Args)]
+struct Pair {
+	/// One of the conductor's categories, by its key as the picker shows it (`<study>·<CC> (trade
+	/// <id>)`); without it, every category a definition in the work dir carries
+	#[arg(short, long)]
+	category: Option<String>,
+	/// Where: the frame, the statistics office behind it, the premises in mind; a file or a
+	/// directory of them
+	#[arg(short, long, default_value = "examples/locations")]
+	locations: PathBuf,
+	#[command(flatten)]
+	experts: Experts,
+}
+
+/// What only an expert writes, looked up by name: the trades a category's `study` names, and the
+/// country bases an area handed in at runtime stands on.
+#[derive(Clone, clap::Args)]
+struct Experts {
+	/// `<study>.nix` each: the demand model, the tier vocabulary, λ
+	#[arg(short, long, default_value = "examples/trades")]
+	trades: PathBuf,
+	/// `<ISO 3166-1 alpha-2>.nix` each: the grid, its columns and layers, the volume provider
+	#[arg(long, default_value = "examples/countries")]
+	countries: PathBuf,
+}
+impl Experts {
+	/// The base an area in `def`'s country stands on.
+	fn country(&self, def: &Definition) -> Result<PathBuf> {
+		let path = self.countries.join(format!("{}.nix", def.area.country()));
+		eyre::ensure!(path.is_file(), "no country base for {} under {}", def.area.country(), self.countries.display());
+		Ok(path)
+	}
+}
+
 fn main() -> Result<()> {
 	color_eyre::install()?;
 	let cli = Cli::parse();
@@ -135,14 +147,14 @@ fn main() -> Result<()> {
 			// from whichever blocking thread a request landed on
 			let (dir, age, tiling) = (work.path().to_owned(), (&cfg.age).into(), (&cfg.sweep).into());
 			let conductor = std::env::var("PANEL_ASSERTION_KEYS").map_err(|e| eyre::eyre!("`serve` checks every request against PANEL_ASSERTION_KEYS: {e}"))?;
-			let stems = |dir: &std::path::Path| -> Result<Vec<String>> { Ok(gmaps_optimal_placement::files(dir)?.iter().map(|p| gmaps_optimal_placement::stem(p).to_owned()).collect()) };
+			let stems = |dir: &Path| -> Result<Vec<String>> { Ok(gmaps_optimal_placement::files(dir)?.iter().map(|p| gmaps_optimal_placement::stem(p).to_owned()).collect()) };
 			let catalog = Catalog {
 				trades: stems(&experts.trades)?,
 				countries: stems(&experts.countries)?.iter().map(|c| c.parse()).collect::<Result<_, _>>()?,
 			};
 			let holds = {
 				let experts = experts.clone();
-				std::sync::Arc::new(move |def: &Definition| gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades).map(drop))
+				Arc::new(move |def: &Definition| gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades).map(drop))
 			};
 			let studied = {
 				let experts = experts.clone();
@@ -153,12 +165,12 @@ fn main() -> Result<()> {
 			};
 			let asks = {
 				let studied = studied.clone();
-				std::sync::Arc::new(move |def: &Definition, since| {
+				Arc::new(move |def: &Definition, since| {
 					let (study, work) = studied(def, Some(since))?;
 					study.asks(&work)
 				})
 			};
-			let build = std::sync::Arc::new(move |def: &Definition| {
+			let build = Arc::new(move |def: &Definition| {
 				let (study, work) = studied(def, None)?;
 				Ok(serde_json::to_string(&study.build(&work)?)?)
 			});
@@ -295,7 +307,7 @@ fn picked(at: &Pair, work: &Work) -> Result<(Category, PathBuf)> {
 }
 
 /// A category over a location file, or the location alone.
-fn study(category: Option<&Category>, location: &std::path::Path, experts: &Experts) -> Result<Study> {
+fn study(category: Option<&Category>, location: &Path, experts: &Experts) -> Result<Study> {
 	let def = Definition {
 		area: gmaps_optimal_placement::location_area(location)?,
 		category: category.cloned(),
@@ -303,16 +315,7 @@ fn study(category: Option<&Category>, location: &std::path::Path, experts: &Expe
 	gmaps_optimal_placement::load(&def, Base::Location(location), &experts.trades)
 }
 
-impl Experts {
-	/// The base an area in `def`'s country stands on.
-	fn country(&self, def: &Definition) -> Result<PathBuf> {
-		let path = self.countries.join(format!("{}.nix", def.area.country()));
-		eyre::ensure!(path.is_file(), "no country base for {} under {}", def.area.country(), self.countries.display());
-		Ok(path)
-	}
-}
-
-fn read<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T> {
+fn read<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
 	let text = std::fs::read_to_string(path).map_err(|e| eyre::eyre!("reading {}: {e}", path.display()))?;
 	serde_json::from_str(&text).map_err(|e| eyre::eyre!("parsing {}: {e}", path.display()))
 }

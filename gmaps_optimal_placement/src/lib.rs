@@ -158,7 +158,7 @@ impl Study {
 			return Ok(None);
 		}
 		let places: Vec<String> = cells.grid.cells.iter().map(|c| c.place.clone()).collect();
-		Observed::new(inv.pois, places, &obs).map(Some)
+		Observed::try_new(inv.pois, places, &obs).map(Some)
 	}
 
 	/// The `locationBias` circle: one stratum's worth of ground, as a circle. `rank.nodes` cuts the
@@ -552,21 +552,6 @@ pub fn load(def: &Definition, base: Base, trades: &Path) -> Result<Study> {
 	Ok(study)
 }
 
-fn eval<T: serde::de::DeserializeOwned>(expr: &str) -> Result<T> {
-	// `--impure` for the absolute paths: pure evaluation only admits a path it was handed as the root
-	let out = std::process::Command::new("nix")
-		.args(["eval", "--impure", "--json", "--expr", expr])
-		.output()
-		.wrap_err("running `nix eval` — a study is a Nix expression, so nix must be on PATH")?;
-	ensure!(out.status.success(), "evaluating {expr}:\n{}", String::from_utf8_lossy(&out.stderr).trim());
-	serde_json::from_slice(&out.stdout).wrap_err_with(|| format!("parsing {expr}"))
-}
-
-/// `nix eval --expr` resolves a bare path against the invocation directory, and the server builds
-/// from whichever thread a request landed on.
-fn abs(p: &Path) -> Result<PathBuf> {
-	std::fs::canonicalize(p).wrap_err_with(|| format!("{} does not exist", p.display()))
-}
 /// Summary statistics, so a model change that moves numbers is visible rather than silent.
 pub fn stats(p: &Payload) -> IndexMap<String, String> {
 	let sum = |v: &[f64]| v.iter().sum::<f64>();
@@ -611,6 +596,21 @@ pub struct Terms {
 	pub weighted: Vec<(String, f64)>,
 	/// No volume data, or nobody searched it.
 	pub unweighted: Vec<String>,
+}
+fn eval<T: serde::de::DeserializeOwned>(expr: &str) -> Result<T> {
+	// `--impure` for the absolute paths: pure evaluation only admits a path it was handed as the root
+	let out = std::process::Command::new("nix")
+		.args(["eval", "--impure", "--json", "--expr", expr])
+		.output()
+		.wrap_err("running `nix eval` — a study is a Nix expression, so nix must be on PATH")?;
+	ensure!(out.status.success(), "evaluating {expr}:\n{}", String::from_utf8_lossy(&out.stderr).trim());
+	serde_json::from_slice(&out.stdout).wrap_err_with(|| format!("parsing {expr}"))
+}
+
+/// `nix eval --expr` resolves a bare path against the invocation directory, and the server builds
+/// from whichever thread a request landed on.
+fn abs(p: &Path) -> Result<PathBuf> {
+	std::fs::canonicalize(p).wrap_err_with(|| format!("{} does not exist", p.display()))
 }
 
 fn at(nodes: &[rank::Node]) -> Vec<[f64; 2]> {

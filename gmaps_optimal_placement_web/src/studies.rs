@@ -6,7 +6,7 @@
 use std::{
 	collections::HashMap,
 	net::SocketAddr,
-	path::PathBuf,
+	path::{Path, PathBuf},
 	sync::{Arc, Mutex},
 	time::{SystemTime, UNIX_EPOCH},
 };
@@ -42,6 +42,8 @@ pub type Asked = Arc<dyn Fn(&Definition, SystemTime) -> eyre::Result<Vec<Ask>> +
 pub type Holds = Arc<dyn Fn(&Definition) -> eyre::Result<()> + Send + Sync>;
 
 type Slot = Arc<tokio::sync::Mutex<Option<Bytes>>>;
+
+type Answer<T> = Result<T, Refusal<Code>>;
 
 #[derive(Clone)]
 pub struct Studies {
@@ -115,8 +117,6 @@ impl Refuses<eyre::Report> for Code {
 	}
 }
 
-type Answer<T> = Result<T, Refusal<Code>>;
-
 /// A built `Payload`, as the bytes it is kept in.
 pub struct Studied(Bytes);
 
@@ -136,6 +136,16 @@ impl OperationOutput for Studied {
 	fn inferred_responses(ctx: &mut GenContext, op: &mut Operation) -> Vec<(Option<openapi::StatusCode>, openapi::Response)> {
 		Json::<Payload>::inferred_responses(ctx, op)
 	}
+}
+
+pub fn serve(addr: SocketAddr, studies: Studies) -> eyre::Result<()> {
+	let app = router(studies)?.layer(tower_http::compression::CompressionLayer::new());
+	let rt = tokio::runtime::Runtime::new().wrap_err("starting the server runtime")?;
+	rt.block_on(async move {
+		let listener = tokio::net::TcpListener::bind(&addr).await.wrap_err_with(|| format!("binding {addr}"))?;
+		eprintln!("placement is at http://{}", listener.local_addr()?);
+		axum::serve(listener, app.into_make_service()).await.wrap_err("serving")
+	})
 }
 
 /// What a category may be studied by, and where: the trade files and the country bases served.
@@ -211,7 +221,7 @@ async fn studied(s: &Studies, def: Definition, again: bool) -> Answer<Bytes> {
 }
 
 /// Renamed into place: a reader never sees half a definition.
-fn keep(path: &std::path::Path, def: &Definition) -> Result<(), String> {
+fn keep(path: &Path, def: &Definition) -> Result<(), String> {
 	let canonical = serde_json::to_vec(&def.clone().canonical()).expect("a definition serialises");
 	let part = path.with_extension("part");
 	std::fs::write(&part, &canonical)
@@ -221,7 +231,7 @@ fn keep(path: &std::path::Path, def: &Definition) -> Result<(), String> {
 
 /// When the first pull of a study since its last whole one began, kept beside its definition until
 /// one ends whole: a pull that stops part-way, or never ends, has paid for what it already bought.
-fn began(resume: &std::path::Path) -> std::io::Result<SystemTime> {
+fn began(resume: &Path) -> std::io::Result<SystemTime> {
 	match std::fs::read_to_string(resume) {
 		Ok(s) => s
 			.parse()
@@ -255,14 +265,4 @@ fn router(studies: Studies) -> eyre::Result<Router> {
 		.fold(Router::new(), |r, route| r.route(route.path, route.handler()))
 		.route("/health", axum::routing::get(|| async { "ok" }))
 		.with_state(studies))
-}
-
-pub fn serve(addr: SocketAddr, studies: Studies) -> eyre::Result<()> {
-	let app = router(studies)?.layer(tower_http::compression::CompressionLayer::new());
-	let rt = tokio::runtime::Runtime::new().wrap_err("starting the server runtime")?;
-	rt.block_on(async move {
-		let listener = tokio::net::TcpListener::bind(&addr).await.wrap_err_with(|| format!("binding {addr}"))?;
-		eprintln!("placement is at http://{}", listener.local_addr()?);
-		axum::serve(listener, app.into_make_service()).await.wrap_err("serving")
-	})
 }

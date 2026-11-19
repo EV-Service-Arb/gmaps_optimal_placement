@@ -105,7 +105,8 @@ mod tests {
 	fn unknown_column_is_an_error_naming_what_exists() {
 		let e = Expr::parse("popultaion * 2").unwrap();
 		let err = e.eval_column(&cols(&[("population", &[1.])]), 1).unwrap_err().to_string();
-		assert!(err.contains("popultaion") && err.contains("population"), "{err}");
+		assert!(err.contains("popultaion"), "{err}");
+		assert!(err.contains("population"), "{err}");
 	}
 
 	#[test]

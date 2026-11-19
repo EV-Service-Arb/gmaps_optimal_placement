@@ -10,6 +10,9 @@ use gmaps_optimal_placement_core::{
 use gmaps_optimal_placement_sources::{Ranking, Region};
 use indexmap::IndexMap;
 
+/// Five folds over ~200 orderings: a single 80/20 split leaves a test set too small to separate
+/// entrants, and leave-one-out would refit once per ordering.
+pub const FOLDS: usize = 5;
 /// A business absent from a search is absent for four reasons and only one of them is "weak": past
 /// the page cap (informative), outside the search area (a filter, not a ranking), irrelevant to the
 /// term, or deduped. So the choice set is what the *same term* returned anywhere — asking why a
@@ -17,12 +20,27 @@ use indexmap::IndexMap;
 /// area this search could reach. For a node that is `REACH` times the furthest result it did return,
 /// which is self-calibrating and needs no magic radius; for a tile it is the tile.
 const REACH: f64 = 1.5;
-/// Five folds over ~200 orderings: a single 80/20 split leaves a test set too small to separate
-/// entrants, and leave-one-out would refit once per ordering.
-pub const FOLDS: usize = 5;
 /// One page of Places results. Past it the probe saw nothing, which is the same thing as a business
 /// it never returned, so the observed field zeroes there rather than going missing.
 const CAP: usize = 20;
+
+/// Google's log-preference for one business, on one term, asked from one place.
+///
+/// `exp(score)` is the Plackett–Luce weight, so the likelihood reads differences and the absolute
+/// level is the strategy's own to calibrate. A strategy whose output is ordinal does not belong
+/// here — it would win or lose on an arbitrary scale.
+pub trait Strength: Send + Sync {
+	fn score(&self, b: &Biz, term: &str, node: Option<[f64; 2]>) -> f64;
+}
+
+/// An entrant. Everything it learns, it learns in `fit` from the orderings it is handed.
+///
+/// `fit` returns a fresh [`Strength`] rather than mutating `self`: the harness fits the same entrant
+/// once per fold, and fold independence should be structural rather than remembered.
+pub trait Strategy {
+	fn name(&self) -> &str;
+	fn fit(&self, ctx: &Feats, train: &[Ordering]) -> Result<Box<dyn Strength>>;
+}
 
 /// One observed choice set, as observed. The first `ranked` are the order Places returned; the rest
 /// are the remainder of the set, which is what identifies anything at all.
@@ -72,24 +90,6 @@ impl Ordering<'_> {
 		by_score.sort_by(|&a, &b| score[b].total_cmp(&score[a]).then(scramble(a).cmp(&scramble(b))));
 		Some(by_score[..3].iter().filter(|&&j| j < 3).count() as f64 / 3.)
 	}
-}
-
-/// Google's log-preference for one business, on one term, asked from one place.
-///
-/// `exp(score)` is the Plackett–Luce weight, so the likelihood reads differences and the absolute
-/// level is the strategy's own to calibrate. A strategy whose output is ordinal does not belong
-/// here — it would win or lose on an arbitrary scale.
-pub trait Strength: Send + Sync {
-	fn score(&self, b: &Biz, term: &str, node: Option<[f64; 2]>) -> f64;
-}
-
-/// An entrant. Everything it learns, it learns in `fit` from the orderings it is handed.
-///
-/// `fit` returns a fresh [`Strength`] rather than mutating `self`: the harness fits the same entrant
-/// once per fold, and fold independence should be structural rather than remembered.
-pub trait Strategy {
-	fn name(&self) -> &str;
-	fn fit(&self, ctx: &Feats, train: &[Ordering]) -> Result<Box<dyn Strength>>;
 }
 
 /// A coefficient set over `core::rank`'s five features, with a mask saying which are estimated.
@@ -155,18 +155,6 @@ impl Strategy for Linear {
 	}
 }
 
-struct Fitted {
-	coef: [f64; N],
-	feats: Feats,
-}
-
-impl Strength for Fitted {
-	fn score(&self, b: &Biz, term: &str, node: Option<[f64; 2]>) -> f64 {
-		let x = self.feats.at(b, term, node);
-		(0..N).map(|i| self.coef[i] * x[i]).sum()
-	}
-}
-
 /// Held out, and per ordering so folds of unequal size average honestly.
 #[derive(Clone, Copy, Debug)]
 pub struct Loss {
@@ -212,7 +200,6 @@ pub fn cv(ctx: &Feats, all: &[Ordering], entrant: &dyn Strategy) -> Result<Loss>
 
 /// Every entrant on the ladder, over the same folds.
 pub struct League(IndexMap<String, Loss>);
-
 impl League {
 	pub fn run(ctx: &Feats, all: &[Ordering]) -> Result<Self> {
 		let mut out = IndexMap::new();
@@ -261,17 +248,8 @@ pub struct Observed {
 	pub reach: (f64, f64),
 	sets: Vec<Set>,
 }
-
-/// One choice set, as positions into [`Observed::pois`] with the ranked ones first and in order.
-struct Set {
-	term: String,
-	from: Region,
-	idx: Vec<usize>,
-	ranked: usize,
-}
-
 impl Observed {
-	pub fn new(pois: Vec<Poi>, places: Vec<String>, rankings: &[Ranking]) -> Result<Self> {
+	pub fn try_new(pois: Vec<Poi>, places: Vec<String>, rankings: &[Ranking]) -> Result<Self> {
 		let feats = feats(&places, &pois)?;
 		let by_id: IndexMap<&str, usize> = pois.iter().enumerate().map(|(i, p)| (p.id.as_str(), i)).collect();
 		// attributes join by id, so a result the inventory dropped cannot be scored and leaves the set
@@ -384,6 +362,26 @@ pub fn pooled(studies: &[Observed]) -> Result<Feats> {
 	let rated: Vec<f64> = pois.iter().filter_map(|p| p.rating).collect();
 	ensure!(!rated.is_empty(), "no competitor carries a rating, so there is nothing to shrink towards");
 	Feats::try_new(rated.iter().sum::<f64>() / rated.len() as f64, &places)
+}
+
+struct Fitted {
+	coef: [f64; N],
+	feats: Feats,
+}
+
+impl Strength for Fitted {
+	fn score(&self, b: &Biz, term: &str, node: Option<[f64; 2]>) -> f64 {
+		let x = self.feats.at(b, term, node);
+		(0..N).map(|i| self.coef[i] * x[i]).sum()
+	}
+}
+
+/// One choice set, as positions into [`Observed::pois`] with the ranked ones first and in order.
+struct Set {
+	term: String,
+	from: Region,
+	idx: Vec<usize>,
+	ranked: usize,
 }
 
 fn feats(places: &[String], pois: &[Poi]) -> Result<Feats> {

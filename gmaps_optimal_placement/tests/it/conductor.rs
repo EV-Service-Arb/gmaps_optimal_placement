@@ -19,6 +19,9 @@ use sa_core::{
 };
 use sha2::{Digest, Sha256};
 
+/// The server's work dir, under its dir.
+const OWN: &str = "cache/gmaps_optimal_placement";
+
 fn root() -> &'static Path {
 	Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("crate lives in the workspace")
 }
@@ -104,29 +107,7 @@ impl Served {
 		let key: String = Sha256::digest(gop(SEARCH_TEXT, &ask.body)).iter().map(|b| format!("{b:02x}")).collect();
 		std::fs::write(self.dir.join(OWN).join(format!("data/places_cache/{key}.json")), answer.to_string()).unwrap();
 	}
-}
 
-/// The server's work dir, under its dir.
-const OWN: &str = "cache/gmaps_optimal_placement";
-
-fn sign(panel: &Signer, method: &str, path: &str, held: &[Study]) -> String {
-	let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
-	panel.sign(&Assertion {
-		aud: Service::Placement,
-		principal: Principal::User(User {
-			sub: "0192a7c4-1f2e-7d3b-9c4a-5e6f7a8b9c0d".into(),
-			email: "op@example.com".into(),
-			email_verified: true,
-			name: "Op".into(),
-			permissions: held.iter().map(|p| p.as_str()).collect(),
-		}),
-		method: method.into(),
-		path: path.into(),
-		exp: now + sa_auth::TTL,
-	})
-}
-
-impl Served {
 	fn get(&self, path: &str, assertion: Option<&str>) -> (u16, String) {
 		self.send("GET", path, assertion, None)
 	}
@@ -150,6 +131,23 @@ impl Served {
 	fn signed(&self, method: &str, path: &str, held: &[Study], body: Option<&str>) -> (u16, String) {
 		self.send(method, path, Some(&self.assertion(method, path, held)), body)
 	}
+}
+
+fn sign(panel: &Signer, method: &str, path: &str, held: &[Study]) -> String {
+	let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+	panel.sign(&Assertion {
+		aud: Service::Placement,
+		principal: Principal::User(User {
+			sub: "0192a7c4-1f2e-7d3b-9c4a-5e6f7a8b9c0d".into(),
+			email: "op@example.com".into(),
+			email_verified: true,
+			name: "Op".into(),
+			permissions: held.iter().map(|p| p.as_str()).collect(),
+		}),
+		method: method.into(),
+		path: path.into(),
+		exp: now + sa_auth::TTL,
+	})
 }
 
 /// A few hundred Clermont cells, as the conductor would hand them in.
@@ -243,7 +241,8 @@ fn a_definition_that_does_not_hold_is_refused() {
 	let (status, text) = s.signed("POST", "/studies", &[Study::Read], Some(&serde_json::to_string(&bare).unwrap()));
 	assert_eq!(status, 200, "{text}");
 	let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
-	assert!(payload["trade"].is_null() && payload["notice"].is_null(), "an area on its own is the grid, and asks nothing");
+	assert!(payload["trade"].is_null(), "an area on its own is the grid, and asks nothing");
+	assert!(payload["notice"].is_null(), "an area on its own is the grid, and asks nothing");
 }
 
 /// `def`'s asks, for someone who may pull.
@@ -278,7 +277,9 @@ fn a_pull_is_asked_what_lies_behind_each_answer_until_none_is_lacking() {
 
 	let second = asks(&s, &def);
 	assert_eq!(second.since, first.since, "one pull, until it ends whole");
-	let [behind] = second.asks.as_slice() else { panic!("only the second page is behind what was answered: {:?}", second.asks) };
+	let [behind] = second.asks.as_slice() else {
+		panic!("only the second page is behind what was answered: {:?}", second.asks)
+	};
 	assert!(behind.body.contains(r#""pageToken":"more""#), "{behind:?}");
 	s.answer(behind, serde_json::json!({ "places": [] }));
 	assert!(asks(&s, &def).asks.is_empty(), "the sweep is held whole");
@@ -286,7 +287,8 @@ fn a_pull_is_asked_what_lies_behind_each_answer_until_none_is_lacking() {
 	let (status, text) = s.signed("POST", "/studies/pull", &[Study::Read, Study::Spend], Some(&serde_json::to_string(&def).unwrap()));
 	assert_eq!(status, 200, "{text}");
 	let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
-	assert!(payload["notice"].is_null() && payload["trade"]["pois"].as_array().is_some_and(|p| p.len() == 1), "built of what was answered: {text}");
+	assert!(payload["notice"].is_null(), "built of what was answered: {text}");
+	assert!(payload["trade"]["pois"].as_array().is_some_and(|p| p.len() == 1), "built of what was answered: {text}");
 
 	let next = asks(&s, &def);
 	assert!(next.since > first.since, "a whole pull's answers are what the next one asks again");

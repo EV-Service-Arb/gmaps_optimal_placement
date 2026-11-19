@@ -48,10 +48,8 @@ fn four_cells_of_the_alps() {
 	// the row says AT-CH-LI, and that tripoint is at 9.52 E 47.26 N — the id and the reprojection
 	// agree with a fact neither of them carries
 	let sw = g.cells[0].ring[0];
-	assert!(
-		(sw[0] - 9.5247167).abs() < 1e-5 && (sw[1] - 47.2595447).abs() < 1e-5,
-		"1 km cell N2683000 E4285000 lands at {sw:?}"
-	);
+	assert!((sw[0] - 9.5247167).abs() < 1e-5, "1 km cell N2683000 E4285000 lands at {sw:?}");
+	assert!((sw[1] - 47.2595447).abs() < 1e-5, "1 km cell N2683000 E4285000 lands at {sw:?}");
 	// the ring is one kilometre across, not one metre and not one degree
 	let width_deg = g.cells[0].ring[1][0] - g.cells[0].ring[0][0];
 	assert!((width_deg * 111_320. * 47f64.to_radians().cos() - 1000.).abs() < 20., "east edge spans {width_deg} deg");

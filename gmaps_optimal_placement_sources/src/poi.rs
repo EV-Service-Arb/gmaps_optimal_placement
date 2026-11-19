@@ -5,11 +5,10 @@ use eyre::{Result, WrapErr, bail, ensure};
 use gmaps_optimal_placement_core::{grid::Bbox, payload::Poi};
 use indexmap::IndexMap;
 use regex::Regex;
+use sa_core::placement::Ask;
+pub use sa_core::placement::SEARCH_TEXT;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-pub use sa_core::placement::SEARCH_TEXT;
-use sa_core::placement::Ask;
 
 use crate::{
 	Frame,
@@ -27,27 +26,19 @@ const CAP: usize = 60;
 /// How the inventory sweep cuts the ground: one Web-Mercator quadtree for every frame, so an answer
 /// is about a tile of ground rather than about whichever area asked, and two areas that overlap
 /// share what either bought.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Tiling {
 	/// The quadtree level a query is first asked at.
-	pub zoom: u32,
+	pub zoom: u32 = Self::ZOOM,
 	/// How many times a tile at the cap may be quartered. A query still at the cap there is reported
 	/// rather than passed off as the whole inventory.
-	pub depth: u32,
+	pub depth: u32 = Self::DEPTH,
 }
 impl Tiling {
 	/// Then the floor is under a kilometre.
 	pub const DEPTH: u32 = 3;
 	/// ~7 km a side at 45°N: an agglomeration is a handful of tiles, and a small circle one or four.
 	pub const ZOOM: u32 = 12;
-}
-impl Default for Tiling {
-	fn default() -> Self {
-		Self {
-			zoom: Self::ZOOM,
-			depth: Self::DEPTH,
-		}
-	}
 }
 
 /// One tile of the quadtree.
@@ -216,13 +207,6 @@ pub fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pages: usi
 	Ok((out, None))
 }
 
-fn lacking(body: &serde_json::Value, mask: &str) -> Result<Ask> {
-	Ok(Ask {
-		mask: mask.to_owned(),
-		body: serde_json::to_string(body)?,
-	})
-}
-
 /// The sweep, out of what the work dir and the queries cache hold. A pairing nobody ever harvested
 /// yields nothing, which is how a refit reads evidence without turning into a purchase.
 pub fn cached(cfg: &PoiConfig, frame: Frame, work: &Work) -> Result<Inventory> {
@@ -317,11 +301,13 @@ pub fn cached(cfg: &PoiConfig, frame: Frame, work: &Work) -> Result<Inventory> {
 	for (d, (c, q)) in calls.iter().enumerate().filter(|(_, (c, _))| *c > 0) {
 		eprintln!("  depth {d}: {c} calls, {q} of them interior");
 	}
-	Ok(Inventory {
-		pois: out,
-		obs,
-		asks,
-		calls: total,
+	Ok(Inventory { pois: out, obs, asks, calls: total })
+}
+
+fn lacking(body: &serde_json::Value, mask: &str) -> Result<Ask> {
+	Ok(Ask {
+		mask: mask.to_owned(),
+		body: serde_json::to_string(body)?,
 	})
 }
 
