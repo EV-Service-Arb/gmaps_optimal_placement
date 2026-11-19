@@ -1,7 +1,6 @@
-/* What every French study shares regardless of area or trade: the grid, how INSEE spells the
-   numbers it publishes, and who prices its keywords. An area — a city file in [../locations/],
-   or one the conductor hands in — takes this and adds its frame; a trade in [../trades/] is a
-   function of that. */
+/* What every French study shares regardless of area or category: the grid, how INSEE spells the
+   numbers it publishes, and the layers every trade reads. An area — a city file in [../locations/],
+   or one the conductor hands in — takes this and adds its frame; the category adds the rest. */
 {
   country = "FR";
 
@@ -23,6 +22,7 @@
     {
       name = "Population";
       expr = "ind";
+      scale = "percentile";
       note = "Raw head count per 200 m cell.";
     }
     {
@@ -34,16 +34,14 @@
     {
       name = "Estimated cars";
       expr = "cars";
+      scale = "percentile";
       note = "Houses × 1.55 + flats × 0.85. Inferred, not measured.";
     }
     {
       name = "Households";
       expr = "men";
+      scale = "percentile";
       note = "Fiscal households per cell.";
     }
   ];
-
-  searches = {
-    provider = "google_ads";
-  };
 }

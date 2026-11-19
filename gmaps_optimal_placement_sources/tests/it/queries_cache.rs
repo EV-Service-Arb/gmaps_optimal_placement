@@ -18,8 +18,8 @@ fn an_unreachable_cache_serves_the_mirror_and_stops_at_a_miss() {
 	std::fs::create_dir_all(&mirror).unwrap();
 	std::fs::write(mirror.join(format!("{key}.json")), r#"{"places":[]}"#).unwrap();
 
-	assert_eq!(work.cached(SEARCH_TEXT, &kept).unwrap().unwrap().0, serde_json::json!({"places": []}));
-	let e = work.cached(SEARCH_TEXT, &missing).unwrap_err();
+	assert_eq!(work.cached(&kept).unwrap().unwrap().0, serde_json::json!({"places": []}));
+	let e = work.cached(&missing).unwrap_err();
 	assert!(format!("{e:#}").contains("queries cache"), "{e:#}");
 	std::fs::remove_dir_all(&dir).unwrap();
 }

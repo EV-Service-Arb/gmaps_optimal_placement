@@ -152,7 +152,7 @@ fn the_split_hands_every_node_an_equal_share() {
 		})
 		.collect();
 	let n = 32;
-	let out = nodes(&at, &trade().demand, n).unwrap();
+	let out = nodes(&at, &trade().demand.expect("the Clermont fixture carries a demand").values, n).unwrap();
 	assert_eq!(out.len(), n);
 	assert!((out.iter().map(|k| k.share).sum::<f64>() - 1.).abs() < 1e-9, "the strata do not partition the demand");
 

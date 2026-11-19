@@ -3,7 +3,7 @@ agglomeration, this asks which towns in a country are worth writing a study for 
 
 [`Tally`] is what to count — something an official cadastre already draws, per administrative unit —
 and [`Country`] is who publishes it. Both are closed enums, matched on, the same containment
-`GridSource` and `PoiSource` have.
+`GridSource` has.
 
 - [`compile`] rolls the country's statistical grid up by administrative unit
   ([`gmaps_optimal_placement_sources::grid::places`]), drops every unit under the floor, and only then

@@ -15,14 +15,10 @@ use gmaps_optimal_placement_sources::{Work, work::QueriesCache};
 use sa_core::placement::{Catalog, Category, Definition};
 
 #[derive(Parser)]
-#[command(about = "Paint a study's demand model over the competitors already on the ground")]
+#[command(about = "Paint a category's demand over the competitors already on the ground")]
 struct Cli {
 	#[clap(flatten)]
 	settings: SettingsFlags,
-	/// Buy the keyword volumes the work dir lacks, on real Ads or DataForSEO quota. A Places search
-	/// is never bought here: a pull at the conductor buys what a study lacks
-	#[arg(long, global = true)]
-	spend_real_quota_i_am_certain: bool,
 	#[command(subcommand)]
 	cmd: Cmd,
 }
@@ -30,21 +26,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
 	/// Serve the conductor: every request carries its assertion, checked against the keys in
-	/// `PANEL_ASSERTION_KEYS`. A study is a definition it hands in, over `--trades` and
-	/// `--countries`; nothing is bought, the conductor buys what a pull lacks
+	/// `PANEL_ASSERTION_KEYS`. A study is a definition it hands in, over `--countries`; nothing is
+	/// bought, the conductor buys what a pull lacks
 	Serve {
 		#[command(flatten)]
-		experts: Experts,
+		bases: Bases,
 		#[arg(short, long, default_value_t = 8731)]
 		port: u16,
-	},
-	/// How many people ask for it: monthly volume per query group, as one HTML chart
-	Searches {
-		#[command(flatten)]
-		at: Pair,
-		/// Defaults to `<work dir>/out/<study name>-searches.html`
-		#[arg(short, long)]
-		out: Option<PathBuf>,
 	},
 	/// Refit the ranking model over every ordering in the work dir, and print the table that goes
 	/// into `gmaps_optimal_placement_core::rank::COEF`. How Google ranks is one mechanism, so this takes the
@@ -87,13 +75,12 @@ enum Cmd {
 	},
 }
 
-/// The two axes a study is a point on, and the expert half each category names. The categories are
-/// the conductor's, as the definitions it handed in carry them; the locations are files. Naming one
-/// of each is how a scripted run gets past the picker.
+/// The two axes a study is a point on. The categories are the conductor's, as the definitions it
+/// handed in carry them; the locations are files.
 #[derive(Clone, clap::Args)]
 struct Pair {
-	/// One of the conductor's categories, by its key as the picker shows it (`<study>·<CC> (trade
-	/// <id>)`); without it, every category a definition in the work dir carries
+	/// One of the conductor's categories, by its key (`<name>·<CC> (trade <id>)`); without it, every
+	/// category a definition in the work dir carries
 	#[arg(short, long)]
 	category: Option<String>,
 	/// Where: the frame, the statistics office behind it, the premises in mind; a file or a
@@ -101,21 +88,17 @@ struct Pair {
 	#[arg(short, long, default_value = "examples/locations")]
 	locations: PathBuf,
 	#[command(flatten)]
-	experts: Experts,
+	bases: Bases,
 }
 
-/// What only an expert writes, looked up by name: the trades a category's `study` names, and the
-/// country bases an area handed in at runtime stands on.
+/// The country bases an area handed in at runtime stands on.
 #[derive(Clone, clap::Args)]
-struct Experts {
-	/// `<study>.nix` each: the demand model, the tier vocabulary, λ
-	#[arg(short, long, default_value = "examples/trades")]
-	trades: PathBuf,
-	/// `<ISO 3166-1 alpha-2>.nix` each: the grid, its columns and layers, the volume provider
+struct Bases {
+	/// `<ISO 3166-1 alpha-2>.nix` each: the grid, its columns and layers
 	#[arg(long, default_value = "examples/countries")]
 	countries: PathBuf,
 }
-impl Experts {
+impl Bases {
 	/// The base an area in `def`'s country stands on.
 	fn country(&self, def: &Definition) -> Result<PathBuf> {
 		let path = self.countries.join(format!("{}.nix", def.area.country()));
@@ -133,34 +116,31 @@ fn main() -> Result<()> {
 	}
 	let cfg = AppConfig::try_build(cli.settings)?;
 	let cache: QueriesCache = cfg.queries_cache.parse()?;
-	let work = Work::at(v_utils::xdg_cache_dir!(""), cache.clone())
-		.policy((&cfg.age).into(), (&cfg.sweep).into())
-		.spend(cli.spend_real_quota_i_am_certain);
+	let work = Work::at(v_utils::xdg_cache_dir!(""), cache.clone()).policy((&cfg.age).into(), (&cfg.sweep).into());
 	match cli.cmd {
 		Cmd::Config { .. } => unreachable!("handled above, and `handle_settings_command` exits"),
 		Cmd::Schema => {
 			println!("{}", serde_json::to_string_pretty(&schemars::schema_for!(gmaps_optimal_placement::Study))?);
 			Ok(())
 		}
-		Cmd::Serve { experts, port } => {
+		Cmd::Serve { bases, port } => {
 			// the work dir rather than `work` itself: `Work` holds a `Cell`, and the server calls this
 			// from whichever blocking thread a request landed on
 			let (dir, age, tiling) = (work.path().to_owned(), (&cfg.age).into(), (&cfg.sweep).into());
 			let conductor = std::env::var("PANEL_ASSERTION_KEYS").map_err(|e| eyre::eyre!("`serve` checks every request against PANEL_ASSERTION_KEYS: {e}"))?;
 			let stems = |dir: &Path| -> Result<Vec<String>> { Ok(gmaps_optimal_placement::files(dir)?.iter().map(|p| gmaps_optimal_placement::stem(p).to_owned()).collect()) };
 			let catalog = Catalog {
-				trades: stems(&experts.trades)?,
-				countries: stems(&experts.countries)?.iter().map(|c| c.parse()).collect::<Result<_, _>>()?,
+				countries: stems(&bases.countries)?.iter().map(|c| c.parse()).collect::<Result<_, _>>()?,
 			};
 			let holds = {
-				let experts = experts.clone();
-				Arc::new(move |def: &Definition| gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades).map(drop))
+				let bases = bases.clone();
+				Arc::new(move |def: &Definition| gmaps_optimal_placement::load(def, Base::Country(&bases.country(def)?)).map(drop))
 			};
 			let studied = {
-				let experts = experts.clone();
+				let bases = bases.clone();
 				move |def: &Definition, since: Option<std::time::SystemTime>| -> Result<(Study, Work)> {
 					let work = Work::at(dir.clone(), cache.clone()).policy(age, tiling).since(since);
-					Ok((gmaps_optimal_placement::load(def, Base::Country(&experts.country(def)?), &experts.trades)?, work))
+					Ok((gmaps_optimal_placement::load(def, Base::Country(&bases.country(def)?))?, work))
 				}
 			};
 			let asks = {
@@ -187,15 +167,12 @@ fn main() -> Result<()> {
 			)
 		}
 		Cmd::Fit { at } => {
-			let (studies, observed) = harvest(&at, &work)?;
-			// `harvest` only keeps a study that contributed orderings, and only a trade can
-			let lambda: Vec<f64> = studies.iter().map(|s| s.model.as_ref().expect("a study with orderings has a trade").lambda_m).collect();
-			let fit: fit::Fit = observed.iter().collect();
-			report(fit.stats(&lambda));
+			let fit: fit::Fit = harvest(&at, &work)?.iter().collect();
+			report(fit.stats());
 			fit.check()
 		}
 		Cmd::Strength { at } => {
-			let (_, observed) = harvest(&at, &work)?;
+			let observed = harvest(&at, &work)?;
 			let orderings: Vec<Ordering> = observed.iter().flat_map(Observed::orderings).collect();
 			let league = League::run(&pooled(&observed)?, &orderings)?;
 			report(league.stats());
@@ -206,21 +183,12 @@ fn main() -> Result<()> {
 			report(compiled.stats());
 			write(out.unwrap_or_else(|| work.path().join("out").join(format!("{}.html", compiled.name()))), &compiled.render()?)
 		}
-		Cmd::Searches { at, out } => {
-			let (category, location) = picked(&at, &work)?;
-			let payload = study(Some(&category), &location, &at.experts)?.searches(&work, &cfg.google.iter().filter_map(|a| a.provides.ads.as_ref().map(Into::into)).collect::<Vec<_>>())?;
-			report(gmaps_optimal_placement::search_stats(&payload));
-			let html = gmaps_optimal_placement::render::render_searches(&payload)?;
-			write(out.unwrap_or_else(|| work.path().join("out").join(format!("{}-searches.html", payload.name))), &html)
-		}
 	}
 }
 
-/// Every study that has been harvested, and what it collected: the two axes' product, and every
-/// definition the conductor ever handed in. No picker: how Google ranks is one mechanism, so every
-/// harvested study contributes. The studies come back alongside, filtered to the ones that said
-/// something.
-fn harvest(at: &Pair, work: &Work) -> Result<(Vec<Study>, Vec<Observed>)> {
+/// What every harvested study collected: the two axes' product, and every definition the conductor
+/// ever handed in. How Google ranks is one mechanism, so every harvested study contributes.
+fn harvest(at: &Pair, work: &Work) -> Result<Vec<Observed>> {
 	let (categories, locations) = (categories(at, work)?, gmaps_optimal_placement::files(&at.locations)?);
 	let mut studies = Vec::new();
 	for (_, category) in &categories {
@@ -231,7 +199,7 @@ fn harvest(at: &Pair, work: &Work) -> Result<(Vec<Study>, Vec<Observed>)> {
 					area,
 					category: Some(category.clone()),
 				};
-				studies.push(gmaps_optimal_placement::load(&def, Base::Location(l), &at.experts.trades)?);
+				studies.push(gmaps_optimal_placement::load(&def, Base::Location(l))?);
 			}
 		}
 	}
@@ -242,29 +210,26 @@ fn harvest(at: &Pair, work: &Work) -> Result<(Vec<Study>, Vec<Observed>)> {
 			if path.extension().is_some_and(|x| x == "json") {
 				let def: Definition = read(&path)?;
 				if def.category.is_some() {
-					studies.push(gmaps_optimal_placement::load(&def, Base::Country(&at.experts.country(&def)?), &at.experts.trades)?);
+					studies.push(gmaps_optimal_placement::load(&def, Base::Country(&at.bases.country(&def)?))?);
 				}
 			}
 		}
 	}
-	let (mut kept, mut observed) = (Vec::new(), Vec::new());
+	let mut observed = Vec::new();
 	for s in studies {
-		if let Some(o) = s.observations(work)? {
-			kept.push(s);
-			observed.push(o);
-		}
+		observed.extend(s.observations(work)?);
 	}
 	eyre::ensure!(
 		!observed.is_empty(),
 		"no category over {}, nor any study the conductor defined, has ever been harvested",
 		at.locations.display()
 	);
-	Ok((kept, observed))
+	Ok(observed)
 }
 
 /// The latest of each of the conductor's categories, as the definitions it handed in carry them,
-/// keyed as the picker shows them. gop never reads the conductor, and a copy kept beside the trades
-/// would be one more place a category drifts from it.
+/// keyed. gop never reads the conductor, and a copy kept here would be one more place a category
+/// drifts from it.
 fn categories(at: &Pair, work: &Work) -> Result<Vec<(String, Category)>> {
 	let dir = work.path().join("studies");
 	let mut latest: Vec<(std::time::SystemTime, Category)> = Vec::new();
@@ -284,7 +249,7 @@ fn categories(at: &Pair, work: &Work) -> Result<Vec<(String, Category)>> {
 			}
 		}
 	}
-	let mut keyed: Vec<(String, Category)> = latest.into_iter().map(|(_, c)| (format!("{}·{} (trade {})", c.study, c.country, c.trade), c)).collect();
+	let mut keyed: Vec<(String, Category)> = latest.into_iter().map(|(_, c)| (format!("{}·{} (trade {})", c.name, c.country, c.trade), c)).collect();
 	keyed.sort_by(|a, b| a.0.cmp(&b.0));
 	let Some(k) = &at.category else { return Ok(keyed) };
 	let one: Vec<_> = keyed.iter().filter(|(o, _)| o == k).cloned().collect();
@@ -295,24 +260,6 @@ fn categories(at: &Pair, work: &Work) -> Result<Vec<(String, Category)>> {
 		keyed.iter().map(|(o, _)| o).collect::<Vec<_>>()
 	);
 	Ok(one)
-}
-
-/// One category and one location, for a one-artifact subcommand.
-fn picked(at: &Pair, work: &Work) -> Result<(Category, PathBuf)> {
-	let categories = categories(at, work)?;
-	let locations = gmaps_optimal_placement::files(&at.locations)?;
-	let c = gmaps_optimal_placement::pick(&categories.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), "category")?;
-	let l = gmaps_optimal_placement::pick(&locations.iter().map(|p| gmaps_optimal_placement::stem(p)).collect::<Vec<_>>(), "location")?;
-	Ok((categories[c].1.clone(), locations[l].clone()))
-}
-
-/// A category over a location file, or the location alone.
-fn study(category: Option<&Category>, location: &Path, experts: &Experts) -> Result<Study> {
-	let def = Definition {
-		area: gmaps_optimal_placement::location_area(location)?,
-		category: category.cloned(),
-	};
-	gmaps_optimal_placement::load(&def, Base::Location(location), &experts.trades)
 }
 
 fn read<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {

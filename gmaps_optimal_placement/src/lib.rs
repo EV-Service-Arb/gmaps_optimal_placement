@@ -2,7 +2,6 @@
 #![doc = include_str!("../README.md")]
 
 pub mod config;
-pub mod render;
 pub mod settings;
 
 use std::path::{Path, PathBuf};
@@ -18,49 +17,20 @@ pub use gmaps_optimal_placement_core::{Payload, payload};
 pub use gmaps_optimal_placement_misc as misc;
 use gmaps_optimal_placement_rank::Observed;
 pub use gmaps_optimal_placement_sources as sources;
-use gmaps_optimal_placement_sources::{Frame, Keyword, Work, grid, poi, probe, searches};
+use gmaps_optimal_placement_sources::{Frame, Work, grid, poi, probe};
 use indexmap::IndexMap;
-use regex::Regex;
-use sa_core::placement::{Area, Ask, Category, Definition};
-use serde::Serialize;
+use sa_core::placement::{self, Area, Ask, Category, Definition};
 
-use crate::config::Group;
 pub use crate::config::Study;
 
 const EMPTY: &str = "No competitor is on this map, and nothing that reads one is offered.";
-
-/// One chart's worth of demand-side numbers. Members ride along with their own series, because a
-/// sum you cannot audit is a sum you cannot argue with.
-#[derive(Debug, Serialize)]
-pub struct SearchPayload {
-	pub name: String,
-	pub place: String,
-	/// `YYYY-MM`, shared by every group.
-	pub months: Vec<String>,
-	pub groups: Vec<GroupOut>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct GroupOut {
-	pub name: String,
-	/// Per month, summed over `members`.
-	pub total: Vec<u64>,
-	pub members: Vec<MemberOut>,
-	/// Kept by the filter, but the provider has no volume for them. Never zero-filled into `total`.
-	pub no_data: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct MemberOut {
-	pub text: String,
-	pub avg: f64,
-	pub monthly: Vec<u64>,
-}
+/// Probe strata per study: a k-d split to depth log2 of it, one equal share of demand each.
+const NODES: usize = 32;
 
 /// The grid and everything derived from it. Everything up to, and not including, the billed part.
 pub struct Cells {
 	pub grid: gmaps_optimal_placement_core::Grid,
-	/// `None` for a location opened without a trade: a demand expression is a trade's to write.
+	/// `None` without a category that writes a demand.
 	pub demand: Option<Vec<f64>>,
 	pub layers: Vec<LayerOut>,
 }
@@ -85,9 +55,10 @@ impl Study {
 		}
 
 		let demand = self
-			.model
+			.category
 			.as_ref()
-			.map(|m| Expr::parse(&m.demand)?.eval_column(&grid.columns, n).wrap_err("[model] demand"))
+			.and_then(|c| c.demand.as_ref())
+			.map(|d| Expr::parse(&d.expr)?.eval_column(&grid.columns, n).wrap_err("the category's demand"))
 			.transpose()?;
 		let layers = self
 			.layers
@@ -96,8 +67,11 @@ impl Study {
 				let values = Expr::parse(&l.expr)?.eval_column(&grid.columns, n).wrap_err_with(|| format!("layer {:?}", l.name))?;
 				Ok(LayerOut {
 					name: l.name.clone(),
-					note: l.note.clone().unwrap_or_else(|| l.expr.clone()),
-					scale: l.scale,
+					note: l.note.clone(),
+					scale: match l.scale {
+						placement::Scale::Percentile => Scale::Percentile,
+						placement::Scale::Linear => Scale::Linear,
+					},
 					values: round(values, 3),
 				})
 			})
@@ -105,55 +79,22 @@ impl Study {
 		Ok(Cells { grid, demand, layers })
 	}
 
-	/// What a trade decides, or the error every subcommand but `serve` owes a location that was
-	/// opened without one. The three travel together: a trade file writes all of them.
-	fn trade(&self) -> Result<(&gmaps_optimal_placement_sources::PoiConfig, &config::Model, &config::RankSpec)> {
-		let missing = |what: &str| eyre::eyre!("{} declares no `{what}` — a location on its own carries the grid and nothing a trade decides", self.name);
-		Ok((
-			self.poi.as_ref().ok_or_else(|| missing("poi"))?,
-			self.model.as_ref().ok_or_else(|| missing("model"))?,
-			self.rank.as_ref().ok_or_else(|| missing("rank"))?,
-		))
-	}
-
-	fn category(&self) -> Result<&Category> {
-		self.category
-			.as_ref()
-			.ok_or_else(|| eyre::eyre!("{} has a trade but no category to say what it is asked", self.name))
-	}
-
-	/// What the probe asks from each node.
-	fn terms(&self) -> Result<Vec<String>> {
-		Ok(self.trade()?.2.terms.iter().map(|t| t.text.clone()).collect())
-	}
-
-	/// The trade file's rank terms and their weights; the category's keywords do not weigh competitors
-	/// until their search volumes do (`shortcut:` volumes need a Keyword Planner provider with Basic
-	/// access, which this server has none of).
-	fn weigh(&self) -> Result<Terms> {
-		Ok(Terms {
-			weighted: self.trade()?.2.terms.iter().map(|t| (t.text.clone(), t.weight)).collect(),
-			unweighted: self.category()?.keywords.clone(),
-		})
-	}
-
-	/// The demand a trade's model puts over this grid.
-	fn demand<'a>(&self, cells: &'a Cells) -> Result<&'a [f64]> {
-		self.trade()?;
-		Ok(cells.demand.as_deref().expect("a study with a model evaluates one"))
-	}
-
 	/// The ordering evidence this study contributes: the inventory sweep always, the probe wherever
-	/// it has already been run. Reads the work dir, never the network — so a pairing nobody has ever
-	/// built costs nothing and is `None`.
+	/// it has already been run and a demand places its nodes. Reads the work dir, never the network —
+	/// so a pairing nobody has ever built costs nothing and is `None`.
 	pub fn observations(&self, work: &Work) -> Result<Option<Observed>> {
+		let c = self
+			.category
+			.as_ref()
+			.ok_or_else(|| eyre::eyre!("{} is an area on its own, with no competitor to order", self.name))?;
 		let cells = self.cells(work)?;
-		let (poi, _, _) = self.trade()?;
-		let inv = poi::cached(poi, Frame::from(&self.area), work)?;
+		let inv = poi::cached(c, Frame::from(&self.area), work)?;
 		let mut obs = inv.obs;
-		let probed = probe::cached(work, &probe::plan(&at(&self.nodes(&cells)?), &self.terms()?, self.radius_m()?))?;
-		eprintln!("{}: {} orderings from the inventory sweep, {} from the probe", self.name, obs.len(), probed.len());
-		obs.extend(probed);
+		let swept = obs.len();
+		if let Some(demand) = &cells.demand {
+			obs.extend(probe::cached(work, &probe::plan(&at(&nodes(&cells, demand)?), &texts(&terms(c)), self.radius_m()))?);
+		}
+		eprintln!("{}: {swept} orderings from the inventory sweep, {} from the probe", self.name, obs.len() - swept);
 		if obs.is_empty() {
 			return Ok(None);
 		}
@@ -161,32 +102,18 @@ impl Study {
 		Observed::try_new(inv.pois, places, &obs).map(Some)
 	}
 
-	/// The `locationBias` circle: one stratum's worth of ground, as a circle. `rank.nodes` cuts the
+	/// The `locationBias` circle: one stratum's worth of ground, as a circle. [`NODES`] cuts the
 	/// frame into equal shares of demand, so this is how far a searcher standing at one of them is
-	/// from its edge on average — which is the distance the coefficient is identified over. Not a
-	/// study's to state: it needs the frame and the node count, and those sit on opposite axes.
-	fn radius_m(&self) -> Result<f64> {
-		Ok((Frame::from(&self.area).area_m2() / self.trade()?.2.nodes as f64 / std::f64::consts::PI).sqrt())
+	/// from its edge on average — which is the distance the coefficient is identified over.
+	fn radius_m(&self) -> f64 {
+		(Frame::from(&self.area).area_m2() / NODES as f64 / std::f64::consts::PI).sqrt()
 	}
 
-	fn nodes(&self, cells: &Cells) -> Result<Vec<rank::Node>> {
-		let at: Vec<[f64; 2]> = cells
-			.grid
-			.cells
-			.iter()
-			.map(|c| {
-				let (lon, lat) = c.ring.iter().fold((0., 0.), |(x, y), p| (x + p[0] / 4., y + p[1] / 4.));
-				[lat, lon]
-			})
-			.collect();
-		rank::nodes(&at, self.demand(cells)?, self.trade()?.2.nodes)
-	}
-
-	/// The Places searches this study lacks, the first down each branch of its sweep; none for a
-	/// location opened without a trade.
+	/// The Places searches this study lacks, the first down each branch of its sweep; none for an
+	/// area on its own.
 	pub fn asks(&self, work: &Work) -> Result<Vec<Ask>> {
-		let Some(poi) = &self.poi else { return Ok(Vec::new()) };
-		Ok(poi::cached(poi, Frame::from(&self.area), work)?.asks)
+		let Some(c) = &self.category else { return Ok(Vec::new()) };
+		Ok(poi::cached(c, Frame::from(&self.area), work)?.asks)
 	}
 
 	/// Out of what the work dir and the queries cache hold: a study whose sweep is not all there
@@ -208,14 +135,10 @@ impl Study {
 				ring.push(round1(p[1], 5));
 			}
 		}
-		let (trade, notice) = match (&self.poi, &self.model, &self.rank) {
-			(None, None, None) => (None, None),
-			// a half-written trade is not a location, and `trade()` says which block is missing
-			_ => {
-				let (poi_cfg, _, _) = self.trade()?;
-				let frame = Frame::from(&self.area);
-				let terms = self.weigh()?;
-				let inv = poi::cached(poi_cfg, frame, work)?;
+		let (trade, notice) = match &self.category {
+			None => (None, None),
+			Some(c) => {
+				let inv = poi::cached(c, Frame::from(&self.area), work)?;
 				let notice = match inv.asks.len() {
 					0 => None,
 					missing => Some(Notice {
@@ -230,7 +153,7 @@ impl Study {
 				};
 				match (notice.is_some(), inv.pois.is_empty()) {
 					(true, true) => (None, notice),
-					_ => (Some(self.billed(&cells, &place, inv, terms, work)?), notice),
+					_ => (Some(billed(c, &cells, &place, inv, self.radius_m(), work)?), notice),
 				}
 			}
 		};
@@ -238,16 +161,17 @@ impl Study {
 		if let Some(n) = &notice {
 			eprintln!("{}: {}", self.name, n.text);
 		}
-		if trade.is_none() && notice.is_some() {
-			// the demand surface is the trade's expression over the archive and was evaluated before the
-			// first call, so it is the one thing a refusal does not take away. First, so the map opens
-			// on it rather than on whatever the location happened to list
-			let model = self.model.as_ref().expect("a study that reached the sweep declares a model");
+		if trade.is_none()
+			&& let Some(d) = self.category.as_ref().and_then(|c| c.demand.as_ref())
+		{
+			// the demand surface is the category's expression over the archive and was evaluated before
+			// the first call, so it is the one thing a refusal does not take away. First, so the map opens
+			// on it rather than on whatever the base happened to list
 			layers.push(LayerOut {
 				name: "Demand".to_owned(),
-				note: model.demand.clone(),
+				note: d.expr.clone(),
 				scale: Scale::Percentile,
-				values: round(self.demand(&cells)?.to_vec(), 3),
+				values: round(cells.demand.clone().expect("evaluated off the same category"), 3),
 			});
 		}
 		layers.extend(cells.layers);
@@ -264,169 +188,8 @@ impl Study {
 			notice,
 		})
 	}
-
-	/// The billed half, over the inventory held.
-	fn billed(&self, cells: &Cells, place: &[String], inv: poi::Inventory, terms: Terms, work: &Work) -> Result<payload::Trade> {
-		let (poi_cfg, model_cfg, _) = self.trade()?;
-		let model = Rank::try_new(feats(place, &inv.pois)?, rank::COEF)?;
-		let Terms { weighted: terms, unweighted } = terms;
-
-		// a study nobody has probed carries no nodes, and the map offers no observed coverage layer
-		let nodes = at(&self.nodes(cells)?);
-		let probed = probe::cached(work, &probe::plan(&nodes, &self.terms()?, self.radius_m()?))?;
-		let seen = gmaps_optimal_placement_rank::observed(&inv.pois, &nodes, &probed, &terms);
-		let nodes = match probed.is_empty() {
-			true => Vec::new(),
-			false => nodes,
-		};
-
-		let kept: std::collections::HashSet<&str> = inv.pois.iter().map(|p| p.id.as_str()).collect();
-		let mut queries: Vec<payload::QueryOut> = poi_cfg
-			.queries
-			.iter()
-			.map(|q| {
-				let hit: std::collections::HashSet<&str> = inv
-					.obs
-					.iter()
-					.filter(|o| &o.term == q)
-					.flat_map(|o| o.ids.iter().map(String::as_str))
-					.filter(|id| kept.contains(id))
-					.collect();
-				payload::QueryOut { text: q.clone(), hits: hit.len() }
-			})
-			.collect();
-		queries.sort_by(|a, b| b.hits.cmp(&a.hits));
-
-		let mut pois: Vec<PoiOut> = inv
-			.pois
-			.into_iter()
-			.zip(seen)
-			.map(|(p, seen)| {
-				let w = model.strength(&Biz::from(&p), &terms);
-				PoiOut {
-					poi: p,
-					w,
-					seen: match nodes.is_empty() {
-						true => Vec::new(),
-						false => seen,
-					},
-				}
-			})
-			.collect();
-		normalise(&mut pois, &poi_cfg.tiers)?;
-		for t in &poi_cfg.tiers {
-			ensure!(pois.iter().any(|p| p.poi.tier == t.name), "no competitor fell into tier {:?}", t.name);
-		}
-		Ok(payload::Trade {
-			lambda_m: model_cfg.lambda_m,
-			demand_note: model_cfg.demand.clone(),
-			demand: round(self.demand(cells)?.to_vec(), 3),
-			tiers: poi_cfg
-				.tiers
-				.iter()
-				.map(|t| TierOut {
-					name: t.name.clone(),
-					weight: t.weight,
-				})
-				.collect(),
-			terms: terms.into_iter().map(|(text, weight)| payload::TermOut { text, weight }).collect(),
-			unweighted,
-			queries,
-			nodes,
-			pois,
-			searches: inv.calls,
-		})
-	}
-
-	pub fn searches(&self, work: &Work, ads: &[searches::Ads]) -> Result<SearchPayload> {
-		let cfg = self.searches.as_ref().ok_or_else(|| eyre::eyre!("study {:?} declares no `searches` block", self.name))?;
-		ensure!(!cfg.groups.is_empty(), "searches declares no group");
-		let place = cfg.place.as_ref().ok_or_else(|| eyre::eyre!("{} names no `searches.place` to chart volume over", self.name))?;
-		let provider = searches::provider(&cfg.provider, ads)?;
-		let seeds = &self.category()?.keywords;
-		let mut ideas: Vec<Keyword> = Vec::new();
-		for chunk in seeds.chunks(searches::SEEDS) {
-			for k in provider.ideas(chunk, place, self.country.lang(), work)? {
-				if !ideas.iter().any(|i| i.text == k.text) {
-					ideas.push(k);
-				}
-			}
-		}
-		eprintln!("{}: {} ideas around the category's {} keywords", self.name, ideas.len(), seeds.len());
-		let (mut months, mut groups) = (Vec::new(), Vec::<GroupOut>::new());
-		for g in &cfg.groups {
-			ensure!(!groups.iter().any(|o| o.name == g.name), "two searches.group are both named {:?}", g.name);
-			let (axis, out) = fold(g, ideas.clone())?;
-			match groups.first() {
-				None => months = axis,
-				Some(first) => ensure!(months == axis, "group {:?} covers {axis:?}, group {:?} covers {months:?}", g.name, first.name),
-			}
-			groups.push(out);
-		}
-		Ok(SearchPayload {
-			name: self.name.clone(),
-			place: place.clone(),
-			months,
-			groups,
-		})
-	}
 }
 
-/// The group filter and its sum. Kept out of the provider so a canned response can drive it.
-pub fn fold(group: &Group, ideas: Vec<Keyword>) -> Result<(Vec<String>, GroupOut)> {
-	let compile = |p: &String| Regex::new(&format!("(?i){p}")).wrap_err_with(|| format!("group {:?} pattern {p:?}", group.name));
-	let keep = group.pattern.as_ref().map(&compile).transpose()?;
-	let drop = group.drop.as_ref().map(&compile).transpose()?;
-
-	let mut months: Vec<String> = Vec::new();
-	let (mut members, mut no_data) = (Vec::new(), Vec::new());
-	for k in ideas {
-		if drop.as_ref().is_some_and(|r| r.is_match(&k.text)) || !keep.as_ref().is_none_or(|r| r.is_match(&k.text)) {
-			continue;
-		}
-		let Some(series) = k.monthly else {
-			no_data.push(k.text);
-			continue;
-		};
-		ensure!(!series.is_empty(), "group {:?}: keyword {:?} carries an empty series", group.name, k.text);
-		let axis: Vec<String> = series.iter().map(|m| format!("{:04}-{:02}", m.year, m.month)).collect();
-		if months.is_empty() {
-			months = axis;
-		} else {
-			ensure!(months == axis, "group {:?}: keyword {:?} covers {axis:?}, the group covers {months:?}", group.name, k.text);
-		}
-		let monthly: Vec<u64> = series.iter().map(|m| m.searches).collect();
-		let avg = monthly.iter().sum::<u64>() as f64 / monthly.len() as f64;
-		members.push(MemberOut {
-			text: k.text,
-			avg: round1(avg, 1),
-			monthly,
-		});
-	}
-	ensure!(
-		!members.is_empty(),
-		"group {:?} kept no keyword the provider has volume for ({} matched without data)",
-		group.name,
-		no_data.len()
-	);
-
-	let mut total = vec![0u64; months.len()];
-	for m in &members {
-		for (t, v) in total.iter_mut().zip(&m.monthly) {
-			*t += v;
-		}
-	}
-	members.sort_by(|a, b| b.avg.total_cmp(&a.avg));
-	Ok((
-		months,
-		GroupOut {
-			name: group.name.clone(),
-			total,
-			members,
-			no_data,
-		},
-	))
-}
 /// Every `*.nix` directly under `dir`, in file-stem order. A file is itself, so one axis of the
 /// product can be named on the command line while the other stays a directory.
 pub fn files(path: &Path) -> Result<Vec<PathBuf>> {
@@ -445,34 +208,9 @@ pub fn files(path: &Path) -> Result<Vec<PathBuf>> {
 	Ok(out)
 }
 
-/// The stem, which is half a study's name and the whole of what a picker shows.
+/// The stem: a location's slug, a country base's country.
 pub fn stem(p: &Path) -> &str {
 	p.file_stem().and_then(|s| s.to_str()).expect("a study path is UTF-8 with a stem")
-}
-
-/// One of an axis, by its label, for a one-artifact subcommand: through `fzf` unless there is only
-/// one, so a scripted run that names one never opens a picker. `serve` does not come here — the page
-/// it serves has a picker of its own, and two pickers over one axis is one too many.
-pub fn pick(labels: &[&str], what: &str) -> Result<usize> {
-	ensure!(!labels.is_empty(), "no {what} to pick from");
-	if labels.len() == 1 {
-		return Ok(0);
-	}
-	let mut fzf = std::process::Command::new("fzf")
-		.arg("--prompt")
-		.arg(format!("{what}> "))
-		.stdin(std::process::Stdio::piped())
-		.stdout(std::process::Stdio::piped())
-		.spawn()
-		.wrap_err("spawning `fzf` — choosing among several needs it on PATH")?;
-	let mut sink = fzf.stdin.take().expect("stdin is piped");
-	std::io::Write::write_all(&mut sink, labels.join("\n").as_bytes())?;
-	drop(sink);
-	let out = fzf.wait_with_output()?;
-
-	let picked = std::str::from_utf8(&out.stdout)?.trim();
-	ensure!(!picked.is_empty(), "no {what} picked");
-	labels.iter().position(|o| *o == picked).ok_or_else(|| eyre::eyre!("fzf returned {picked:?}, which is no {what}"))
 }
 
 /// What an area's attrset is built from: a location file, which carries its own frame and premises,
@@ -491,13 +229,10 @@ pub fn location_area(location: &Path) -> Result<Area> {
 	eval(&format!("let l = import {}; in l.area // {{ slug = \"{slug}\"; country = l.country; }}", location.display()))
 }
 
-/// A trade applied to an area, and the category's words on top. The trade file is a function of the
-/// area's attrset, which is what lets the frame and the statistics office behind it be stated once
-/// per area rather than once per area and trade.
-///
-/// No category is the identity of that application: the area's own attrset is already a study, and
-/// it is the one that costs nothing to build.
-pub fn load(def: &Definition, base: Base, trades: &Path) -> Result<Study> {
+/// A category applied to an area: the base's attrset with the area on top, then the category's
+/// demand columns and layers after the base's. No category is the identity of that application: the
+/// area's own attrset is already a study, and it is the one that costs nothing to build.
+pub fn load(def: &Definition, base: Base) -> Result<Study> {
 	def.check()?;
 	let (base_expr, candidates) = match base {
 		Base::Location(p) => (abs(p)?, ""),
@@ -505,25 +240,8 @@ pub fn load(def: &Definition, base: Base, trades: &Path) -> Result<Study> {
 	};
 	// a Nix string of the JSON: `\`, `"` and the `$` of an interpolation escaped
 	let area = serde_json::to_string(&def.area)?.replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$");
-	let loc = format!("(import {}) // {{ area = builtins.fromJSON \"{area}\";{candidates} }}", base_expr.display());
-	let expr = match &def.category {
-		Some(c) => {
-			let trade = trades.join(format!("{}.nix", c.study));
-			ensure!(
-				trade.is_file(),
-				"category {}·{} is studied by {:?}, and {} holds no such trade",
-				c.trade,
-				c.country,
-				c.study,
-				trades.display()
-			);
-			format!("import {} ({loc})", abs(&trade)?.display())
-		}
-		None => loc,
-	};
-	let mut study: Study = eval(&expr)?;
+	let mut study: Study = eval(&format!("(import {}) // {{ area = builtins.fromJSON \"{area}\";{candidates} }}", base_expr.display()))?;
 	study.name = def.name();
-	ensure!(study.area == def.area, "{}: the trade handed back an area other than the one it was given", study.name);
 	ensure!(
 		study.country == def.area.country(),
 		"{}: {} is a base for {}, not {}",
@@ -535,18 +253,9 @@ pub fn load(def: &Definition, base: Base, trades: &Path) -> Result<Study> {
 	if study.layers.is_empty() {
 		bail!("{} declares no [[layer]]", study.name);
 	}
-	if let Some(c) = &def.category {
-		let poi = study.poi.as_mut().ok_or_else(|| eyre::eyre!("{}: trade {:?} declares no `poi`", study.name, c.study))?;
-		let first = poi.tiers.first_mut().ok_or_else(|| eyre::eyre!("{}: trade {:?} declares no [[poi.tier]]", study.name, c.study))?;
-		ensure!(
-			first.spec.types.is_empty(),
-			"{}: trade {:?} types its first tier, which is the category's primary Google category to say",
-			study.name,
-			c.study
-		);
-		// the Places type of the same name, which Places returns only for the categories its own taxonomy has
-		first.spec.types = vec![c.google_primary.id.strip_prefix("gcid:").expect("checked by `Definition::check`").to_owned()];
-		poi.queries = std::iter::once(&c.google_primary).chain(&c.google_additional).map(|g| g.name.clone()).collect();
+	if let Some(d) = def.category.as_ref().and_then(|c| c.demand.as_ref()) {
+		study.columns.extend(d.columns.iter().cloned());
+		study.layers.extend(d.layers.iter().cloned());
 	}
 	study.category = def.category.clone();
 	Ok(study)
@@ -562,7 +271,9 @@ pub fn stats(p: &Payload) -> IndexMap<String, String> {
 	if let Some(t) = &p.trade {
 		let mut w: Vec<f64> = t.pois.iter().map(|q| q.w).collect();
 		w.sort_by(f64::total_cmp);
-		m.insert("demand_total".to_owned(), format!("{:.1}", sum(&t.demand)));
+		if let Some(d) = &t.demand {
+			m.insert("demand_total".to_owned(), format!("{:.1}", sum(&d.values)));
+		}
 		m.insert("competitors".to_owned(), t.pois.len().to_string());
 		m.insert(
 			"competitor_w".to_owned(),
@@ -577,25 +288,101 @@ pub fn stats(p: &Payload) -> IndexMap<String, String> {
 	}
 	m
 }
-pub fn search_stats(p: &SearchPayload) -> IndexMap<String, String> {
-	let mut m = IndexMap::from([
-		("place".to_owned(), p.place.clone()),
-		("months".to_owned(), format!("{}..{}", p.months[0], p.months[p.months.len() - 1])),
-	]);
-	for g in &p.groups {
-		let avg = g.total.iter().sum::<u64>() as f64 / g.total.len() as f64;
-		m.insert(
-			format!("{}_per_month", g.name),
-			format!("{avg:.0} over {} keywords, {} without data", g.members.len(), g.no_data.len()),
-		);
-	}
-	m
+
+/// The billed half, over the inventory held.
+fn billed(c: &Category, cells: &Cells, place: &[String], inv: poi::Inventory, radius_m: f64, work: &Work) -> Result<payload::Trade> {
+	let model = Rank::try_new(feats(place, &inv.pois)?, rank::COEF)?;
+	let terms = terms(c);
+
+	// a study nobody has probed carries no nodes, and the map offers no observed coverage layer;
+	// neither does one with no demand to place them by
+	let nodes = match &cells.demand {
+		Some(d) => at(&nodes(cells, d)?),
+		None => Vec::new(),
+	};
+	let probed = probe::cached(work, &probe::plan(&nodes, &texts(&terms), radius_m))?;
+	let seen = gmaps_optimal_placement_rank::observed(&inv.pois, &nodes, &probed, &terms);
+	let nodes = match probed.is_empty() {
+		true => Vec::new(),
+		false => nodes,
+	};
+
+	let kept: std::collections::HashSet<&str> = inv.pois.iter().map(|p| p.id.as_str()).collect();
+	let mut queries: Vec<payload::QueryOut> = poi::queries(c)?
+		.into_iter()
+		.map(|(q, _)| {
+			let hit: std::collections::HashSet<&str> = inv
+				.obs
+				.iter()
+				.filter(|o| o.term == q)
+				.flat_map(|o| o.ids.iter().map(String::as_str))
+				.filter(|id| kept.contains(id))
+				.collect();
+			payload::QueryOut { text: q, hits: hit.len() }
+		})
+		.collect();
+	queries.sort_by(|a, b| b.hits.cmp(&a.hits));
+
+	let mut pois: Vec<PoiOut> = inv
+		.pois
+		.into_iter()
+		.zip(seen)
+		.map(|(p, seen)| {
+			let w = model.strength(&Biz::from(&p), &terms);
+			PoiOut {
+				poi: p,
+				w,
+				seen: match nodes.is_empty() {
+					true => Vec::new(),
+					false => seen,
+				},
+			}
+		})
+		.collect();
+	let tiers = poi::tiers(c)?;
+	normalise(&mut pois, &tiers)?;
+	ensure!(
+		pois.iter().any(|p| p.poi.tier == tiers[0].0),
+		"no competitor came back from {:?}'s own searches, which is the scale every other tier is read against",
+		tiers[0].0
+	);
+	Ok(payload::Trade {
+		lambda_m: rank::LAMBDA_M,
+		demand: c.demand.as_ref().map(|d| payload::Demand {
+			note: d.expr.clone(),
+			values: round(cells.demand.clone().expect("evaluated off the same category"), 3),
+		}),
+		tiers: tiers.into_iter().map(|(name, weight)| TierOut { name, weight }).collect(),
+		terms: terms.into_iter().map(|(text, weight)| payload::TermOut { text, weight }).collect(),
+		unweighted: c.keywords.iter().filter(|k| k.weight.is_none()).map(|k| k.text.clone()).collect(),
+		queries,
+		nodes,
+		pois,
+		searches: inv.calls,
+	})
 }
-/// The category's keywords, split by whether they weigh anything.
-pub struct Terms {
-	pub weighted: Vec<(String, f64)>,
-	/// No volume data, or nobody searched it.
-	pub unweighted: Vec<String>,
+
+/// The category's keywords that weigh something: what a competitor is scored on and the probe asks.
+fn terms(c: &Category) -> Vec<(String, f64)> {
+	c.keywords.iter().filter_map(|k| Some((k.text.clone(), k.weight?))).collect()
+}
+
+fn texts(terms: &[(String, f64)]) -> Vec<String> {
+	terms.iter().map(|(t, _)| t.clone()).collect()
+}
+
+/// Equal-demand strata over the cells, where the probe stands.
+fn nodes(cells: &Cells, demand: &[f64]) -> Result<Vec<rank::Node>> {
+	let at: Vec<[f64; 2]> = cells
+		.grid
+		.cells
+		.iter()
+		.map(|c| {
+			let (lon, lat) = c.ring.iter().fold((0., 0.), |(x, y), p| (x + p[0] / 4., y + p[1] / 4.));
+			[lat, lon]
+		})
+		.collect();
+	rank::nodes(&at, demand, NODES)
 }
 fn eval<T: serde::de::DeserializeOwned>(expr: &str) -> Result<T> {
 	// `--impure` for the absolute paths: pure evaluation only admits a path it was handed as the root
@@ -628,16 +415,16 @@ fn feats(places: &[String], pois: &[payload::Poi]) -> Result<Feats> {
 /// multiplies by the tier weight: a fitted strength that has learned a wash ranks below a detailer
 /// would otherwise be discounted twice, and the tier slider would stop being the only cross-tier
 /// statement in the study.
-fn normalise(pois: &mut [PoiOut], tiers: &[gmaps_optimal_placement_sources::poi::Tier]) -> Result<()> {
-	for t in tiers {
-		let mut w: Vec<f64> = pois.iter().filter(|p| p.poi.tier == t.name).map(|p| p.w).collect();
+fn normalise(pois: &mut [PoiOut], tiers: &[(String, f64)]) -> Result<()> {
+	for (name, _) in tiers {
+		let mut w: Vec<f64> = pois.iter().filter(|p| p.poi.tier == *name).map(|p| p.w).collect();
 		if w.is_empty() {
 			continue;
 		}
 		w.sort_by(f64::total_cmp);
 		let med = w[w.len() / 2];
-		ensure!(med > 0., "tier {:?} has a median strength of {med}, so it cannot be normalised", t.name);
-		for p in pois.iter_mut().filter(|p| p.poi.tier == t.name) {
+		ensure!(med > 0., "tier {name:?} has a median strength of {med}, so it cannot be normalised");
+		for p in pois.iter_mut().filter(|p| p.poi.tier == *name) {
 			p.w = round1(p.w / med, 4);
 		}
 	}

@@ -6,10 +6,14 @@ use std::path::Path;
 use gmaps_optimal_placement_core::grid::Bbox;
 use gmaps_optimal_placement_sources::{
 	Frame, Work,
-	poi::{self, PoiConfig, SEARCH_TEXT, Tile, Tiling},
+	poi::{self, SEARCH_TEXT, Tile, Tiling},
 	work::{Age, QueriesCache},
 };
-use sa_core::{gbp::Country, geo::LatLng, placement::Area};
+use sa_core::{
+	gbp::Country,
+	geo::LatLng,
+	placement::{Area, Category, Excluded, Gcid, Keyword},
+};
 use sha2::{Digest, Sha256};
 
 const ZOOM: u32 = 12;
@@ -47,12 +51,22 @@ fn an_overlapping_area_pays_only_for_new_ground() {
 	if dir.exists() {
 		std::fs::remove_dir_all(&dir).unwrap(); // a killed run's
 	}
-	let mut cfg: PoiConfig = serde_json::from_value(serde_json::json!({
-		"source": "google_places",
-		"tier": [{"name": "plumber", "weight": 1.0, "match": "plomb"}],
-	}))
-	.unwrap();
-	cfg.queries = vec!["plombier".into()];
+	let cfg = Category {
+		trade: 1,
+		name: "Plumbing".into(),
+		country: Country::FR,
+		primary: Gcid {
+			id: "gcid:plumber".into(),
+			name: "plombier".into(),
+		},
+		additional: Vec::new(),
+		keywords: vec![Keyword {
+			text: "plombier".into(),
+			weight: Some(1.),
+		}],
+		excluded: Excluded::default(),
+		demand: None,
+	};
 	let work = Work::at(&dir, QueriesCache::Local).policy(Age::default(), Tiling { zoom: ZOOM, depth: 3 });
 
 	let (first, second) = (circle("a", 45.77, 3.08), circle("b", 45.77, 3.16));

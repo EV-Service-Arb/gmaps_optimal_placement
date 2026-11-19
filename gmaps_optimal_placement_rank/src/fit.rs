@@ -21,7 +21,7 @@ pub struct Fit {
 }
 impl Fit {
 	/// Each coefficient, and what the likelihood loses when that feature is refitted out.
-	pub fn stats(&self, lambda_m: &[f64]) -> IndexMap<String, String> {
+	pub fn stats(&self) -> IndexMap<String, String> {
 		let mut m = IndexMap::from([
 			("orderings".to_owned(), self.obs.len().to_string()),
 			(
@@ -40,14 +40,7 @@ impl Fit {
 			let (_, without) = adam(&self.obs, on);
 			m.insert(NAMES[i].to_owned(), format!("{:+.4}   Δnll if dropped {:+.1}", self.coef[i], without - self.nll));
 		}
-		m.insert(
-			"implied_lambda_m".to_owned(),
-			format!(
-				"{:.0} (studies say {})",
-				-1000. / self.coef[DIST],
-				lambda_m.iter().map(|l| format!("{l:.0}")).collect::<Vec<_>>().join(", ")
-			),
-		);
+		m.insert("implied_lambda_m".to_owned(), format!("{:.0} (linked: {:.0})", -1000. / self.coef[DIST], rank::LAMBDA_M));
 		m.insert(
 			"reach_km".to_owned(),
 			match self.reach.0 <= self.reach.1 {

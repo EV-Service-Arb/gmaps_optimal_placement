@@ -25,14 +25,18 @@ pub const NAME: usize = 2;
 pub const PLACE: usize = 3;
 pub const DIST: usize = 4;
 
-/// `gmaps_optimal_placement fit examples/trades examples/locations`, pooled over both Clermont pairings: 200 orderings,
-/// of which the 96 the probe asked from a node are the only ones carrying distance. Regenerate, do not edit.
+/// `gmaps_optimal_placement fit`, pooled over both Clermont pairings: 200 orderings, of which the 96
+/// the probe asked from a node are the only ones carrying distance. Regenerate, do not edit.
 pub const COEF: [f64; N] = [0.4536, 1.4674, 1.7023, -0.3212, -0.2838];
-
+/// The catchment the fitted distance term implies: `exp(COEF[DIST]·d_km) = exp(−d/λ)`, the decay
+/// `model::pressure` applies.
+pub const LAMBDA_M: f64 = -1000. / COEF[DIST];
 /// Only the top few slots are a decision; nobody's choice turns on rank 18 against 19. The
 /// denominator still runs over the whole returned set — the losers are what identify the
 /// coefficients.
 pub const K: usize = 5;
+
+const _: () = assert!(COEF[DIST] < 0., "a fit whose distance term is not negative is refused by `Fit::check`");
 /// Reviews of prior mass in the rating shrinkage. A shop with this many reviews sits halfway
 /// between its own rating and the area's.
 const SHRINK: f64 = 20.;
@@ -186,7 +190,7 @@ pub struct Node {
 /// reaches this function, and none may.
 pub fn nodes(at: &[[f64; 2]], demand: &[f64], n: usize) -> Result<Vec<Node>> {
 	ensure!(at.len() == demand.len(), "{} cells against {} demand values", at.len(), demand.len());
-	ensure!(n.is_power_of_two(), "rank.nodes is {n}, which is not a power of two");
+	ensure!(n.is_power_of_two(), "{n} strata is not a power of two");
 	ensure!(at.len() >= n, "{} cells cannot carry {n} equal-demand strata", at.len());
 	ensure!(demand.iter().all(|d| d.is_finite() && *d >= 0.), "demand carries a negative or non-finite value");
 	let mut idx: Vec<usize> = (0..at.len()).filter(|&i| demand[i] > 0.).collect();

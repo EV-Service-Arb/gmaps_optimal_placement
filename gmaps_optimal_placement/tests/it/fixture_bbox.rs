@@ -10,7 +10,7 @@ use gmaps_optimal_placement_sources::{Work, work::QueriesCache};
 use sa_core::{
 	gbp::Country,
 	geo::Viewport,
-	placement::{Area, Category, Definition, Gcid},
+	placement::{Area, Category, Definition, Demand, Excluded, Gcid, Keyword},
 };
 
 fn root() -> &'static Path {
@@ -33,21 +33,36 @@ fn narrowed(category: Option<Category>) -> Study {
 		},
 		category,
 	};
-	gmaps_optimal_placement::load(&def, Base::Location(&root().join("examples/locations/Clermont-Ferrand.nix")), &root().join("examples/trades")).unwrap()
+	gmaps_optimal_placement::load(&def, Base::Location(&root().join("examples/locations/Clermont-Ferrand.nix"))).unwrap()
 }
 
 #[test]
 fn clermont_centre() {
 	let study = narrowed(Some(Category {
 		trade: 3,
+		name: "car_detailing".into(),
 		country: Country::FR,
-		study: "car_detailing".into(),
-		keywords: vec!["lavage auto".into(), "nettoyage voiture".into()],
-		google_primary: Gcid {
+		primary: Gcid {
 			id: "gcid:car_detailing_service".into(),
 			name: "Service d'esthétique automobile".into(),
 		},
-		google_additional: Vec::new(),
+		additional: Vec::new(),
+		keywords: vec![
+			Keyword {
+				text: "service d'esthétique automobile".into(),
+				weight: Some(1.),
+			},
+			Keyword {
+				text: "lavage auto".into(),
+				weight: Some(0.6),
+			},
+		],
+		excluded: Excluded::default(),
+		demand: Some(Demand {
+			expr: "cars * (max(nv, 4000) / 22000) ^ 1.6".into(),
+			columns: Vec::new(),
+			layers: Vec::new(),
+		}),
 	}));
 	assert_eq!(study.name, "car_detailing·FR·clermont-ferrand", "the study names itself off its trade, country and area");
 	let c = study.cells(&Work::at(v_utils::xdg_cache_dir!(""), QueriesCache::Local)).unwrap();
@@ -56,7 +71,7 @@ fn clermont_centre() {
 		format!("cells           {}", c.grid.len()),
 		format!("imputed         {}", c.grid.cells.iter().filter(|x| x.imputed).count()),
 		format!("columns         {}", c.grid.columns.len()),
-		format!("demand total    {:.1}", sum(c.demand.as_ref().expect("a trade writes a demand model"))),
+		format!("demand total    {:.1}", sum(c.demand.as_ref().expect("the category writes a demand"))),
 	];
 	lines.extend(c.layers.iter().map(|l| format!("{:<15} {:.1}", l.name, sum(&l.values))));
 	insta::assert_snapshot!(lines.join("\n"), @"

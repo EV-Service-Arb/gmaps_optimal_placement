@@ -37,8 +37,7 @@ pub type Built = Arc<dyn Fn(&Definition) -> eyre::Result<String> + Send + Sync>;
 /// A definition, to the Places searches it lacks: none fetched before `since` counts.
 pub type Asked = Arc<dyn Fn(&Definition, SystemTime) -> eyre::Result<Vec<Ask>> + Send + Sync>;
 
-/// Whether a definition holds — its trade is served, its country has a base, the trade takes it —
-/// without building it.
+/// Whether a definition holds — its country has a base, and the base takes it — without building it.
 pub type Holds = Arc<dyn Fn(&Definition) -> eyre::Result<()> + Send + Sync>;
 
 type Slot = Arc<tokio::sync::Mutex<Option<Bytes>>>;
@@ -88,8 +87,8 @@ impl FromRef<Studies> for Verifier {
 pub enum Code {
 	/// The definition is not one the conductor could have handed in.
 	BadRequest,
-	/// The definition holds, but nothing served here studies it: no such trade, no base for its
-	/// country, or the trade refuses it.
+	/// The definition holds, but nothing served here studies it: no base for its country, or the
+	/// base refuses it.
 	Unstudied,
 	Internal,
 }
@@ -148,15 +147,14 @@ pub fn serve(addr: SocketAddr, studies: Studies) -> eyre::Result<()> {
 	})
 }
 
-/// What a category may be studied by, and where: the trade files and the country bases served.
-async fn trades(State(s): State<Studies>) -> Json<Catalog> {
+/// The countries a category may be studied in: those with a base served.
+async fn catalog(State(s): State<Studies>) -> Json<Catalog> {
 	Json(Catalog::clone(&s.catalog))
 }
 
 /// A study's payload.
 ///
-/// Refused unless the definition holds: its trade is served, its country has a base, the trade
-/// takes it. Built on the first ask and kept, out of what is held: a study whose answers are not
+/// Refused unless the definition holds: its country has a base, and the base takes it. Built on the first ask and kept, out of what is held: a study whose answers are not
 /// all there opens on what is, and its notice says how many it lacks.
 async fn study(State(s): State<Studies>, Body(def): Body<Definition>) -> Answer<Studied> {
 	studied(&s, def, false).await.map(Studied)
@@ -251,7 +249,7 @@ fn began(resume: &Path) -> std::io::Result<SystemTime> {
 fn routes() -> Vec<Route<Studies, Gate>> {
 	let (read, spend) = (Gate::USER.needs(Study::Read), Gate::USER.needs(Study::Spend));
 	vec![
-		Route::new(Method::GET, "/trades.json", read, trades),
+		Route::new(Method::GET, "/catalog.json", read, catalog),
 		Route::new(Method::POST, "/studies", read, study),
 		Route::new(Method::POST, "/studies/asks", spend, asks),
 		Route::new(Method::POST, "/studies/pull", spend, pull),

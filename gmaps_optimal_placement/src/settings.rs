@@ -1,7 +1,7 @@
 //! What the tool does, rather than what a study is about. A study document is the two axes of the
 //! product and nothing else; anything that would be the same for every study — how old an answer may
 //! get before the map says so, how a frame is tiled — lives here.
-use gmaps_optimal_placement_sources::{poi::Tiling, searches, work::Age as Ages};
+use gmaps_optimal_placement_sources::{poi::Tiling, work::Age as Ages};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smart_default::SmartDefault;
@@ -16,54 +16,10 @@ pub struct AppConfig {
 	pub age: Age,
 	#[settings(flatten)]
 	pub sweep: Sweep,
-	/// accounting's google.nix `accounts`, imported whole: the Keyword Planner's credentials are one of them.
-	#[serde(default)]
-	#[settings(skip)]
-	pub google: Vec<Account>,
 	/// Where what is bought is cached for everyone: the conductor's `<origin>/api/queries_cache`,
 	/// where it buys a study's Places searches, so no machine buys the same query twice; or `local`,
 	/// this machine's work dir alone, which holds no search the conductor did not buy.
 	pub queries_cache: String,
-}
-
-#[derive(Clone, ConfigJsonSchema, Debug, MyConfigPrimitives)]
-pub struct Account {
-	pub name: String,
-	pub provides: Provides,
-}
-
-#[derive(Clone, ConfigJsonSchema, Debug, MyConfigPrimitives)]
-pub struct Provides {
-	/// The map's Maps JS.
-	pub browser: Option<Key>,
-	/// Keyword Planner.
-	pub ads: Option<Ads>,
-}
-
-#[derive(Clone, ConfigJsonSchema, Debug, MyConfigPrimitives)]
-pub struct Key {
-	pub key: String,
-}
-
-#[derive(Clone, ConfigJsonSchema, Debug, MyConfigPrimitives)]
-pub struct Ads {
-	pub developer_token: String,
-	pub client_id: String,
-	pub client_secret: String,
-	pub refresh_token: String,
-	pub customer_id: String,
-}
-
-impl From<&Ads> for searches::Ads {
-	fn from(a: &Ads) -> Self {
-		Self {
-			developer_token: a.developer_token.clone(),
-			client_id: a.client_id.clone(),
-			client_secret: a.client_secret.clone(),
-			refresh_token: a.refresh_token.clone(),
-			customer_id: a.customer_id.clone(),
-		}
-	}
 }
 
 /// How the competitor sweep tiles the ground. Every answer is cached under the exact quadtree tile it

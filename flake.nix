@@ -42,7 +42,7 @@
         };
         combined = v_flakes.utils.combine { inherit rust; modules = [ rs github readme ]; };
 
-        # `conductor --port <p> [-t <trades>] [--countries <dir>]` — the conductor's peer: the studies
+        # `conductor --port <p> [--countries <dir>]` — the conductor's peer: the studies
         # behind its assertion. Run from this checkout; needs PANEL_ASSERTION_KEYS. Buys nothing: the
         # conductor buys what a pull lacks.
         conductor = pkgs.writeShellApplication {
@@ -54,7 +54,7 @@
           '';
         };
         # the map is the conductor's: its dev stack over this checkout, in a Chrome window of its own;
-        # closing the window stops the run. Buys nothing without --spend-real-quota-i-am-certain.
+        # closing the window stops the run.
         study = pkgs.writeShellApplication {
           name = "study";
           runtimeInputs = with pkgs; [ git ];
@@ -63,19 +63,6 @@
             [ -d "$conductor" ] || { echo "no site_conductor checkout beside this one, at $conductor" >&2; exit 1; }
             cd "$conductor"
             exec nix run .#dev -- --fixed "$@"
-          '';
-        };
-        # `searches [-c <category>] [-l <locations>]` — build the volume chart, serve it, open it.
-        searches = pkgs.writeShellApplication {
-          name = "open-searches";
-          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold python3 psmisc xdg-utils nix fzf ];
-          text = ''
-            cd "$(git rev-parse --show-toplevel)"
-            out="''${XDG_CACHE_HOME:-$HOME/.cache}/gmaps_optimal_placement/out"
-            cargo run -p gmaps_optimal_placement -- searches "$@" --out "$out/searches.html"
-            fuser -k ${toString port}/tcp 2>/dev/null || true
-            xdg-open "http://localhost:${toString port}/searches.html" &
-            cd "$out" && python3 -m http.server ${toString port}
           '';
         };
 
@@ -97,21 +84,17 @@
           name = "help";
           text = ''
             cat <<'EOF'
-            nix run .#searches -- [-c <category>] [-l <locations>]  open the monthly search-volume chart for
-                                            the query groups of one pairing. each axis is picked through fzf
             nix run .#misc <country> <tally>  which towns in a country to write a study about at all:
                                             pool | building | parcel per --per column, --floor to skip hamlets
-            nix run .#conductor -- --port <p> [-t ..] [--countries ..]  serve the conductor the studies it
+            nix run .#conductor -- --port <p> [--countries ..]  serve the conductor the studies it
                                             hands in, behind its assertion (PANEL_ASSERTION_KEYS); only a pull spends
             nix run                         the map, in a window of its own: site_conductor's dev stack over
                                             this checkout; closing the window stops it. buys nothing
             nix run .#help                  this
             cached archives and API responses live under $XDG_CACHE_HOME/gmaps_optimal_placement
-            a study is a category over an area. the conductor's category names the trade that
-            studies it; examples/trades/<t>.nix is a function of the area's attrset;
-            examples/locations/<l>.nix carries area, candidate and searches.place over
-            examples/countries/<CC>.nix. together they evaluate to what `gmaps_optimal_placement schema`
-            describes.
+            a study is the conductor's category over an area. examples/locations/<l>.nix carries
+            area and candidate over examples/countries/<CC>.nix; with the category's demand columns
+            and layers on top they evaluate to what `gmaps_optimal_placement schema` describes.
             EOF
           '';
         };
@@ -121,7 +104,6 @@
           default = { type = "app"; program = pkgs.lib.getExe study; };
           study = { type = "app"; program = pkgs.lib.getExe study; };
           conductor = { type = "app"; program = pkgs.lib.getExe conductor; };
-          searches = { type = "app"; program = pkgs.lib.getExe searches; };
           misc = { type = "app"; program = pkgs.lib.getExe misc; };
           help = { type = "app"; program = pkgs.lib.getExe help; };
         };

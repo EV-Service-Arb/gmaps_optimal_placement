@@ -49,7 +49,6 @@ indexmap = { version = "2", features = ["serde"] }
 insta = "1"
 jiff = "0.2"
 proj4rs = "0.1"
-regex = "1"
 # the panel's assertion and the permission catalog
 sa_auth = { git = "https://github.com/EV-Service-Arb/site_conductor", branch = "main" }
 # the answers store's wire and its signature

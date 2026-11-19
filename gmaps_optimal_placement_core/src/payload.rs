@@ -33,22 +33,20 @@ pub struct Notice {
 	pub missing: Option<usize>,
 }
 
-/// The half of a payload a trade decides, and the whole of the half that is billed. One `Option`
+/// The half of a payload a category decides, and the whole of the half that is billed. One `Option`
 /// rather than eight, because a demand surface with no competitors under it is not a state this
 /// tool has anything to say about.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct Trade {
-	/// Catchment decay, metres. The map's opening slider position.
+	/// Catchment decay, metres: [`crate::rank::LAMBDA_M`]. The map's opening slider position.
 	pub lambda_m: f64,
-	/// The demand expression itself — the map has no other honest caption for it.
-	pub demand_note: String,
-	pub demand: Vec<f64>,
+	/// None: the category says nothing about demand, and nothing that reads it is offered.
+	pub demand: Option<Demand>,
 	pub tiers: Vec<TierOut>,
-	/// The category's keywords and what each is worth: its search volume over the largest. `w` is
-	/// already scored against them; the what-if needs them because the business it scores does not
-	/// exist yet.
+	/// The category's scored keywords, each weighed against its primary's name at 1. `w` is already
+	/// scored against them; the what-if needs them because the business it scores does not exist yet.
 	pub terms: Vec<TermOut>,
-	/// Keywords the volume provider has no data for, so they weigh nothing and are left out.
+	/// The category's keywords it searches on and does not score.
 	pub unweighted: Vec<String>,
 	/// The inventory sweep's queries, most competitors on this map first.
 	pub queries: Vec<QueryOut>,
@@ -58,6 +56,13 @@ pub struct Trade {
 	pub pois: Vec<PoiOut>,
 	/// Places searches the inventory sweep was answered with — what re-asking it buys again.
 	pub searches: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub struct Demand {
+	/// The expression itself — the map has no other honest caption for it.
+	pub note: String,
+	pub values: Vec<f64>,
 }
 
 #[cfg_attr(feature = "ts", derive(tsify::Tsify))]

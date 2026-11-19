@@ -1,24 +1,23 @@
 # gmaps_optimal_placement
 
 Where should a service business open. An area and the country base under it describe the ground
-and the statistical grid behind it; a trade, applied to that area, describes how demand follows from
-whatever columns that grid publishes and how to read a competitor's name; the conductor's category —
-a trade in a country — says what the trade is called on Google and what its customers type. The
-tool builds the payload that answers it; the conductor's map draws it.
+and the statistical grid behind it; the conductor's category — a trade set up in a country —
+describes everything else: the Google categories and keywords its competitors are found by, what
+each keyword is worth, what is never a competitor, and how demand follows from whatever columns the
+grid publishes. The tool builds the payload that answers it; the conductor's map draws it.
 
-The question is the input. Retargeting an area, a country, a trade or a category is an edit to one
-of those documents, never to the code.
+The question is the input. Retargeting an area, a country or a category is an edit to one of those
+documents, never to the code.
 
 ```
-  category (conductor) · trade.nix (country.nix // area) ─── the pinned interface
+  category (conductor) · country.nix // area ─── the pinned interface
                    │
    ┌───────────────┴───────────────────────────────────────────┐
    │ gmaps_optimal_placement_sources        network, cache     │
    │   GridSource ─ INSEE Filosofi 200 m                       │
    │               GEOSTAT 1 km                                │
-   │   PoiSource  ─ the conductor's queries cache (Places)     │
+   │   poi        ─ the conductor's queries cache (Places)     │
    │   probe      ─ the same, asked from a node                │
-   │   SearchVolume ─ Google Ads · DataForSEO                  │
    └──────┬────────────────────────────────────┬───────────────┘
           │                                    │  the grid rolled up by commune
           │              ┌─────────────────────┴─────────────────────┐
@@ -26,7 +25,7 @@ of those documents, never to the code.
           │              │   Country · Tally — what a cadastre draws,│
           │              │   per commune, ÷ any column, one map      │
           │              └───────────────────────────────────────────┘
-          │  cells + named columns, POIs + tiers, orderings, keyword series
+          │  cells + named columns, POIs + tiers, orderings
    ┌──────┴────────────────────────────────────────────────────┐
    │ gmaps_optimal_placement_core     no I/O, wasm-safe        │
    │   Reproject · CellId · Grid · Expr                        │
@@ -37,7 +36,7 @@ of those documents, never to the code.
            │  every expression                     │  every slider
    ┌───────┴──────────────────────────┐   ┌────────┴──────────────────────┐
    │ gmaps_optimal_placement          │   │ gmaps_optimal_placement_web   │
-   │   CLI, study, settings, HTML     │──▶│   the conductor's API:        │
+   │   CLI, study, settings           │──▶│   the conductor's API:        │
    │   categories × areas             │   │   Definition in, Payload out  │
    └───────┬──────────────────────────┘   └────────┬──────────────────────┘
            │  the orderings on disk                 ▼
@@ -49,26 +48,23 @@ of those documents, never to the code.
 ```
 
 A study is an `sa_core::placement::Definition`: an area (a city's viewport or a circle, and a margin, as
-the conductor keeps it) and a category, each named as the conductor names it. What the category
-says drives the billed half — its Google categories are the sweep's queries and its primary is the
-first tier's Places type; its keywords are what every competitor is scored on, each weighed by its
-search volume over the country. What only an expert can write — the demand model, the tier
-vocabulary, λ — is the trade file its `study` names. A definition is addressed by its SHA-256,
-because an area or a category can be redefined under the same name.
+the conductor keeps it) and a category, each named as the conductor names it. The category drives
+the billed half. The sweep searches its primary Google category's name and each of its keywords,
+then each additional category's name. A competitor's tier is the first of those whose search found
+it — the primary's, then each additional in order — unless Excluded drops it first. Its weighted
+keywords are what every competitor is scored on, each relative to the primary's name. Its demand is
+what the grid means to it. A definition is addressed by its SHA-256, because an area or a category
+can be redefined under the same name.
 
-The category axis carries one extra point: none. A trade file is a function of an area, so no
-category is that function's identity — the area's own attrset is already a study. `Payload::trade`
-is the one `Option` that says so, and everything behind it is everything that is billed. A city can
-therefore be looked at before any of the Places quota goes on it.
+The category axis carries one extra point: none. The area's own base is already a study, the
+identity of the pairing. `Payload::trade` is the one `Option` that says so, and everything behind it
+is everything that is billed. A city can therefore be looked at before any of the Places quota goes
+on it.
 
 The CLI's commands other than `serve` hold two axes, the conductor's categories and `--locations`
 (files): a category is the latest the conductor handed in (the definitions under the work dir's
-`studies/`), because gop never reads the conductor, and a copy of a category kept beside the trades
-would drift from it. What a study is *called* — `<study>·<CC>·<slug>` — is the definition's.
-
-The map answers where the people are. It does not answer how many are looking for the thing, which
-is what `searches` is for: a cell can be dense, affluent and uncontested and still sit under a trade
-nobody searches for.
+`studies/`), because gop never reads the conductor, and a copy of a category kept here would drift
+from it. What a study is *called* — `<trade>·<CC>·<slug>` — is the definition's.
 
 ## The line between baked and live
 
@@ -113,7 +109,7 @@ legend's ticks move with the view.
 
 ## Behind the conductor
 
-`serve` serves no page and holds no axis: it takes `--trades` and `--countries` and builds whatever
+`serve` serves no page and holds no axis: it takes `--countries` and builds whatever
 definition the conductor hands in (`gmaps_optimal_placement_web`). Its operations are one
 `ev_lib::api` table: each row's gate is an `sa_auth::Gate` naming the permission it opens for, and a
 refusal is `{code, error}`. Every request carries the conductor's assertion for exactly its method
@@ -141,23 +137,23 @@ pull paid for is served to its retry, so a refunded failure is never bought twic
 - **No fallbacks on missing or malformed data.** A cell that will not parse is an error, never a
   zero. Imputed-versus-observed provenance survives to the map.
 - **Config defines the model; code defines the mechanism.** Anything a study would want to vary
-  belongs in the study file. Anything two studies share belongs in Rust. How Google ranks is the
-  same mechanism for a plumber and a detailer, so the reviews→prominence curve is a fitted constant
-  in `core::rank`, not an expression a study writes; what the study says is which queries it cares
-  about and what each is worth.
-- **A trade may not name an area, and an area may not name a trade.** They are the two axes of a
+  belongs in its category or its base. Anything two studies share belongs in Rust. How Google ranks
+  is the same mechanism for a plumber and a detailer, so the reviews→prominence curve and the
+  catchment its distance term implies are fitted constants in `core::rank`, and the probe's sample
+  is the tool's; what the category says is which queries it cares about and what each is worth.
+- **A category may not name an area, and an area may not name a trade.** They are the two axes of a
   product, and a quantity that needs both is a quantity neither document can state honestly: it
   belongs in Rust, derived, or in the tool's own settings. The probe's bias radius and the POI
-  sweep's tiling (`sweep.zoom`, `sweep.depth`) are there for exactly this reason. The alternative is the same knob written out per pairing, drifting apart silently.
-- **What the category says is never restated by a trade.** Its Google categories are the sweep's
-  queries and the first tier's type, its keywords the terms; a trade file that writes any of them is
-  refused.
-- **Demand is a trade's word.** `model.demand` is what a trade says the grid means to it. Without
-  one there is no demand surface, and nothing stands in for it: the layer is absent and the controls
-  that read λ, a tier weight or a demand value are disabled. Population is not demand.
+  sweep's tiling (`sweep.zoom`, `sweep.depth`) are there for exactly this reason. The alternative
+  is the same knob written out per pairing, drifting apart silently.
+- **Demand is the category's word.** Its demand is what it says the grid means to it. Without one
+  there is no demand surface, and nothing stands in for it: the demand layers are absent and what
+  reads a demand value — underserved demand, capture, the site sweep, the probe's strata — is not
+  offered; the competitors and their pressure still are. Population is not demand.
 - **A fitted quantity is refitted, never hand-edited.** `rank::COEF` is the output of
-  `gmaps_optimal_placement fit` over the orderings in the work dir. Nudging a coefficient because the map looks
-  wrong turns a measurement back into the guess it replaced.
+  `gmaps_optimal_placement fit` over the orderings in the work dir, and `rank::LAMBDA_M` what it
+  implies. Nudging a coefficient because the map looks wrong turns a measurement back into the
+  guess it replaced.
 - **A model earns the map out of sample.** `gmaps_optimal_placement strength` cross-validates every
   entrant over the same orderings, held out by the region each was asked from, and refuses the table
   if counting every competitor the same predicts Google as well. An in-sample likelihood cannot tell
@@ -165,14 +161,9 @@ pull paid for is served to its retry, so a refunded failure is never bought twic
 - **The conductor is the one center of data ingestion.** A Places search is never bought here, for
   a map or for training: the conductor buys what a pull lacks, and `fit` and `strength` read only
   what it already holds. A study placement cannot build out of that says so and opens on the rest.
-- **A Google key is a slot of a billing account, and lives in the server's environment, never in an
-  artifact.** The config's `google` is accounting's google.nix `accounts`, imported whole, so every
-  keyword volume bought shows in that account's billing export; each slot names the variable holding
-  its key.
-- **A billed answer is bought once, wherever this runs.** Places, DataForSEO and Keyword Planner
-  answers are kept in the conductor's queries cache (settings' `queries_cache`; site_conductor's
-  docs/ARCHITECTURE.md, Queries cache), claimed there while bought; the work dir under `$XDG_CACHE_HOME/gmaps_optimal_placement` mirrors
-  what it served, and a run goes on from that mirror with the cache out of reach until it needs an
+- **A billed answer is bought once, wherever this runs.** Places answers are kept in the conductor's
+  queries cache (settings' `queries_cache`; site_conductor's docs/ARCHITECTURE.md, Queries cache);
+  the work dir under `$XDG_CACHE_HOME/gmaps_optimal_placement` mirrors what it served, and a run goes on from that mirror with the cache out of reach until it needs an
   answer the mirror lacks. `local` reads the work dir alone. Bulk archives are free and cache there alone — the INSEE archive is ~87 MB.
   A 200 that is a refusal is never kept: it would answer for its request everywhere.
 - **Nothing in that cache expires.** An answer older than its kind's configured age is served anyway,
@@ -192,30 +183,14 @@ pull paid for is served to its retry, so a refunded failure is never bought twic
 
 ## Sources are an enum
 
-The set of statistical sources is closed and known at compile time, so `GridSource` and `PoiSource`
-are enums matched on, not traits implemented. Adding a country adds a variant and a row to the table
+The set of statistical sources is closed and known at compile time, so `GridSource` is an enum
+matched on, not a trait implemented. Adding a country adds a variant and a row to the table
 it matches on.
 
 What the sources disagree about is which columns exist, so a grid carries columns discovered from
 its archive rather than a struct per country. Expressions name those columns, and an expression
 naming one that does not exist fails against the source's own column list before a single POI call
 is made.
-
-## Search-volume providers are a trait
-
-The set of providers is not closed: they differ on price, geography and honesty, and a new one is a
-purchase, not a country. So `searches::SearchVolume` is a trait, one file per implementation, and
-`searches::provider` is the one `match` that knows the set — the same containment the enums give,
-without pretending the set is compile-time known.
-
-They agree on the string that names a place, because DataForSEO's `location_name` format *is*
-Google's `canonicalName`. Switching provider is a one-word study edit.
-
-Grouping is by essence, not by string: the category's keywords are the seeds, the provider expands
-them semantically, each of the trade's groups is a regex over that one expansion, and its survivors
-sum into one line. The expansion is fuzzy, so every
-member and its own series survives into the page — a sum you cannot audit is a sum you cannot argue
-with. A keyword the provider has no data for is excluded from the sum, never zero-filled.
 
 ## What a map like this cannot know
 
@@ -225,7 +200,7 @@ guess into authority. The worked examples are in `examples/`.
 
 - **Motorisation is estimated, not measured.** No 200 m source publishes households-with-a-car;
   INSEE has it only at IRIS level. `countries/FR.nix` infers it from the house/flat split
-  (`men_mais × 1.55 + men_coll × 0.85`) as a location layer, and the detailing trade's demand reads
+  (`men_mais × 1.55 + men_coll × 0.85`) as a base layer, and a detailing category's demand reads
   it. Directionally right, not a measurement.
 - **Most fine-grained cells are modelled.** ~80 % of INSEE 200 m cells have fewer than 11 fiscal
   households, so their values are imputed. The flag is carried through to the map and the "hide
@@ -233,18 +208,15 @@ guess into authority. The worked examples are in `examples/`.
 - **Residential demand only.** No traffic counts, no workplace population, no rent or premises
   availability. For a walk-in bay, passing traffic matters as much as who lives nearby.
 - **A competitor sits at its registered address**, which understates a mobile operator's reach.
-- **Tiering is name-based.** A shop whose name says nothing about what it does is tiered on what its
-  name does say.
-- **A Places *type* is not the category the map shows.** `primaryTypeDisplayName` is the Business
-  Profile category, of which there are thousands; `poi.included_type` takes a Places type, of which
-  Table A has 478, and there is no cleaning, detailing or handyman type among them. So the filter is
-  off by default, and what it costs when it is on was measured on the Clermont cache: `car_wash`
-  keeps 35 % of the tier-1 detailers, because 14 of 40 of them carry no primary type at all;
-  `service` keeps 92 % of the cleaners but filters only 23 % of the rows, so it saves almost nothing.
-  `plumber` is the case where the two line up. Turning it on is a claim that Google types this trade,
-  and the category list in the map panel is where that claim is checked.
-- **Every constant in a study is a guess with a sane magnitude**, not a fitted value. They are in
-  the study file so they can be argued with. Competitor weight is the exception: it comes out of
+- **A tier is which search found a competitor.** Places shows no Business Profile category, so a
+  shop is filed under the first of the category's searches that returned it: one that only an
+  additional category's name search surfaced counts at that category's weight, whatever it is.
+- **A Places type is not a Business Profile category.** `primaryTypeDisplayName` names the Places
+  type, of which Table A has a few hundred, with no cleaning, detailing or handyman type among them,
+  and many competitors carry none. The category list in the map panel shows it beside the tiers as
+  evidence; nothing tiers by it.
+- **Every constant in a category is a guess with a sane magnitude**, not a fitted value. They are in
+  the category so they can be argued with. Competitor weight is the exception: it comes out of
   `rank`, and the three things below are what that estimate cannot settle.
 - **Reviews cause rank and rank causes reviews.** A shop ranks well and is therefore seen, clicked
   and reviewed. The coefficient is co-movement, not causation, so the what-if reads "reviews
@@ -256,13 +228,3 @@ guess into authority. The worked examples are in `examples/`.
 - **Name relevance is observed after Google's own filter.** These results came back *because* they
   matched the query, so the variation among them is compressed and the name coefficient rests on the
   businesses that sat at the censoring boundary.
-- **City-level search volumes are bucketed and small.** Keyword Planner rounds hard (0, 10, 20, 30,
-  50, 70, 90, 110…) and an account with no campaign spend gets the coarsest treatment. For a niche
-  trade in a 150k city, expect a line in the tens that moves in steps. The shape of the year is
-  trustworthy; the level is an order of magnitude, not a count.
-- **Summing an expansion overstates, and counts events not people.** Google already merges close
-  variants — plurals, accents, misspellings — into one keyword, so members are distinct queries and
-  the sum is defensible. But two phrasings of one intent still add, and a person who searches twice
-  is two searches.
-- **Search volume is not local demand.** It excludes everyone who finds a detailer through Maps
-  without a query, through a friend, or by driving past.

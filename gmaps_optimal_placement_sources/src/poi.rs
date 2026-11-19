@@ -4,11 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use eyre::{Result, WrapErr, bail, ensure};
 use gmaps_optimal_placement_core::{grid::Bbox, payload::Poi};
 use indexmap::IndexMap;
-use regex::Regex;
-use sa_core::placement::Ask;
 pub use sa_core::placement::SEARCH_TEXT;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use sa_core::placement::{Ask, Category, primary_keyword};
 
 use crate::{
 	Frame,
@@ -79,68 +76,32 @@ impl Tile {
 		[Self { z, x, y }, Self { z, x: x + 1, y }, Self { z, x, y: y + 1 }, Self { z, x: x + 1, y: y + 1 }]
 	}
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub enum PoiSource {
-	#[serde(rename = "google_places")]
-	GooglePlaces,
-}
-
-/// A name pattern, a set of source-native categories, or both — either one hits.
-#[derive(Clone, Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct MatchSpec {
-	/// Case-insensitive regex over the display name.
-	#[serde(default, rename = "match")]
-	pub pattern: Option<String>,
-	#[serde(default)]
-	pub types: Vec<String>,
-}
-impl MatchSpec {
-	fn compile(&self) -> Result<Matcher> {
-		ensure!(self.pattern.is_some() || !self.types.is_empty(), "a match rule needs `match`, `types`, or both");
-		let pattern = self
-			.pattern
-			.as_deref()
-			.map(|p| Regex::new(&format!("(?i){p}")))
-			.transpose()
-			.wrap_err_with(|| format!("match pattern {:?}", self.pattern.as_deref().unwrap_or_default()))?;
-		Ok(Matcher { pattern, types: self.types.clone() })
+/// What the sweep asks, each with the index into [`tiers`] of the tier what it returns is filed under:
+/// the primary's name and every keyword but the one that is that name, then each additional's name.
+pub fn queries(c: &Category) -> Result<Vec<(String, usize)>> {
+	let own = primary_keyword(&c.primary)?;
+	let primary = std::iter::once(c.primary.name.clone())
+		.chain(c.keywords.iter().map(|k| k.text.clone()).filter(|k| *k != own))
+		.map(|q| (q, 0));
+	let mut out: Vec<(String, usize)> = Vec::new();
+	for (q, tier) in primary.chain(c.additional.iter().enumerate().map(|(i, a)| (a.google.name.clone(), i + 1))) {
+		match out.iter().find(|(o, _)| *o == q) {
+			None => out.push((q, tier)),
+			Some((_, t)) => ensure!(*t == tier, "{q:?} is searched for tier {t} and again for tier {tier}, so what it finds cannot be told apart"),
+		}
 	}
+	Ok(out)
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Tier {
-	pub name: String,
-	/// How much one of these counts against a new entrant, relative to a direct competitor.
-	pub weight: f64,
-	#[serde(flatten)]
-	pub spec: MatchSpec,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PoiConfig {
-	pub source: PoiSource,
-	/// The category's Google categories, by name: how the trade names itself. Never the trade
-	/// file's to write.
-	#[serde(skip)]
-	pub queries: Vec<String>,
-	/// One Places *type*, which is a coarser taxonomy than the Business Profile category the map
-	/// displays: there is no `house_cleaning_service`, and a third of the cleaning firms Google
-	/// returns carry no primary type at all. Set, it is forced — `strictTypeFiltering` — so a tile
-	/// saturates on competitors rather than on the retail the query drags in, at the price of every
-	/// competitor Google never typed. Unset is the honest default; see `docs/ARCHITECTURE.md`.
-	#[serde(default)]
-	pub included_type: Option<String>,
-	/// First match wins; anything matching none is not a competitor. `types` here hits any category
-	/// the source lists — a supermarket forecourt is typed `gas_station` and carries `car_wash`.
-	#[serde(rename = "tier")]
-	pub tiers: Vec<Tier>,
-	/// Checked before the tiers — text search drags in unrelated retail. `types` here hits only the
-	/// source's *primary* category, because the full list is noisy enough to veto real competitors:
-	/// Google tags several car washes `laundry`.
-	pub drop: Option<MatchSpec>,
+/// Each tier's name and weight: the primary's at 1, then each additional's.
+pub fn tiers(c: &Category) -> Result<Vec<(String, f64)>> {
+	let out: Vec<(String, f64)> = std::iter::once((c.primary.name.clone(), 1.))
+		.chain(c.additional.iter().map(|a| (a.google.name.clone(), a.weight)))
+		.collect();
+	for (i, (n, _)) in out.iter().enumerate() {
+		ensure!(!out[..i].iter().any(|(o, _)| o == n), "two Google categories are named {n:?}, and a tier is known by its name");
+	}
+	Ok(out)
 }
 
 /// What Places returned for one query, in the order it ranked them. Both the tiled inventory sweep
@@ -186,7 +147,7 @@ pub fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pages: usi
 		if let Some(t) = &token {
 			body["pageToken"] = serde_json::Value::String(t.clone());
 		}
-		let (res, at) = match work.cached(SEARCH_TEXT, &body)? {
+		let (res, at) = match work.cached(&body)? {
 			Some((_, at)) if work.stale(at) => return Ok((out, Some(lacking(&body, mask)?))),
 			Some(hit) => hit,
 			None => return Ok((out, Some(lacking(&body, mask)?))),
@@ -209,24 +170,23 @@ pub fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pages: usi
 
 /// The sweep, out of what the work dir and the queries cache hold. A pairing nobody ever harvested
 /// yields nothing, which is how a refit reads evidence without turning into a purchase.
-pub fn cached(cfg: &PoiConfig, frame: Frame, work: &Work) -> Result<Inventory> {
-	let PoiSource::GooglePlaces = cfg.source;
-	let drop = cfg.drop.as_ref().map(MatchSpec::compile).transpose()?;
-	let tiers: Vec<(&Tier, Matcher)> = cfg.tiers.iter().map(|t| Ok((t, t.spec.compile()?))).collect::<Result<_>>()?;
-	ensure!(!tiers.is_empty(), "at least one [[poi.tier]] is needed to say what a competitor is");
-
-	ensure!(!cfg.queries.is_empty(), "the sweep has no query: a category names at least its primary Google category");
+///
+/// A place is a competitor of the first tier whose search found it ([`queries`]), unless its name
+/// holds an excluded word or its primary type is an excluded one. Places shows no Business Profile
+/// category, so which search found a place is all that says what it is filed under.
+pub fn cached(category: &Category, frame: Frame, work: &Work) -> Result<Inventory> {
+	let tiers = tiers(category)?;
+	let queries = queries(category)?;
 	let Tiling { zoom, depth } = work.tiling();
 	let roots = Tile::covering(frame.bbox, zoom);
 	let mut found = Found {
 		calls: vec![(0, 0); depth as usize + 1],
 		..Found::default()
 	};
-	for q in &cfg.queries {
+	for (q, tier) in &queries {
 		let (before, spent) = (found.raw.len(), work.calls(Kind::Inventory));
-		let typed = cfg.included_type.as_deref();
 		for &tile in &roots {
-			descend(work, q, typed, tile, 0, &mut found).wrap_err_with(|| format!("sweeping {q:?}"))?;
+			descend(work, q, *tier, tile, 0, &mut found).wrap_err_with(|| format!("sweeping {q:?}"))?;
 		}
 		// new, not returned: the queries overlap by design, and what the eighth one adds over the seven
 		// before it is what says whether it earns its calls
@@ -255,7 +215,7 @@ pub fn cached(cfg: &PoiConfig, frame: Frame, work: &Work) -> Result<Inventory> {
 	}
 
 	let mut out = Vec::new();
-	for (id, (p, at)) in &raw {
+	for (id, (p, at, tier)) in &raw {
 		match p["businessStatus"].as_str() {
 			None | Some("OPERATIONAL") => {}
 			Some(_) => continue,
@@ -263,13 +223,12 @@ pub fn cached(cfg: &PoiConfig, frame: Frame, work: &Work) -> Result<Inventory> {
 		let Some(name) = p["displayName"]["text"].as_str() else {
 			bail!("Places result {id} has no display name: {p}")
 		};
-		let primary = p["primaryType"].as_str().unwrap_or_default();
-		let mut kinds: Vec<&str> = p["types"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).collect();
-		kinds.push(primary);
-		if drop.as_ref().is_some_and(|d| d.hits(name, &[primary])) {
+		let primary = p["primaryType"].as_str().unwrap_or_default(); // Places omits it for a place it typed as nothing
+		let folded = name.to_lowercase();
+		let excluded = &category.excluded;
+		if excluded.words.iter().any(|w| folded.contains(w.as_str())) || excluded.types.iter().any(|t| t == primary) {
 			continue;
 		}
-		let Some((tier, _)) = tiers.iter().find(|(_, m)| m.hits(name, &kinds)) else { continue };
 		let (lat, lng) = (p["location"]["latitude"].as_f64(), p["location"]["longitude"].as_f64());
 		let (Some(lat), Some(lng)) = (lat, lng) else {
 			bail!("Places result {name:?} has no location: {p}")
@@ -290,7 +249,7 @@ pub fn cached(cfg: &PoiConfig, frame: Frame, work: &Work) -> Result<Inventory> {
 			kind_label: p["primaryTypeDisplayName"]["text"].as_str().unwrap_or_default().to_owned(),
 			web: p["websiteUri"].as_str().unwrap_or_default().to_owned(),
 			tel: p["nationalPhoneNumber"].as_str().unwrap_or_default().to_owned(),
-			tier: tier.name.clone(),
+			tier: tiers[*tier].0.clone(),
 			fetched_s: at.duration_since(UNIX_EPOCH).wrap_err("a cached answer is dated before 1970")?.as_secs(),
 		});
 	}
@@ -312,21 +271,13 @@ fn lacking(body: &serde_json::Value, mask: &str) -> Result<Ask> {
 }
 
 /// The first page of `query` over `tile`, which is also its cache key.
-fn ask(query: &str, typed: Option<&str>, tile: Bbox) -> serde_json::Value {
+fn ask(query: &str, tile: Bbox) -> serde_json::Value {
 	// the cache key is the body verbatim, so a tile's corners may not be re-associated
 	let rect = serde_json::json!({
 		"low":  {"latitude": tile.lat[0], "longitude": tile.lon[0]},
 		"high": {"latitude": tile.lat[1], "longitude": tile.lon[1]},
 	});
-	let mut body = serde_json::json!({"textQuery": query, "pageSize": 20, "locationRestriction": {"rectangle": rect}});
-	// absent rather than null when unset: the body is the cache key, and an untyped sweep already
-	// paid for these answers. Places rejects a type outside Table A by name, which is the only list
-	// of them worth keeping.
-	if let Some(t) = typed {
-		body["includedType"] = serde_json::Value::String(t.to_owned());
-		body["strictTypeFiltering"] = serde_json::Value::Bool(true);
-	}
-	body
+	serde_json::json!({"textQuery": query, "pageSize": 20, "locationRestriction": {"rectangle": rect}})
 }
 
 /// One query over one tile, quartered wherever the answer came back at the cap. Splitting is per
@@ -335,8 +286,8 @@ fn ask(query: &str, typed: Option<&str>, tile: Bbox) -> serde_json::Value {
 ///
 /// Not a study's to state: the cap bites on competitor density, which is a fact about the trade and
 /// the ground together, and which no document knows before it asks.
-fn descend(work: &Work, query: &str, typed: Option<&str>, tile: Tile, depth: u32, found: &mut Found) -> Result<()> {
-	let body = ask(query, typed, tile.bbox());
+fn descend(work: &Work, query: &str, tier: usize, tile: Tile, depth: u32, found: &mut Found) -> Result<()> {
+	let body = ask(query, tile.bbox());
 	let spent = work.calls(Kind::Inventory);
 	let (page, lacks) = search_text(work, &body, FIELDS, 3, Kind::Inventory)?;
 	found.asks.extend(lacks);
@@ -352,9 +303,9 @@ fn descend(work: &Work, query: &str, typed: Option<&str>, tile: Tile, depth: u32
 		ids: page.iter().map(|(id, ..)| id.clone()).collect(),
 	});
 	let full = page.len() >= CAP;
-	// the freshest answer naming a place is what it is known as of
+	// the freshest answer naming a place is what it is known as of; the first search to find it, its tier
 	for (id, p, at) in page {
-		found.raw.entry(id).and_modify(|e| e.1 = e.1.max(at)).or_insert((p, at));
+		found.raw.entry(id).and_modify(|e| e.1 = e.1.max(at)).or_insert((p, at, tier));
 	}
 	if !full {
 		return Ok(());
@@ -365,7 +316,7 @@ fn descend(work: &Work, query: &str, typed: Option<&str>, tile: Tile, depth: u32
 	}
 	found.calls[depth as usize].1 += paged;
 	for child in tile.children() {
-		descend(work, query, typed, child, depth + 1, found)?;
+		descend(work, query, tier, child, depth + 1, found)?;
 	}
 	Ok(())
 }
@@ -373,22 +324,12 @@ fn descend(work: &Work, query: &str, typed: Option<&str>, tile: Tile, depth: u32
 /// What the recursion accumulates, before the tiering rules turn it into an `Inventory`.
 #[derive(Default)]
 struct Found {
-	raw: IndexMap<String, (serde_json::Value, SystemTime)>,
+	/// Each place, when it was last seen, and the tier of the first search that found it.
+	raw: IndexMap<String, (serde_json::Value, SystemTime, usize)>,
 	obs: Vec<Ranking>,
 	/// Query and tile still at the cap at the depth floor: the inventory under them is partial.
 	censored: Vec<(String, Bbox)>,
 	asks: Vec<Ask>,
 	/// Per depth: calls made, and how many of those were on a tile that then quartered.
 	calls: Vec<(usize, usize)>,
-}
-
-struct Matcher {
-	pattern: Option<Regex>,
-	types: Vec<String>,
-}
-
-impl Matcher {
-	fn hits(&self, name: &str, kinds: &[&str]) -> bool {
-		self.pattern.as_ref().is_some_and(|r| r.is_match(name)) || kinds.iter().any(|k| self.types.iter().any(|t| t == k))
-	}
 }

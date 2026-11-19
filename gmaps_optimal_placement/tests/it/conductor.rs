@@ -14,7 +14,7 @@ use sa_auth::{Assertion, Principal, Service, Signer, Study, User};
 use sa_core::{
 	gbp::Country,
 	geo::LatLng,
-	placement::{Area, Ask, Asks, Category, Definition, Gcid, SEARCH_TEXT},
+	placement::{Area, Ask, Asks, Category, Definition, Demand, Excluded, Gcid, Keyword},
 	queries_cache::gop,
 };
 use sha2::{Digest, Sha256};
@@ -26,8 +26,7 @@ fn root() -> &'static Path {
 	Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("crate lives in the workspace")
 }
 
-/// One server behind a conductor that signs with `panel`, over the French base and two trades
-/// nobody has ever studied.
+/// One server behind a conductor that signs with `panel`, over the French base alone.
 struct Served {
 	child: Child,
 	dir: PathBuf,
@@ -41,36 +40,20 @@ impl Served {
 		if dir.exists() {
 			std::fs::remove_dir_all(&dir).unwrap(); // a killed run's
 		}
-		for sub in ["trades", "countries"] {
-			std::fs::create_dir_all(dir.join(sub)).unwrap();
-		}
+		std::fs::create_dir_all(dir.join("countries")).unwrap();
 		std::fs::write(
 			dir.join("config.nix"),
 			r#"{ age = { communes = "1y"; inventory = "1w"; ordering = "1y"; }; sweep = { depth = 3; zoom = 12; }; queries_cache = "local"; }"#,
 		)
 		.unwrap();
 		std::fs::write(dir.join("countries/FR.nix"), format!("import {}", root().join("examples/countries/FR.nix").display())).unwrap();
-		for t in ["never_asked", "never_asked_either"] {
-			std::fs::write(
-				dir.join(format!("trades/{t}.nix")),
-				r#"loc: {
-					inherit (loc) area grid candidate country column layer searches;
-					poi = { source = "google_places"; tier = [ { name = "any"; weight = 1.0; match = "."; } ]; };
-					model = { demand = "ind"; lambda_m = 2000; };
-					rank = { nodes = 4; term = [ { text = "plombier"; weight = 1.0; } ]; };
-				}"#,
-			)
-			.unwrap();
-		}
 
 		let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
 		let panel: Signer = format!("k1:{}", base64::engine::general_purpose::STANDARD.encode([7u8; 32])).parse().unwrap();
 		let mut cmd = Command::new(env!("CARGO_BIN_EXE_gmaps_optimal_placement"));
 		cmd.arg("--config")
 			.arg(dir.join("config.nix"))
-			.args(["serve", "--port", &port.to_string(), "-t"])
-			.arg(dir.join("trades"))
-			.arg("--countries")
+			.args(["serve", "--port", &port.to_string(), "--countries"])
 			.arg(dir.join("countries"))
 			.env("PANEL_ASSERTION_KEYS", panel.public())
 			.env("XDG_CACHE_HOME", dir.join("cache"))
@@ -104,7 +87,7 @@ impl Served {
 
 	/// `ask` answered with `answer`, as the conductor buys it into the queries cache.
 	fn answer(&self, ask: &Ask, answer: serde_json::Value) {
-		let key: String = Sha256::digest(gop(SEARCH_TEXT, &ask.body)).iter().map(|b| format!("{b:02x}")).collect();
+		let key: String = Sha256::digest(gop(&ask.body)).iter().map(|b| format!("{b:02x}")).collect();
 		std::fs::write(self.dir.join(OWN).join(format!("data/places_cache/{key}.json")), answer.to_string()).unwrap();
 	}
 
@@ -143,6 +126,7 @@ fn sign(panel: &Signer, method: &str, path: &str, held: &[Study]) -> String {
 			email_verified: true,
 			name: "Op".into(),
 			permissions: held.iter().map(|p| p.as_str()).collect(),
+			actor: None,
 		}),
 		method: method.into(),
 		path: path.into(),
@@ -150,26 +134,35 @@ fn sign(panel: &Signer, method: &str, path: &str, held: &[Study]) -> String {
 	})
 }
 
-/// A few hundred Clermont cells, as the conductor would hand them in.
-fn definition(study: Option<&str>) -> Definition {
+/// A few hundred cells of `country` around one point, as the conductor would hand them in.
+fn definition(trade: Option<&str>, country: Country) -> Definition {
 	Definition {
 		area: Area::Circle {
 			slug: format!("clermont-centre-{}", std::process::id()),
-			country: Country::FR,
+			country,
 			center: LatLng { lat: 45.78, lng: 3.07 },
 			radius_m: 1000.,
 			margin_m: 200.,
 		},
-		category: study.map(|s| Category {
+		category: trade.map(|t| Category {
 			trade: 1,
-			country: Country::FR,
-			study: s.into(),
-			keywords: vec![format!("gmaps_optimal_placement {s}")],
-			google_primary: Gcid {
+			name: t.into(),
+			country,
+			primary: Gcid {
 				id: "gcid:plumber".into(),
-				name: format!("gmaps_optimal_placement {s}"),
+				name: "Plombier".into(),
 			},
-			google_additional: Vec::new(),
+			additional: Vec::new(),
+			keywords: vec![Keyword {
+				text: "plombier".into(),
+				weight: Some(1.),
+			}],
+			excluded: Excluded::default(),
+			demand: Some(Demand {
+				expr: "ind".into(),
+				columns: Vec::new(),
+				layers: Vec::new(),
+			}),
 		}),
 	}
 }
@@ -186,7 +179,7 @@ impl Drop for Served {
 #[test]
 fn behind_the_conductor_only_an_assertion_gets_in() {
 	let s = Served::start("guard");
-	let path = "/trades.json";
+	let path = "/catalog.json";
 	assert_eq!(s.get(path, None).0, 401, "no assertion");
 	let stranger: Signer = format!("k1:{}", base64::engine::general_purpose::STANDARD.encode([9u8; 32])).parse().unwrap();
 	assert_eq!(
@@ -199,17 +192,14 @@ fn behind_the_conductor_only_an_assertion_gets_in() {
 
 	let (status, body) = s.signed("GET", path, &[Study::Read], None);
 	assert_eq!(status, 200, "{body}");
-	assert_eq!(
-		serde_json::from_str::<serde_json::Value>(&body).unwrap(),
-		serde_json::json!({"trades": ["never_asked", "never_asked_either"], "countries": ["FR"]})
-	);
+	assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap(), serde_json::json!({"countries": ["FR"]}));
 }
 
 /// A study is read by its definition, opens on what is held, and says what it lacks.
 #[test]
 fn a_study_is_read_and_says_what_it_lacks() {
 	let s = Served::start("read");
-	let def = definition(Some("never_asked"));
+	let def = definition(Some("never_asked"), Country::FR);
 	let body = serde_json::to_string(&def).unwrap();
 
 	assert_eq!(s.signed("POST", "/studies", &[], Some(&body)).0, 403, "for someone who may not read studies");
@@ -226,18 +216,18 @@ fn a_study_is_read_and_says_what_it_lacks() {
 	}
 }
 
-/// A definition the served trades cannot take is refused, and an area on its own is the grid.
+/// A definition in a country no base is served for is refused, and an area on its own is the grid.
 #[test]
 fn a_definition_that_does_not_hold_is_refused() {
 	let s = Served::start("holds");
-	let def = definition(Some("not_a_trade"));
+	let def = definition(Some("never_asked"), Country::GB);
 	let (status, text) = s.signed("POST", "/studies", &[Study::Read], Some(&serde_json::to_string(&def).unwrap()));
 	assert_eq!(status, 422, "{text}");
 	let refused: serde_json::Value = serde_json::from_str(&text).unwrap();
 	assert_eq!(refused["code"], "unstudied", "{text}");
-	assert!(refused["error"].as_str().unwrap().contains("not_a_trade"), "{text}");
+	assert!(refused["error"].as_str().unwrap().contains("GB"), "{text}");
 
-	let bare = definition(None);
+	let bare = definition(None, Country::FR);
 	let (status, text) = s.signed("POST", "/studies", &[Study::Read], Some(&serde_json::to_string(&bare).unwrap()));
 	assert_eq!(status, 200, "{text}");
 	let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -258,7 +248,7 @@ fn asks(s: &Served, def: &Definition) -> Asks {
 #[test]
 fn a_pull_is_asked_what_lies_behind_each_answer_until_none_is_lacking() {
 	let s = Served::start("asks");
-	let def = definition(Some("never_asked"));
+	let def = definition(Some("never_asked"), Country::FR);
 	let place = serde_json::json!({
 		"id": "stub", "displayName": {"text": "Stub plombier"}, "rating": 4.5, "userRatingCount": 10,
 		"location": {"latitude": 45.78, "longitude": 3.07},

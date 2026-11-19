@@ -45,7 +45,7 @@ fn state_matches_the_study() {
 	let m = model();
 	let tiers = m.tier_states();
 	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
-	let unmet = trade(&m).unmet(&press);
+	let unmet = trade(&m).unmet(&press).expect("the fixture carries a demand");
 	let c = colorise(&unmet, &m.payload.imputed, false, false, &everywhere(&m));
 
 	insta::assert_snapshot!(format!(
@@ -55,8 +55,8 @@ fn state_matches_the_study() {
 		m.payload.imputed.iter().filter(|&&i| i == 1).count(),
 		c.count,
 		nonzero(&press),
-		nonzero(&trade(&m).trade.demand),
-		sum(&trade(&m).trade.demand),
+		nonzero(trade(&m).demand().unwrap()),
+		sum(trade(&m).demand().unwrap()),
 		sum(&unmet),
 		sum(&press),
 	), @"
@@ -102,7 +102,7 @@ fn top_ten_sites() {
 	let m = model();
 	let tiers = m.tier_states();
 	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
-	let (picked, pool) = trade(&m).rank_sites(trade(&m).trade.lambda_m, &press, 10);
+	let (picked, pool) = trade(&m).rank_sites(trade(&m).trade.lambda_m, &press, 10).expect("the fixture carries a demand");
 
 	let mut s = format!("{pool} candidate cells\n");
 	for (k, r) in picked.iter().enumerate() {
@@ -171,7 +171,7 @@ fn every_layer_colours() {
 	let m = model();
 	let tiers = m.tier_states();
 	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
-	let unmet = trade(&m).unmet(&press);
+	let unmet = trade(&m).unmet(&press).expect("the fixture carries a demand");
 
 	let mut s = String::new();
 	for spec in m.layers() {
@@ -207,7 +207,7 @@ fn tooltip_over_a_cell() {
 	let m = model();
 	let tiers: Vec<TierState> = m.tier_states();
 	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
-	let unmet = trade(&m).unmet(&press);
+	let unmet = trade(&m).unmet(&press).expect("the fixture carries a demand");
 	let shown = colorise(&unmet, &m.payload.imputed, false, false, &everywhere(&m)).shown;
 	let hit = m.cell_at(45.7797, 3.0863, &shown).expect("the study centre is on the grid");
 	insta::assert_snapshot!(m.tooltip(hit, &press, &unmet), @"
@@ -250,4 +250,21 @@ fn the_view_sets_the_scale() {
 	segments [55, 46, 28]
 	alpha max 77
 	");
+}
+
+/// A category that says nothing about demand still shows its competitors, and offers nothing that
+/// reads a demand.
+#[test]
+fn without_a_demand_the_competitors_stand_alone() {
+	let mut payload: Payload = serde_json::from_str(include_str!("clermont_payload.json")).unwrap();
+	payload.trade.as_mut().unwrap().demand = None;
+	let m = Model::try_new(payload).unwrap();
+	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &m.tier_states());
+	assert!(sum(&press) > 0., "the competitors still press on the map");
+	assert!(trade(&m).unmet(&press).is_none());
+	assert!(trade(&m).rank_sites(trade(&m).trade.lambda_m, &press, 10).is_none());
+	let layers: Vec<String> = m.layers().into_iter().map(|l| l.name).collect();
+	assert!(!layers.iter().any(|l| l.contains("emand")), "{layers:?}");
+	let report = trade(&m).site_report([45.7797, 3.0863], None, None, trade(&m).trade.lambda_m, &press, &m.tier_states());
+	assert!(!report.rows.iter().any(|r| r.label.contains("Capture") || r.label.contains("Demand")), "{report:?}");
 }
