@@ -53,6 +53,18 @@
             exec cargo run -p gmaps_optimal_placement -- serve "$@"
           '';
         };
+        # the map is the conductor's: its dev stack over this checkout, in a Chrome window of its own;
+        # closing the window stops the run. Buys nothing without --spend-real-quota-i-am-certain.
+        study = pkgs.writeShellApplication {
+          name = "study";
+          runtimeInputs = with pkgs; [ git ];
+          text = ''
+            conductor="$(git rev-parse --show-toplevel)/../site_conductor"
+            [ -d "$conductor" ] || { echo "no site_conductor checkout beside this one, at $conductor" >&2; exit 1; }
+            cd "$conductor"
+            exec nix run .#dev -- --fixed "$@"
+          '';
+        };
         # `searches [-c <category>] [-l <locations>]` — build the volume chart, serve it, open it.
         searches = pkgs.writeShellApplication {
           name = "open-searches";
@@ -91,9 +103,9 @@
                                             pool | building | parcel per --per column, --floor to skip hamlets
             nix run .#conductor -- --port <p> [-t ..] [--countries ..]  serve the conductor the studies it
                                             hands in, behind its assertion (PANEL_ASSERTION_KEYS); only a pull spends
-            nix run .#help                  this (also bare `nix run`)
-            the map itself is drawn by the conductor: `nix run .#dev` in site_conductor runs it over
-                                            this checkout, buying nothing
+            nix run                         the map, in a window of its own: site_conductor's dev stack over
+                                            this checkout; closing the window stops it. buys nothing
+            nix run .#help                  this
             cached archives and API responses live under $XDG_CACHE_HOME/gmaps_optimal_placement
             a study is a category over an area. the conductor's category names the trade that
             studies it; examples/trades/<t>.nix is a function of the area's attrset;
@@ -106,7 +118,8 @@
       in
       {
         apps = {
-          default = { type = "app"; program = pkgs.lib.getExe help; };
+          default = { type = "app"; program = pkgs.lib.getExe study; };
+          study = { type = "app"; program = pkgs.lib.getExe study; };
           conductor = { type = "app"; program = pkgs.lib.getExe conductor; };
           searches = { type = "app"; program = pkgs.lib.getExe searches; };
           misc = { type = "app"; program = pkgs.lib.getExe misc; };
