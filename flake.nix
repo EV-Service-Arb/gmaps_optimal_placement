@@ -21,7 +21,7 @@
         # the first of this repository's ten in SA_PORT_RANGE: site_conductor's docs/port_range.md
         SA_PORTS = 52850;
 
-        rs = v_flakes.rs { inherit pkgs rust; };
+        rs = v_flakes.rs { inherit pkgs rust; pinDeps = true; };
         github = v_flakes.github {
           inherit pkgs pname rs;
           enable = true;
