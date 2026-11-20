@@ -53,19 +53,6 @@
             exec cargo run -p gmaps_optimal_placement -- serve "$@"
           '';
         };
-        # the map is the conductor's: its dev stack over this checkout, in a Chrome window of its own;
-        # closing the window stops the run.
-        study = pkgs.writeShellApplication {
-          name = "study";
-          runtimeInputs = with pkgs; [ git ];
-          text = ''
-            conductor="$(git rev-parse --show-toplevel)/../site_conductor"
-            [ -d "$conductor" ] || { echo "no site_conductor checkout beside this one, at $conductor" >&2; exit 1; }
-            cd "$conductor"
-            exec nix run .#dev -- --fixed "$@"
-          '';
-        };
-
         # `misc <country> <tally> [--per col] [--floor n]` — one map of a whole country, no study.
         # Written per country and tally, so two denominators of the same tally overwrite each other.
         misc = pkgs.writeShellApplication {
@@ -88,9 +75,7 @@
                                             pool | building | parcel per --per column, --floor to skip hamlets
             nix run .#conductor -- --port <p> [--countries ..]  serve the conductor the studies it
                                             hands in, behind its assertion (PANEL_ASSERTION_KEYS); only a pull spends
-            nix run                         the map, in a window of its own: site_conductor's dev stack over
-                                            this checkout; closing the window stops it. buys nothing
-            nix run .#help                  this
+            nix run [.#help]                this
             cached archives and API responses live under $XDG_CACHE_HOME/gmaps_optimal_placement
             a study is the conductor's category over an area. examples/locations/<l>.nix carries
             area and candidate over examples/countries/<CC>.nix; with the category's demand columns
@@ -101,8 +86,7 @@
       in
       {
         apps = {
-          default = { type = "app"; program = pkgs.lib.getExe study; };
-          study = { type = "app"; program = pkgs.lib.getExe study; };
+          default = { type = "app"; program = pkgs.lib.getExe help; };
           conductor = { type = "app"; program = pkgs.lib.getExe conductor; };
           misc = { type = "app"; program = pkgs.lib.getExe misc; };
           help = { type = "app"; program = pkgs.lib.getExe help; };
