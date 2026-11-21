@@ -311,7 +311,7 @@ fn billed(c: &Category, cells: &Cells, place: &[String], inv: poi::Inventory, ra
 			payload::QueryOut { text: q, hits: hit.len() }
 		})
 		.collect();
-	queries.sort_by(|a, b| b.hits.cmp(&a.hits));
+	queries.sort_by_key(|q| std::cmp::Reverse(q.hits));
 
 	let mut pois: Vec<PoiOut> = inv
 		.pois

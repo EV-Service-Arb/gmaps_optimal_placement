@@ -83,7 +83,7 @@ impl Compiled {
 		ensure!(!plotted.is_empty(), "the cadastre published no layer for any unit above the floor");
 		// The ramp tops out at the 98th percentile: the Riviera is an order of magnitude off the rest
 		// of France and would otherwise flatten the whole country to one shade.
-		let cap = plotted[plotted.len() / 50].rate().expect("filtered to Some");
+		let cap = plotted[plotted.len().div_euclid(50)].rate().expect("filtered to Some");
 		ensure!(cap > 0., "the 98th percentile rate is {cap}, so there is no ramp to draw");
 
 		let rows: Vec<_> = plotted

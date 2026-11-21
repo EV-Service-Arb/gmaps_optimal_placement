@@ -1229,7 +1229,6 @@ dependencies = [
  "gmaps_optimal_placement_rank",
  "gmaps_optimal_placement_sources",
  "indexmap",
- "jiff",
  "sa_core",
  "schemars",
  "serde",

@@ -1,7 +1,7 @@
 //! Statistical grids published as one CSV of EPSG:3035 cells.
 //!
 //! Both catalogued sources encode the cell corner in its id, so the whole difference between them
-//! is the [`Archive`] table below: where the file is, which columns are text, and which one carries
+//! is the `Archive` table below: where the file is, which columns are text, and which one carries
 //! provenance.
 use std::collections::{BTreeSet, HashMap};
 

@@ -693,15 +693,15 @@ impl<'a> Traded<'a> {
 	pub fn demand_within(self, [mx, my]: [f64; 2]) -> Option<(f64, f64)> {
 		let demand = self.demand()?;
 		let (mut d1, mut d3) = (0., 0.);
-		for i in 0..self.model.n() {
-			let (dx, dy) = (self.model.mx[i] - mx, self.model.my[i] - my);
+		for ((d, cx), cy) in demand.iter().zip(&self.model.mx).zip(&self.model.my) {
+			let (dx, dy) = (cx - mx, cy - my);
 			let d2 = dx * dx + dy * dy;
 			if d2 > 9e6 {
 				continue;
 			}
-			d3 += demand[i];
+			d3 += d;
 			if d2 < 1e6 {
-				d1 += demand[i];
+				d1 += d;
 			}
 		}
 		Some((d1, d3))
@@ -735,8 +735,8 @@ impl<'a> Traded<'a> {
 		// one candidate per 400 m: 200 m spacing buys nothing and quadruples the cost
 		let mut seen = std::collections::HashSet::new();
 		let mut cand = Vec::new();
-		for i in 0..self.model.n() {
-			if demand[i] <= 0. {
+		for (i, &d) in demand.iter().enumerate() {
+			if d <= 0. {
 				continue;
 			}
 			let key = ((self.model.mx[i] / 400. + 0.5).floor() as i64, (self.model.my[i] / 400. + 0.5).floor() as i64);

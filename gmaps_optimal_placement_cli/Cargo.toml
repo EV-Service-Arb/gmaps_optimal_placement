@@ -22,7 +22,6 @@ gmaps_optimal_placement_misc.workspace = true
 gmaps_optimal_placement_rank.workspace = true
 gmaps_optimal_placement_sources.workspace = true
 indexmap.workspace = true
-jiff.workspace = true
 sa_core.workspace = true
 schemars.workspace = true
 serde.workspace = true

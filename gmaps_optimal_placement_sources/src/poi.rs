@@ -132,12 +132,15 @@ pub struct Inventory {
 	pub calls: usize,
 }
 
-/// One text search, paged, in rank order, out of what the work dir and the queries cache hold. The
-/// body and the field mask are the caller's, because they are what decides the SKU.
+/// A search's hits in rank order: each place's id, its answer, and when that answer was fetched.
+type Hits = Vec<(String, serde_json::Value, SystemTime)>;
+
+/// One text search, paged, in rank order, out of what the work dir's `Held` holds. The body and the
+/// field mask are the caller's, because they are what decides the SKU.
 ///
 /// The first page with no answer, or one fetched before [`Work::since`], ends the search: the hits
 /// before it, and it.
-pub fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pages: usize, kind: Kind) -> Result<(Vec<(String, serde_json::Value, SystemTime)>, Option<Ask>)> {
+pub(crate) fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pages: usize, kind: Kind) -> Result<(Hits, Option<Ask>)> {
 	let mut out = Vec::new();
 	let mut token: Option<String> = None;
 	for _ in 0..pages {

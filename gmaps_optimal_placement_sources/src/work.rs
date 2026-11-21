@@ -125,7 +125,7 @@ impl Work {
 		let oldest = seen[seen.len() - 1];
 		Some(Aged {
 			oldest,
-			median: seen[seen.len() / 2],
+			median: seen[seen.len().div_euclid(2)],
 			stale: oldest > self.age.of(kind),
 		})
 	}
@@ -174,7 +174,8 @@ impl Work {
 		}
 		eprintln!("downloading {url}");
 		let mut body = ureq::get(url).call().wrap_err_with(|| format!("GET {url}"))?.into_body().into_reader();
-		let part = dst.with_extension("part");
+		// a part of its own: two runs may download the same archive at once, and the first to finish renames it into place
+		let part = dst.with_extension(format!("{}.{:?}.part", std::process::id(), std::thread::current().id()).replace(['(', ')'], ""));
 		let mut out = fs::File::create(&part).wrap_err_with(|| format!("creating {}", part.display()))?;
 		let n = std::io::copy(&mut body, &mut out)?;
 		if n == 0 {

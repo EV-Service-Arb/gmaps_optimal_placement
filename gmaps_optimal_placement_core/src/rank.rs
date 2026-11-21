@@ -156,7 +156,7 @@ pub fn divisors(tier: &[usize], raw: &[f64], tiers: usize) -> Result<Vec<Option<
 				return Ok(None);
 			}
 			w.sort_by(f64::total_cmp);
-			let med = w[w.len() / 2];
+			let med = w[w.len().div_euclid(2)];
 			ensure!(med > 0., "tier {t} has a median strength of {med}, so it cannot be normalised");
 			Ok(Some(med))
 		})
