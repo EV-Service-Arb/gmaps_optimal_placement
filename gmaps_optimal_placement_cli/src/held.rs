@@ -11,7 +11,6 @@ use gmaps_optimal_placement::Held;
 use gmaps_optimal_placement_core::{Ask, SEARCH_TEXT};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use sa_core::queries_cache::{Key, Scheme, gop};
-use sha2::{Digest, Sha256};
 
 pub struct Copy(Connection);
 impl Copy {
@@ -33,7 +32,7 @@ impl Copy {
 
 impl Held for Copy {
 	fn held(&self, ask: &Ask) -> Result<Option<(serde_json::Value, SystemTime)>> {
-		let key = Key(Sha256::digest(gop(SEARCH_TEXT, &ask.body).as_bytes()).into());
+		let key = Key::of(&gop(SEARCH_TEXT, &ask.body));
 		let row: Option<(String, i64)> = self
 			.0
 			.query_row(
@@ -68,7 +67,7 @@ mod tests {
 			body: serde_json::json!({"textQuery": q}).to_string(),
 		};
 		let request = gop(SEARCH_TEXT, &ask("kept").body);
-		let key = Key(Sha256::digest(request.as_bytes()).into());
+		let key = Key::of(&request);
 		let fetched = SystemTime::UNIX_EPOCH + Duration::from_micros(1_790_000_000_123_456);
 		{
 			let db = Connection::open(&path).unwrap();
