@@ -44,8 +44,8 @@ documents, never to the code.
    ┌───────┴─────────────────────────────────┐               │
    │ gmaps_optimal_placement_cli             │◀──────────────┘
    │   view · fit · strength · misc · schema │
-   │   Held: the work dir's mirror of the    │
-   │   conductor's public queries cache      │
+   │   Held: a copy of prod's panel.db,      │
+   │   its queries cache, read-only          │
    └───────┬─────────────────────────────────┘
    ┌───────┴──────────────────────────┐
    │ gmaps_optimal_placement_rank     │
@@ -100,7 +100,7 @@ The conductor depends on placement at build time only: it links the library (`lo
 `build`), `_core` for the vocabulary its stored categories are written in, and the overlay, from one
 pin. `Model::try_new` checks a payload's weights against the `rank::COEF` it was linked with, so
 that pin is what makes builder and renderer one model. Nothing placement links depends on the
-conductor; the CLI alone reads its public queries-cache wire (`sa_core::queries_cache`), and the
+conductor; the CLI alone reads a copy of its queries cache (`sa_core::queries_cache`'s keys), and the
 conductor never links the CLI. This repo keeps what training needs — the grids, the sources,
 `probe`'s plan, `fit`, `strength` — and the viewer a fit is judged by; what it trains on is what
 the conductor bought, never a search of its own.
@@ -120,7 +120,7 @@ legend's ticks move with the view.
 
 Placement fetches no billed answer. A Places search is an `Ask`, and what was answered for it is
 whatever the host's `Held` returns, with when it was fetched: the conductor's reads its own queries
-cache, from the blocking thread a build runs on; the CLI's reads the work dir's mirror of that cache.
+cache, from the blocking thread a build runs on; the CLI's reads a copy of prod's `panel.db`.
 Public archives are placement's own, under the work dir.
 
 A pull is its host's. It calls `asks` — the first unanswered page down each branch of the sweep —
@@ -166,10 +166,10 @@ that is what `fit` harvests.
   a map or for training: the conductor buys what a pull lacks, and `fit` and `strength` read only
   what it already holds. A study placement cannot build out of that says so and opens on the rest.
 - **A billed answer is bought once, wherever it is read.** Places answers are kept in the conductor's
-  queries cache (site_conductor's docs/ARCHITECTURE.md, Queries cache), which its `Held` reads in
-  process; the CLI's mirrors what that cache serves under `$XDG_CACHE_HOME/gmaps_optimal_placement`,
-  and runs on from the mirror with the cache out of reach until it needs an answer the mirror lacks
-  (`local`: the mirror alone). Bulk archives are free and cache in the work dir alone — the INSEE
+  queries cache (site_conductor's docs/ARCHITECTURE.md, Queries cache), prod's the one authority,
+  which its `Held` reads in process; the CLI's reads a copy of prod's `panel.db` (site_conductor's
+  `prod-restore`), read-only: what the copy lacks is lacking, and the study names it. Bulk archives
+  are free and cache in the work dir alone — the INSEE
   archive is ~87 MB. A 200 that is a refusal is never kept: it would answer for its request everywhere.
 - **Nothing in that cache expires.** An answer older than its kind's configured age is served anyway,
   and its age rides onto the map beside the imputed flag. Google's daily search quota is the scarce

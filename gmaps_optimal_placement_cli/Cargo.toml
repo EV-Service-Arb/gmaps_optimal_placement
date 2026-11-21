@@ -22,6 +22,7 @@ gmaps_optimal_placement_misc.workspace = true
 gmaps_optimal_placement_rank.workspace = true
 gmaps_optimal_placement_sources.workspace = true
 indexmap.workspace = true
+rusqlite.workspace = true
 sa_core.workspace = true
 schemars.workspace = true
 serde.workspace = true
@@ -30,7 +31,6 @@ sha2.workspace = true
 smart-default.workspace = true
 tokio.workspace = true
 toml.workspace = true
-ureq.workspace = true
 v_utils.workspace = true
 
 [lints]

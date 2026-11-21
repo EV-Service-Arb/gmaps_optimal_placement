@@ -1,7 +1,8 @@
 The binary `gmaps_optimal_placement`: refit and cross-validate the ranking model, reconnoitre a
-country, and look at a study. Its [`Held`](gmaps_optimal_placement::Held) is the work dir's mirror of
-the conductor's public queries cache (settings' `queries_cache`; `local`, the mirror alone): it reads
-what the conductor bought, and buys nothing.
+country, and look at a study. Its [`Held`](gmaps_optimal_placement::Held) is a copy of prod's
+`panel.db` (settings' `queries_cache`, its path; site_conductor's `nix run .#prod-restore --
+panel-data/panel.db=<path>` takes it), opened read-only: it reads what the conductor bought, as of
+when each was fetched, and buys nothing.
 
 ```sh
 gmaps_optimal_placement view [<id>] --overlay <dir> --port <p>   # a study on a map; without one, the studies there

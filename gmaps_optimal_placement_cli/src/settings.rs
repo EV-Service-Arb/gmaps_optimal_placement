@@ -16,9 +16,9 @@ pub struct AppConfig {
 	pub age: Age,
 	#[settings(flatten)]
 	pub sweep: Sweep,
-	/// Where what the conductor bought is read from: its `<origin>/api/queries_cache`, mirrored in the
-	/// work dir; or `local`, the mirror alone.
-	pub queries_cache: String,
+	/// A copy of prod's `panel.db`, what the conductor bought read off it: site_conductor's
+	/// `nix run .#prod-restore -- panel-data/panel.db=<this path>` takes one.
+	pub queries_cache: std::path::PathBuf,
 	/// A Google Maps JavaScript API key, for `view`'s page; `view` refuses to start without one.
 	pub maps_key: Option<String>,
 }

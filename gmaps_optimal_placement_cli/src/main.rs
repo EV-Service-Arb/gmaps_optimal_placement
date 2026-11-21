@@ -104,7 +104,7 @@ fn main() -> Result<()> {
 	}
 	let cfg = AppConfig::try_build(cli.settings)?;
 	let dir = v_utils::xdg_cache_dir!("");
-	let work = Work::at(&dir, Box::new(held::Mirror::new(&dir, cfg.queries_cache.parse()?))).policy((&cfg.age).into(), (&cfg.sweep).into());
+	let work = Work::at(&dir, Box::new(held::Copy::open(&cfg.queries_cache)?)).policy((&cfg.age).into(), (&cfg.sweep).into());
 	match cli.cmd {
 		Cmd::Config { .. } => unreachable!("handled above, and `handle_settings_command` exits"),
 		Cmd::Schema { doc } => {

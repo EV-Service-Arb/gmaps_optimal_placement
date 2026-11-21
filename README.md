@@ -42,9 +42,10 @@ cargo install --path gmaps_optimal_placement
 
 ## Usage
 ```sh
-# What the conductor bought is read from its queries cache, and mirrored in the work dir; `local`
-# reads the mirror alone. Nothing is bought here.
-#   queries_cache = "https://sa.evinvest.ltd/api/queries_cache";
+# What the conductor bought is read off a copy of prod's panel.db, taken by site_conductor's
+#   GITOPS_DIR=~/s/ev/gitops DEVOPS_DIR=~/s/ev/devops nix run ~/s/ev/_sa/site_conductor#prod-restore -- panel-data/panel.db=<path>
+# and taken again for what prod bought since. Nothing is bought here.
+#   queries_cache = "<path>";
 # `view` draws on Google Maps.
 #   maps_key = "...";
 

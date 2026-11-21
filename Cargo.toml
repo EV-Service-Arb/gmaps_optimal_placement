@@ -50,6 +50,8 @@ indexmap = { version = "2.14.2", features = ["serde"] }
 insta = "1.49.0"
 js-sys = "0.3.106"
 proj4rs = "0.3.1"
+# the CLI's copy of prod's panel.db, read-only
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 # the public queries cache's wire, read by the CLI alone
 sa_core = { git = "https://github.com/EV-Service-Arb/site_conductor", branch = "main" }
 schemars = { version = "1.2.3", features = ["indexmap2"] }
