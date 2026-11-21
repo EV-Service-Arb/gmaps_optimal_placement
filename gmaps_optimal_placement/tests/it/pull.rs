@@ -25,13 +25,11 @@ impl Pull {
 				margin_m: 0.,
 			},
 			category: Some(Category {
-				trade: 1,
-				name: "Plumbing".into(),
-				country: Country::FR,
-				primary: Gcid {
+				trade: Gcid {
 					id: "gcid:plumber".into(),
 					name: "Plombier".into(),
 				},
+				country: Country::FR,
 				additional: Vec::new(),
 				keywords: vec![Keyword {
 					text: "plombier".into(),
@@ -88,7 +86,10 @@ fn a_pull_is_asked_what_lies_behind_each_answer_until_none_is_lacking() {
 		}
 		p.held.answer(a, answer, now);
 	}
-	let [behind] = p.asks(None).try_into().unwrap_or_else(|a: Vec<Ask>| panic!("only the second page is behind what was answered: {a:?}"));
+	let [behind] = p
+		.asks(None)
+		.try_into()
+		.unwrap_or_else(|a: Vec<Ask>| panic!("only the second page is behind what was answered: {a:?}"));
 	assert!(behind.body.contains(r#""pageToken":"more""#), "{behind:?}");
 	p.held.answer(&behind, serde_json::json!({ "places": [] }), now);
 	assert!(p.asks(None).is_empty(), "the sweep is held whole");

@@ -53,50 +53,26 @@ impl Definition {
 			}
 		}
 		let Some(c) = &self.category else { return Ok(()) };
-		let named = format!("category {}·{}", c.name, c.country);
-		ensure(c.country == a.country(), format!("{named} applied to an area in {}", a.country()))?;
-		ensure(!c.name.trim().is_empty(), format!("trade {} has no name", c.trade))?;
-		let googles: Vec<&Gcid> = std::iter::once(&c.primary).chain(c.additional.iter().map(|x| &x.google)).collect();
-		ensure(googles.len() <= 10, format!("{named} carries {} additional Google categories, not ≤ 9", c.additional.len()))?;
-		for (i, g) in googles.iter().enumerate() {
-			ensure(g.id.starts_with("gcid:") && g.id.len() > 5, format!("Google category {:?} is not a gcid", g.id))?;
-			ensure(!g.name.trim().is_empty(), format!("Google category {} has no name", g.id))?;
-			ensure(!googles[..i].iter().any(|o| o.id == g.id), format!("{named} carries {} twice", g.id))?;
-		}
-		for x in &c.additional {
-			ensure(weight(x.weight), format!("{named}'s {} weighs {}", x.google.id, x.weight))?;
-		}
-		weighed(&c.keywords)?;
-		let primary = primary_keyword(&c.primary)?;
-		ensure(
-			c.keywords.iter().any(|k| k.text == primary && k.weight == Some(1.)),
-			format!("{named} does not carry its primary's name {primary:?} as a keyword at weight 1"),
-		)?;
-		c.excluded.check()?;
-		c.demand.as_ref().map_or(Ok(()), Demand::check)?;
-		Ok(())
+		ensure(c.country == a.country(), format!("category {}·{} applied to an area in {}", c.trade.name, c.country, a.country()))?;
+		c.check()
 	}
 
-	/// Keywords are a set to a study, so their order is not part of what it is; the additional
-	/// categories' is, as first match wins.
+	/// What a study is regardless of how its host ordered a set.
 	pub fn canonical(mut self) -> Self {
-		if let Some(c) = &mut self.category {
-			c.keywords.sort_by(|a, b| a.text.cmp(&b.text));
-		}
+		self.category = self.category.map(Category::canonical);
 		self
 	}
 
 	/// SHA-256 of the canonical form, hex: the study's address, since one slug or one category can
 	/// be redefined under the same name.
 	pub fn id(&self) -> String {
-		let bytes = serde_json::to_vec(&self.clone().canonical()).expect("a definition serialises");
-		Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+		sha256(&self.clone().canonical())
 	}
 
 	/// `<trade>·<CC>·<slug>`, or the slug alone without a category.
 	pub fn name(&self) -> String {
 		match &self.category {
-			Some(c) => format!("{}·{}·{}", c.name, c.country, self.area.slug()),
+			Some(c) => format!("{}·{}·{}", c.trade.name, c.country, self.area.slug()),
 			None => self.area.slug().to_owned(),
 		}
 	}
@@ -114,9 +90,9 @@ pub fn weighed(k: &[Keyword]) -> Result<(), Invalid> {
 	Ok(())
 }
 
-/// The primary's name as a keyword: the term every other is weighed against.
-pub fn primary_keyword(primary: &Gcid) -> Result<String, Invalid> {
-	Ok(keywords(std::slice::from_ref(&primary.name))?.remove(0))
+/// The trade's name as a keyword: the term every other is weighed against.
+pub fn trade_keyword(trade: &Gcid) -> Result<String, Invalid> {
+	Ok(keywords(std::slice::from_ref(&trade.name))?.remove(0))
 }
 
 /// An area as the conductor keeps it: a city's viewport or a circle, and a margin around it that
@@ -158,27 +134,60 @@ impl Area {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Category {
-	pub trade: u64,
-	/// The trade's name: what a study is called by.
-	pub name: String,
-	pub country: Country,
 	/// Tier 1, what its searches return, and the weight of 1 the rest is weighed against: searched by
-	/// its name and by each keyword.
-	pub primary: Gcid,
-	/// A tier each after the primary's, in this order: what the search of its exact name returns.
+	/// its name and by each keyword. Its name is what a study is called by.
+	pub trade: Gcid,
+	pub country: Country,
+	/// A tier each after the trade's, in this order: what the search of its exact name returns.
 	pub additional: Vec<Additional>,
-	/// [`keywords`]' form, the primary's name among them at weight 1.
+	/// [`keywords`]' form, the trade's name among them at weight 1.
 	pub keywords: Vec<Keyword>,
 	pub excluded: Excluded,
 	/// None: no demand surface, and nothing that reads one.
 	pub demand: Option<Demand>,
+}
+impl Category {
+	/// Keywords are a set; the additional categories' order is not, as first match wins.
+	fn canonical(mut self) -> Self {
+		self.keywords.sort_by(|a, b| a.text.cmp(&b.text));
+		self
+	}
+
+	/// SHA-256 of the canonical form, hex: one setting of a trade, told apart from its others.
+	pub fn id(&self) -> String {
+		sha256(&self.clone().canonical())
+	}
+
+	/// Fails on the first field a study of it could not be built from.
+	pub fn check(&self) -> Result<(), Invalid> {
+		let c = self;
+		let named = format!("category {}·{}", c.trade.name, c.country);
+		let googles: Vec<&Gcid> = std::iter::once(&c.trade).chain(c.additional.iter().map(|x| &x.google)).collect();
+		ensure(googles.len() <= 10, format!("{named} carries {} additional Google categories, not ≤ 9", c.additional.len()))?;
+		for (i, g) in googles.iter().enumerate() {
+			ensure(g.id.starts_with("gcid:") && g.id.len() > 5, format!("Google category {:?} is not a gcid", g.id))?;
+			ensure(!g.name.trim().is_empty(), format!("Google category {} has no name", g.id))?;
+			ensure(!googles[..i].iter().any(|o| o.id == g.id), format!("{named} carries {} twice", g.id))?;
+		}
+		for x in &c.additional {
+			ensure(weight(x.weight), format!("{named}'s {} weighs {}", x.google.id, x.weight))?;
+		}
+		weighed(&c.keywords)?;
+		let own = trade_keyword(&c.trade)?;
+		ensure(
+			c.keywords.iter().any(|k| k.text == own && k.weight == Some(1.)),
+			format!("{named} does not carry its trade's name {own:?} as a keyword at weight 1"),
+		)?;
+		c.excluded.check()?;
+		c.demand.as_ref().map_or(Ok(()), Demand::check)
+	}
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Keyword {
 	pub text: String,
-	/// What ranking for it is worth against the primary's name; None: scanned, not scored.
+	/// What ranking for it is worth against the trade's name; None: scanned, not scored.
 	pub weight: Option<f64>,
 }
 
@@ -186,7 +195,7 @@ pub struct Keyword {
 #[serde(deny_unknown_fields)]
 pub struct Additional {
 	pub google: Gcid,
-	/// A competitor of its tier against one of the primary's.
+	/// A competitor of its tier against one of the trade's.
 	pub weight: f64,
 }
 
@@ -318,6 +327,11 @@ pub fn keywords(raw: &[String]) -> Result<Vec<String>, Invalid> {
 	Ok(out)
 }
 
+fn sha256(v: &impl Serialize) -> String {
+	let bytes = serde_json::to_vec(v).expect("a definition serialises");
+	Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn weight(w: f64) -> bool {
 	w.is_finite() && w > 0.
 }
@@ -346,13 +360,11 @@ mod tests {
 				margin_m: 0.,
 			},
 			category: Some(Category {
-				trade: 1,
-				name: "Plumbing".into(),
-				country: Country::FR,
-				primary: Gcid {
+				trade: Gcid {
 					id: "gcid:plumber".into(),
 					name: "Plombier".into(),
 				},
+				country: Country::FR,
 				additional: vec![],
 				keywords: vec![
 					Keyword {
@@ -372,5 +384,5 @@ mod tests {
 		assert_eq!(def.id(), PINNED);
 	}
 
-	const PINNED: &str = "f335012cc483774064b9050692a54b57fd76b40d109d7009f74c2deae9bfcf55";
+	const PINNED: &str = "312318e187c3ac5e90f5ee6a45c36da58035e21e12519c6aaa8120250c29fca2";
 }

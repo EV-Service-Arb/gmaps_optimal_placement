@@ -2,7 +2,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use eyre::{Result, WrapErr, bail, ensure};
-use gmaps_optimal_placement_core::{Ask, Category, grid::Bbox, payload::Poi, primary_keyword};
+use gmaps_optimal_placement_core::{Ask, Category, grid::Bbox, payload::Poi, trade_keyword};
 use indexmap::IndexMap;
 
 use crate::{
@@ -75,14 +75,14 @@ impl Tile {
 	}
 }
 /// What the sweep asks, each with the index into [`tiers`] of the tier what it returns is filed under:
-/// the primary's name and every keyword but the one that is that name, then each additional's name.
+/// the trade's name and every keyword but the one that is that name, then each additional's name.
 pub fn queries(c: &Category) -> Result<Vec<(String, usize)>> {
-	let own = primary_keyword(&c.primary)?;
-	let primary = std::iter::once(c.primary.name.clone())
+	let own = trade_keyword(&c.trade)?;
+	let trade = std::iter::once(c.trade.name.clone())
 		.chain(c.keywords.iter().map(|k| k.text.clone()).filter(|k| *k != own))
 		.map(|q| (q, 0));
 	let mut out: Vec<(String, usize)> = Vec::new();
-	for (q, tier) in primary.chain(c.additional.iter().enumerate().map(|(i, a)| (a.google.name.clone(), i + 1))) {
+	for (q, tier) in trade.chain(c.additional.iter().enumerate().map(|(i, a)| (a.google.name.clone(), i + 1))) {
 		match out.iter().find(|(o, _)| *o == q) {
 			None => out.push((q, tier)),
 			Some((_, t)) => ensure!(*t == tier, "{q:?} is searched for tier {t} and again for tier {tier}, so what it finds cannot be told apart"),
@@ -91,9 +91,9 @@ pub fn queries(c: &Category) -> Result<Vec<(String, usize)>> {
 	Ok(out)
 }
 
-/// Each tier's name and weight: the primary's at 1, then each additional's.
+/// Each tier's name and weight: the trade's at 1, then each additional's.
 pub fn tiers(c: &Category) -> Result<Vec<(String, f64)>> {
-	let out: Vec<(String, f64)> = std::iter::once((c.primary.name.clone(), 1.))
+	let out: Vec<(String, f64)> = std::iter::once((c.trade.name.clone(), 1.))
 		.chain(c.additional.iter().map(|a| (a.google.name.clone(), a.weight)))
 		.collect();
 	for (i, (n, _)) in out.iter().enumerate() {

@@ -4,6 +4,7 @@
 //! Reads the bulk archive out of the real work dir, downloading it once if absent; the study is
 //! kept in a work dir of its own. Nothing is held, so nothing billed is read.
 use std::path::PathBuf;
+
 use gmaps_optimal_placement::{Study, Work};
 use gmaps_optimal_placement_core::{Area, Category, Country, Definition, Demand, Excluded, Gcid, Keyword, Model, Payload, Viewport};
 
@@ -42,13 +43,11 @@ fn built(study: &Study, dir: &Dir) -> Payload {
 #[test]
 fn clermont_centre() {
 	let study = narrowed(Some(Category {
-		trade: 3,
-		name: "car_detailing".into(),
-		country: Country::FR,
-		primary: Gcid {
+		trade: Gcid {
 			id: "gcid:car_detailing_service".into(),
 			name: "Service d'esthétique automobile".into(),
 		},
+		country: Country::FR,
 		additional: Vec::new(),
 		keywords: vec![
 			Keyword {
@@ -68,7 +67,10 @@ fn clermont_centre() {
 		}),
 	}));
 	let p = built(&study, &Dir::new("clermont_centre"));
-	assert_eq!(p.name, "car_detailing·FR·clermont-ferrand", "the study names itself off its trade, country and area");
+	assert_eq!(
+		p.name, "Service d'esthétique automobile·FR·clermont-ferrand",
+		"the study names itself off its trade, country and area"
+	);
 	assert!(p.trade.is_none(), "nothing is held, so no competitor is on it");
 	let sum = |v: &[f64]| v.iter().sum::<f64>();
 	let mut lines = vec![

@@ -1,4 +1,4 @@
-//! A competitor's tier is which search found it: the primary's searches (its name, each keyword) file
+//! A competitor's tier is which search found it: the trade's searches (its name, each keyword) file
 //! under tier 1, then each additional category's name search under its own, the first that found it
 //! winning; Excluded is checked before any of them.
 use std::collections::BTreeMap;
@@ -33,10 +33,8 @@ fn a_competitor_is_tiered_by_the_search_that_found_it() {
 	}
 	let held = Answers::default();
 	let category = Category {
-		trade: 1,
-		name: "Plumbing".into(),
+		trade: gcid("gcid:plumber", "Plombier"),
 		country: Country::FR,
-		primary: gcid("gcid:plumber", "Plombier"),
 		additional: vec![
 			Additional {
 				google: gcid("gcid:general_contractor", "Entreprise générale"),
@@ -87,7 +85,7 @@ fn a_competitor_is_tiered_by_the_search_that_found_it() {
 	assert_eq!(
 		queries,
 		["Plombier", "chauffagiste", "fuite d'eau", "Entreprise générale", "Électricien"],
-		"the primary's name, its keywords but the one that is its name, then each additional's name"
+		"the trade's name, its keywords but the one that is its name, then each additional's name"
 	);
 
 	let answers = BTreeMap::from([
@@ -115,9 +113,9 @@ fn a_competitor_is_tiered_by_the_search_that_found_it() {
 	assert_eq!(
 		tiers,
 		BTreeMap::from([
-			("a", "Plombier"),            // the primary's name found it; its type is no tier's
+			("a", "Plombier"),            // the trade's name found it; its type is no tier's
 			("b", "Plombier"),            // a keyword found it before an additional did
-			("i", "Plombier"),            // an unweighted keyword is still a primary search word
+			("i", "Plombier"),            // an unweighted keyword is still a trade search word
 			("c", "Entreprise générale"), // the first additional to find it
 			("d", "Électricien"),         // its name and type say plumber, but only this search found it
 		]),

@@ -10,8 +10,9 @@ country's base under it is compiled into the library (`gmaps_optimal_placement/b
                    ^               ^
    locations/  Clermont-Ferrand.toml  Lyon.toml   area, candidate
                    ^      ^      ^        ^
-   the conductor's category (its trade, country, Google categories, keywords, excluded, demand)
-                primary's name + keywords      → the sweep's tier-1 searches
+   the conductor's category (its trade — a Google category —, country, additional Google
+   categories, keywords, excluded, demand)
+                trade's name + keywords        → the sweep's tier-1 searches
                 each additional's name         → one search, one tier each
                 weighted keywords              → the terms competitors are scored on
                 demand                         → its columns and layers after the base's

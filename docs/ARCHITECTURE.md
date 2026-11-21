@@ -1,8 +1,9 @@
 # gmaps_optimal_placement
 
 Where should a service business open. An area and the country base under it describe the ground
-and the statistical grid behind it; the conductor's category — a trade set up in a country —
-describes everything else: the Google categories and keywords its competitors are found by, what
+and the statistical grid behind it; the conductor's category — one setting of a trade, which is one
+of Google's categories, in a country — describes everything else: the Google categories and
+keywords its competitors are found by, what
 each keyword is worth, what is never a competitor, and how demand follows from whatever columns the
 grid publishes. The library builds the payload that answers it; the conductor links it and draws it
 on its map, and the CLI's viewer draws the same studies here.
@@ -56,10 +57,11 @@ documents, never to the code.
 
 A study is a `Definition` (`_core`): an area (a city's viewport or a circle, and a margin, as
 the conductor keeps it) and a category, each named as the conductor names it. The category drives
-the billed half. The sweep searches its primary Google category's name and each of its keywords,
-then each additional category's name. A competitor's tier is the first of those whose search found
-it — the primary's, then each additional in order — unless Excluded drops it first. Its weighted
-keywords are what every competitor is scored on, each relative to the primary's name. Its demand is
+the billed half. The sweep searches its trade's name in the country's language and each of its
+keywords, then each additional Google category's name. A competitor's tier is the first of those
+whose search found it — the trade's, then each additional in order — unless Excluded drops it
+first. Its weighted keywords are what every competitor is scored on, each relative to the trade's
+name. Its demand is
 what the grid means to it. A definition is addressed by its SHA-256, because an area or a category
 can be redefined under the same name.
 
@@ -69,8 +71,9 @@ is everything that is billed. A city can therefore be looked at before any of th
 on it.
 
 The CLI's commands hold two axes, the conductor's categories and `--locations` (files): a category is
-the latest a host studied (the definitions under the work dir's `studies/`), because the CLI never
-reads the conductor's catalogue, and a copy of a category kept here would drift from it. What a study is *called* — `<trade>·<CC>·<slug>` — is the definition's.
+each setting of a trade a host studied (the definitions under the work dir's `studies/`), told
+apart by `Category::id`, because the CLI never reads the conductor's catalogue, and a copy of a
+category kept here would drift from it. What a study is *called* — `<trade>·<CC>·<slug>` — is the definition's.
 
 ## The line between baked and live
 

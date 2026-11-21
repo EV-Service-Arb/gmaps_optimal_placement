@@ -43,7 +43,7 @@ pub struct Trade {
 	/// None: the category says nothing about demand, and nothing that reads it is offered.
 	pub demand: Option<Demand>,
 	pub tiers: Vec<TierOut>,
-	/// The category's scored keywords, each weighed against its primary's name at 1. `w` is already
+	/// The category's scored keywords, each weighed against its trade's name at 1. `w` is already
 	/// scored against them; the what-if needs them because the business it scores does not exist yet.
 	pub terms: Vec<TermOut>,
 	/// The category's keywords it searches on and does not score.

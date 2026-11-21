@@ -10,7 +10,7 @@ pub mod proj;
 pub mod rank;
 
 pub use definition::{
-	Additional, Area, Ask, Category, Column, Country, Definition, Demand, Excluded, Gcid, Invalid, Keyword, LatLng, Layer, SEARCH_TEXT, Viewport, keywords, primary_keyword, weighed,
+	Additional, Area, Ask, Category, Column, Country, Definition, Demand, Excluded, Gcid, Invalid, Keyword, LatLng, Layer, SEARCH_TEXT, Viewport, keywords, trade_keyword, weighed,
 };
 pub use expr::Expr;
 pub use grid::{Cell, CellId, Grid};

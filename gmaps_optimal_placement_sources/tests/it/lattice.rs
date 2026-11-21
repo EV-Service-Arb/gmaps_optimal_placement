@@ -44,13 +44,11 @@ fn an_overlapping_area_pays_only_for_new_ground() {
 		std::fs::remove_dir_all(&dir).unwrap(); // a killed run's
 	}
 	let cfg = Category {
-		trade: 1,
-		name: "Plumbing".into(),
-		country: Country::FR,
-		primary: Gcid {
+		trade: Gcid {
 			id: "gcid:plumber".into(),
 			name: "plombier".into(),
 		},
+		country: Country::FR,
 		additional: Vec::new(),
 		keywords: vec![Keyword {
 			text: "plombier".into(),
