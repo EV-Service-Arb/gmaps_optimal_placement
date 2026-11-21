@@ -4,8 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use eyre::{Result, WrapErr, bail, ensure};
 use gmaps_optimal_placement_core::{grid::Bbox, payload::Poi};
 use indexmap::IndexMap;
-pub use sa_core::placement::SEARCH_TEXT;
-use sa_core::placement::{Ask, Category, primary_keyword};
+use gmaps_optimal_placement_core::{Ask, Category, primary_keyword};
 
 use crate::{
 	Frame,
@@ -137,8 +136,8 @@ pub struct Inventory {
 /// One text search, paged, in rank order, out of what the work dir and the queries cache hold. The
 /// body and the field mask are the caller's, because they are what decides the SKU.
 ///
-/// The first page with no answer, or a [stale](Work::stale) one, ends the search: the hits before
-/// it, and it.
+/// The first page with no answer, or one fetched before [`Work::since`], ends the search: the hits
+/// before it, and it.
 pub fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pages: usize, kind: Kind) -> Result<(Vec<(String, serde_json::Value, SystemTime)>, Option<Ask>)> {
 	let mut out = Vec::new();
 	let mut token: Option<String> = None;
@@ -147,10 +146,12 @@ pub fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pages: usi
 		if let Some(t) = &token {
 			body["pageToken"] = serde_json::Value::String(t.clone());
 		}
-		let (res, at) = match work.cached(&body)? {
-			Some((_, at)) if work.stale(at) => return Ok((out, Some(lacking(&body, mask)?))),
-			Some(hit) => hit,
-			None => return Ok((out, Some(lacking(&body, mask)?))),
+		let ask = Ask {
+			mask: mask.to_owned(),
+			body: serde_json::to_string(&body)?,
+		};
+		let Some((res, at)) = work.answer(&ask)? else {
+			return Ok((out, Some(ask)));
 		};
 		work.record(kind, at);
 		if let Some(e) = res.get("error") {
@@ -261,13 +262,6 @@ pub fn cached(category: &Category, frame: Frame, work: &Work) -> Result<Inventor
 		eprintln!("  depth {d}: {c} calls, {q} of them interior");
 	}
 	Ok(Inventory { pois: out, obs, asks, calls: total })
-}
-
-fn lacking(body: &serde_json::Value, mask: &str) -> Result<Ask> {
-	Ok(Ask {
-		mask: mask.to_owned(),
-		body: serde_json::to_string(body)?,
-	})
 }
 
 /// The first page of `query` over `tile`, which is also its cache key.

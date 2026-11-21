@@ -1,0 +1,36 @@
+[package]
+name = "gmaps_optimal_placement_cli"
+description = "The placement CLI: refit and cross-validate the ranking model, country reconnaissance, and a viewer over the work dir"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "gmaps_optimal_placement"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+color-eyre.workspace = true
+eyre.workspace = true
+gmaps_optimal_placement.workspace = true
+gmaps_optimal_placement_core.workspace = true
+gmaps_optimal_placement_misc.workspace = true
+gmaps_optimal_placement_rank.workspace = true
+gmaps_optimal_placement_sources.workspace = true
+indexmap.workspace = true
+jiff.workspace = true
+sa_core.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+smart-default.workspace = true
+toml.workspace = true
+ureq.workspace = true
+v_utils.workspace = true
+
+[lints]
+workspace = true

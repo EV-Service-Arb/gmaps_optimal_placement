@@ -13,13 +13,11 @@
         rust = v_flakes.rs.default_nightly system;
         build_rust = v_flakes.rs.build_nightly system;
         pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; stripClaudeSignature = true; });
-        pname = (pkgs.lib.importTOML ./gmaps_optimal_placement/Cargo.toml).package.name;
+        # the CLI's binary, which keeps the library's name
+        pname = "gmaps_optimal_placement";
         # inherited from the workspace, so it is not in the member's own `[package]`
         version = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.version;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
-        port = 8731;
-        # the first of this repository's ten in SA_PORT_RANGE: site_conductor's docs/port_range.md
-        SA_PORTS = 52850;
 
         rs = v_flakes.rs { inherit pkgs rust; pinDeps = true; };
         github = v_flakes.github {
@@ -42,27 +40,16 @@
         };
         combined = v_flakes.utils.combine { inherit rust; modules = [ rs github readme ]; };
 
-        # `conductor --port <p> [--countries <dir>]` — the conductor's peer: the studies
-        # behind its assertion. Run from this checkout; needs PANEL_ASSERTION_KEYS. Buys nothing: the
-        # conductor buys what a pull lacks.
-        conductor = pkgs.writeShellApplication {
-          name = "conductor";
-          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold nix ];
-          text = ''
-            cd "$(git rev-parse --show-toplevel)"
-            exec cargo run -p gmaps_optimal_placement -- serve "$@"
-          '';
-        };
         # `misc <country> <tally> [--per col] [--floor n]` — one map of a whole country, no study.
         # Written per country and tally, so two denominators of the same tally overwrite each other.
         misc = pkgs.writeShellApplication {
           name = "misc-map";
-          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold xdg-utils nix ];
+          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold xdg-utils ];
           text = ''
             [ $# -ge 2 ] || { echo "usage: nix run .#misc <country> <tally> [--per <column>] [--floor <n>]" >&2; exit 1; }
             cd "$(git rev-parse --show-toplevel)"
             out="''${XDG_CACHE_HOME:-$HOME/.cache}/gmaps_optimal_placement/out/misc-$1-$2.html"
-            cargo run -p gmaps_optimal_placement -- misc "$@" --out "$out"
+            cargo run -p gmaps_optimal_placement_cli -- misc "$@" --out "$out"
             xdg-open "$out"
           '';
         };
@@ -73,13 +60,11 @@
             cat <<'EOF'
             nix run .#misc <country> <tally>  which towns in a country to write a study about at all:
                                             pool | building | parcel per --per column, --floor to skip hamlets
-            nix run .#conductor -- --port <p> [--countries ..]  serve the conductor the studies it
-                                            hands in, behind its assertion (PANEL_ASSERTION_KEYS); only a pull spends
             nix run [.#help]                this
             cached archives and API responses live under $XDG_CACHE_HOME/gmaps_optimal_placement
-            a study is the conductor's category over an area. examples/locations/<l>.nix carries
-            area and candidate over examples/countries/<CC>.nix; with the category's demand columns
-            and layers on top they evaluate to what `gmaps_optimal_placement schema` describes.
+            a study is the conductor's category over an area, on the country's base compiled into
+            the library; examples/locations/<l>.toml carries an area and its candidates. Both are
+            what `gmaps_optimal_placement schema base|location` describes.
             EOF
           '';
         };
@@ -87,7 +72,6 @@
       {
         apps = {
           default = { type = "app"; program = pkgs.lib.getExe help; };
-          conductor = { type = "app"; program = pkgs.lib.getExe conductor; };
           misc = { type = "app"; program = pkgs.lib.getExe misc; };
           help = { type = "app"; program = pkgs.lib.getExe help; };
         };
@@ -103,7 +87,7 @@
               allowBuiltinFetchGit = true;
             };
             src = pkgs.lib.cleanSource ./.;
-            cargoBuildFlags = [ "-p" "gmaps_optimal_placement" ];
+            cargoBuildFlags = [ "-p" "gmaps_optimal_placement_cli" ];
             doCheck = false;
             auditable = false; # cargo-auditable doesn't support edition 2024
           };
@@ -131,8 +115,6 @@
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
             env.RUST_BACKTRACE = 1;
-            # where the conductor's local-stack serves `conductor` from
-            PLACEMENT_PORT = toString SA_PORTS;
           };
       }
     );

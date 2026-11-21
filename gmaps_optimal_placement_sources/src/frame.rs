@@ -1,7 +1,6 @@
 //! What is drawn of an area: its outline grown by its margin. Cells and competitors are taken
 //! inside it.
-use gmaps_optimal_placement_core::grid::Bbox;
-use sa_core::{geo::LatLng, placement::Area};
+use gmaps_optimal_placement_core::{Area, LatLng, grid::Bbox};
 
 const M_PER_DEG: f64 = 111_320.;
 

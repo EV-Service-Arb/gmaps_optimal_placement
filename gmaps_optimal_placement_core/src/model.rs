@@ -209,20 +209,22 @@ impl Model {
 				let rank = Rank::try_new(Feats::try_new(rated.iter().sum::<f64>() / rated.len() as f64, &payload.place)?, rank::COEF)?;
 				let terms: Vec<(String, f64)> = t.terms.iter().map(|x| (x.text.clone(), x.weight)).collect();
 
-				// rescoring the first tier here recovers the divisor `build` used, and proves the coefficients
-				// that painted this payload are the ones linked in: otherwise the map would quietly show
-				// weights from a model nobody is running any more
+				// rescoring recovers the divisors `build` used, and proves the coefficients that painted this
+				// payload are the ones linked in: otherwise the map would quietly show weights from a model
+				// nobody is running any more
+				let raw: Vec<f64> = t.pois.iter().map(|p| rank.strength(&Biz::from(&p.poi), &terms)).collect();
+				let tier: Vec<usize> = comps.iter().map(|c| c.tier).collect();
+				let divisors = rank::divisors(&tier, &raw, t.tiers.len())?;
 				let first = &t.tiers.first().ok_or_else(|| eyre::eyre!("payload declares no tier"))?.name;
-				let mut scored: Vec<(f64, f64)> = t.pois.iter().filter(|p| &p.poi.tier == first).map(|p| (rank.strength(&Biz::from(&p.poi), &terms), p.w)).collect();
-				ensure!(!scored.is_empty(), "no competitor is in tier {first:?}, which is the scale everything else is read against");
-				scored.sort_by(|a, b| a.0.total_cmp(&b.0));
-				let scale = scored[scored.len() / 2].0;
-				ensure!(scale > 0., "tier {first:?} scores a median strength of {scale}");
-				for (raw, w) in &scored {
+				let scale = divisors[0].ok_or_else(|| eyre::eyre!("no competitor is in tier {first:?}, which is the scale everything else is read against"))?;
+				for (p, (raw, c)) in t.pois.iter().zip(raw.iter().zip(&comps)) {
+					let div = divisors[c.tier].expect("a tier a competitor is in has a divisor");
 					ensure!(
-						(raw / scale - w).abs() < 1e-3,
-						"tier {first:?} carries w={w} where rank::COEF now scores {:.4} — the payload was built by a different model",
-						raw / scale
+						(raw / div - p.w).abs() < 1e-3,
+						"{:?} carries w={} where rank::COEF now scores {:.4} — the payload was built by a different model",
+						p.poi.name,
+						p.w,
+						raw / div
 					);
 				}
 				Ok(TradeState { comps, nx, ny, rank, terms, scale })

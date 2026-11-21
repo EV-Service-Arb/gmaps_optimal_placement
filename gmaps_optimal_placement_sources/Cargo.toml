@@ -12,7 +12,6 @@ csv.workspace = true
 eyre.workspace = true
 gmaps_optimal_placement_core.workspace = true
 indexmap.workspace = true
-sa_core.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -21,7 +20,6 @@ ureq.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
-gmaps_optimal_placement_core.workspace = true
 zip.workspace = true
 
 [lints]

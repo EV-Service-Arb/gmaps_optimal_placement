@@ -10,4 +10,4 @@ pub mod work;
 pub use frame::Frame;
 pub use grid::GridSource;
 pub use poi::{Ranking, Region};
-pub use work::Work;
+pub use work::{Held, Work};

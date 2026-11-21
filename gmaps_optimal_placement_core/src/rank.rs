@@ -136,6 +136,28 @@ impl Rank {
 	}
 }
 
+/// Per tier, the median raw [`Rank::strength`] of its competitors (`tier[i]` is competitor `i`'s):
+/// what a payload's `w` is that strength divided by. `w = 1` is "a competitor as strong as the thing
+/// I am about to open" — `Model::capture_at` gives a candidate's own pull an implicit weight of 1.0.
+/// Per tier, because `Model::pressure` already multiplies by the tier weight: a fitted strength that
+/// has learned a wash ranks below a detailer would otherwise be discounted twice. `None` for a tier
+/// nobody is in.
+pub fn divisors(tier: &[usize], raw: &[f64], tiers: usize) -> Result<Vec<Option<f64>>> {
+	assert_eq!(tier.len(), raw.len(), "one tier per competitor");
+	(0..tiers)
+		.map(|t| {
+			let mut w: Vec<f64> = tier.iter().zip(raw).filter(|(x, _)| **x == t).map(|(_, r)| *r).collect();
+			if w.is_empty() {
+				return Ok(None);
+			}
+			w.sort_by(f64::total_cmp);
+			let med = w[w.len() / 2];
+			ensure!(med > 0., "tier {t} has a median strength of {med}, so it cannot be normalised");
+			Ok(Some(med))
+		})
+		.collect()
+}
+
 /// One observed ordering. The first `ranked` feature vectors are in the order Places returned them;
 /// the rest are the remainder of the choice set, which is what identifies the coefficients.
 #[derive(Clone, Debug)]

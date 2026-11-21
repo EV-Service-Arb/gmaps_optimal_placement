@@ -3,18 +3,14 @@
 //! winning; Excluded is checked before any of them.
 use std::collections::BTreeMap;
 
+use gmaps_optimal_placement_core::{Additional, Area, Category, Country, Excluded, Gcid, Keyword, LatLng};
 use gmaps_optimal_placement_sources::{
 	Frame, Work,
 	poi::{self, Tiling},
-	work::{Age, QueriesCache},
+	work::Age,
 };
-use sa_core::{
-	gbp::Country,
-	geo::LatLng,
-	placement::{Additional, Area, Category, Excluded, Gcid, Keyword},
-	queries_cache::gop,
-};
-use sha2::{Digest, Sha256};
+
+use crate::Answers;
 
 const AT: LatLng = LatLng { lat: 45.7797, lng: 3.0863 };
 
@@ -35,6 +31,7 @@ fn a_competitor_is_tiered_by_the_search_that_found_it() {
 	if dir.exists() {
 		std::fs::remove_dir_all(&dir).unwrap(); // a killed run's
 	}
+	let held = Answers::default();
 	let category = Category {
 		trade: 1,
 		name: "Plumbing".into(),
@@ -77,7 +74,7 @@ fn a_competitor_is_tiered_by_the_search_that_found_it() {
 		radius_m: 300.,
 		margin_m: 0.,
 	};
-	let work = Work::at(&dir, QueriesCache::Local).policy(Age::default(), Tiling { zoom: 12, depth: 0 });
+	let work = Work::at(&dir, Box::new(held.clone())).policy(Age::default(), Tiling { zoom: 12, depth: 0 });
 
 	let asked = poi::cached(&category, Frame::from(&area), &work).unwrap().asks;
 	let mut queries: Vec<String> = Vec::new();
@@ -109,10 +106,7 @@ fn a_competitor_is_tiered_by_the_search_that_found_it() {
 	]);
 	for a in &asked {
 		let q = serde_json::from_str::<serde_json::Value>(&a.body).unwrap()["textQuery"].as_str().unwrap().to_owned();
-		let key: String = Sha256::digest(gop(&a.body)).iter().map(|b| format!("{b:02x}")).collect();
-		let at = dir.join("data/places_cache");
-		std::fs::create_dir_all(&at).unwrap();
-		std::fs::write(at.join(format!("{key}.json")), serde_json::json!({ "places": answers[q.as_str()] }).to_string()).unwrap();
+		held.answer(a, serde_json::json!({ "places": answers[q.as_str()] }));
 	}
 
 	let inv = poi::cached(&category, Frame::from(&area), &work).unwrap();
@@ -129,5 +123,7 @@ fn a_competitor_is_tiered_by_the_search_that_found_it() {
 		]),
 		"e is excluded by a word in its name and f by its primary type, before any tier"
 	);
-	std::fs::remove_dir_all(&dir).unwrap();
+	if dir.exists() {
+		std::fs::remove_dir_all(&dir).unwrap();
+	}
 }

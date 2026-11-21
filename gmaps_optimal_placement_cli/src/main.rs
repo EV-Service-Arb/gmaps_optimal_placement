@@ -1,18 +1,18 @@
-use std::{
-	net::SocketAddr,
-	path::{Path, PathBuf},
-	sync::Arc,
-};
+#![feature(default_field_values)]
 
-use clap::{Parser, Subcommand};
-use eyre::Result;
-use gmaps_optimal_placement::{
-	Base, Study,
-	settings::{AppConfig, SettingsCommand, SettingsFlags},
-};
+mod held;
+mod settings;
+
+use std::path::{Path, PathBuf};
+
+use clap::{Parser, Subcommand, ValueEnum};
+use eyre::{Result, WrapErr};
+use gmaps_optimal_placement::{Base, Work};
+use gmaps_optimal_placement_core::{Area, Candidate, Category, Definition};
 use gmaps_optimal_placement_rank::{League, Observed, Ordering, fit, pooled};
-use gmaps_optimal_placement_sources::{Work, work::QueriesCache};
-use sa_core::placement::{Catalog, Category, Definition};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use settings::{AppConfig, SettingsCommand, SettingsFlags};
 
 #[derive(Parser)]
 #[command(about = "Paint a category's demand over the competitors already on the ground")]
@@ -25,15 +25,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-	/// Serve the conductor: every request carries its assertion, checked against the keys in
-	/// `PANEL_ASSERTION_KEYS`. A study is a definition it hands in, over `--countries`; nothing is
-	/// bought, the conductor buys what a pull lacks
-	Serve {
-		#[command(flatten)]
-		bases: Bases,
-		#[arg(short, long, default_value_t = 8731)]
-		port: u16,
-	},
 	/// Refit the ranking model over every ordering in the work dir, and print the table that goes
 	/// into `gmaps_optimal_placement_core::rank::COEF`. How Google ranks is one mechanism, so this takes the
 	/// whole product and reads whatever each pairing has already collected
@@ -51,8 +42,8 @@ enum Cmd {
 	/// Which towns in a country are worth a study: something the cadastre draws, counted per
 	/// administrative unit and divided by whatever the statistical grid publishes, as one HTML map
 	Misc {
-		country: gmaps_optimal_placement::misc::Country,
-		tally: gmaps_optimal_placement::misc::Tally,
+		country: gmaps_optimal_placement_misc::Country,
+		tally: gmaps_optimal_placement_misc::Tally,
 		/// Grid column to divide by — `ind` reads per person, `men` per household
 		#[arg(long, default_value = "ind")]
 		per: String,
@@ -64,9 +55,9 @@ enum Cmd {
 		#[arg(short, long)]
 		out: Option<PathBuf>,
 	},
-	/// Print the study document's JSON schema. What the tool's own settings look like is `config
-	/// schema` — a study is the question, the settings are what asking it costs
-	Schema,
+	/// Print a document's JSON schema. What the tool's own settings look like is `config schema` — a
+	/// study is the question, the settings are what asking it costs
+	Schema { doc: Doc },
 	/// The tool's own settings: write defaults, diff against them, and generate the JSON Schema /
 	/// Nix module an editor reads
 	Config {
@@ -83,28 +74,9 @@ struct Pair {
 	/// category a definition in the work dir carries
 	#[arg(short, long)]
 	category: Option<String>,
-	/// Where: the frame, the statistics office behind it, the premises in mind; a file or a
-	/// directory of them
+	/// Where: the area and the premises in mind; a `<slug>.toml` or a directory of them
 	#[arg(short, long, default_value = "examples/locations")]
 	locations: PathBuf,
-	#[command(flatten)]
-	bases: Bases,
-}
-
-/// The country bases an area handed in at runtime stands on.
-#[derive(Clone, clap::Args)]
-struct Bases {
-	/// `<ISO 3166-1 alpha-2>.nix` each: the grid, its columns and layers
-	#[arg(long, default_value = "examples/countries")]
-	countries: PathBuf,
-}
-impl Bases {
-	/// The base an area in `def`'s country stands on.
-	fn country(&self, def: &Definition) -> Result<PathBuf> {
-		let path = self.countries.join(format!("{}.nix", def.area.country()));
-		eyre::ensure!(path.is_file(), "no country base for {} under {}", def.area.country(), self.countries.display());
-		Ok(path)
-	}
 }
 
 fn main() -> Result<()> {
@@ -115,56 +87,17 @@ fn main() -> Result<()> {
 		AppConfig::handle_settings_command(cmd, cli.settings);
 	}
 	let cfg = AppConfig::try_build(cli.settings)?;
-	let cache: QueriesCache = cfg.queries_cache.parse()?;
-	let work = Work::at(v_utils::xdg_cache_dir!(""), cache.clone()).policy((&cfg.age).into(), (&cfg.sweep).into());
+	let dir = v_utils::xdg_cache_dir!("");
+	let work = Work::at(&dir, Box::new(held::Mirror::new(&dir, cfg.queries_cache.parse()?))).policy((&cfg.age).into(), (&cfg.sweep).into());
 	match cli.cmd {
 		Cmd::Config { .. } => unreachable!("handled above, and `handle_settings_command` exits"),
-		Cmd::Schema => {
-			println!("{}", serde_json::to_string_pretty(&schemars::schema_for!(gmaps_optimal_placement::Study))?);
+		Cmd::Schema { doc } => {
+			let schema = match doc {
+				Doc::Base => schemars::schema_for!(Base),
+				Doc::Location => schemars::schema_for!(Location),
+			};
+			println!("{}", serde_json::to_string_pretty(&schema)?);
 			Ok(())
-		}
-		Cmd::Serve { bases, port } => {
-			// the work dir rather than `work` itself: `Work` holds a `Cell`, and the server calls this
-			// from whichever blocking thread a request landed on
-			let (dir, age, tiling) = (work.path().to_owned(), (&cfg.age).into(), (&cfg.sweep).into());
-			let conductor = std::env::var("PANEL_ASSERTION_KEYS").map_err(|e| eyre::eyre!("`serve` checks every request against PANEL_ASSERTION_KEYS: {e}"))?;
-			let stems = |dir: &Path| -> Result<Vec<String>> { Ok(gmaps_optimal_placement::files(dir)?.iter().map(|p| gmaps_optimal_placement::stem(p).to_owned()).collect()) };
-			let catalog = Catalog {
-				countries: stems(&bases.countries)?.iter().map(|c| c.parse()).collect::<Result<_, _>>()?,
-			};
-			let holds = {
-				let bases = bases.clone();
-				Arc::new(move |def: &Definition| gmaps_optimal_placement::load(def, Base::Country(&bases.country(def)?)).map(drop))
-			};
-			let studied = {
-				let bases = bases.clone();
-				move |def: &Definition, since: Option<std::time::SystemTime>| -> Result<(Study, Work)> {
-					let work = Work::at(dir.clone(), cache.clone()).policy(age, tiling).since(since);
-					Ok((gmaps_optimal_placement::load(def, Base::Country(&bases.country(def)?))?, work))
-				}
-			};
-			let asks = {
-				let studied = studied.clone();
-				Arc::new(move |def: &Definition, since| {
-					let (study, work) = studied(def, Some(since))?;
-					study.asks(&work)
-				})
-			};
-			let build = Arc::new(move |def: &Definition| {
-				let (study, work) = studied(def, None)?;
-				Ok(serde_json::to_string(&study.build(&work)?)?)
-			});
-			gmaps_optimal_placement_web::studies::serve(
-				SocketAddr::from(([127, 0, 0, 1], port)),
-				gmaps_optimal_placement_web::studies::Studies::new(
-					conductor.parse().map_err(|e| eyre::eyre!("PANEL_ASSERTION_KEYS: {e}"))?,
-					catalog,
-					work.path().join("studies"),
-					holds,
-					asks,
-					build,
-				),
-			)
 		}
 		Cmd::Fit { at } => {
 			let fit: fit::Fit = harvest(&at, &work)?.iter().collect();
@@ -179,45 +112,58 @@ fn main() -> Result<()> {
 			league.check()
 		}
 		Cmd::Misc { country, tally, per, floor, out } => {
-			let compiled = gmaps_optimal_placement::misc::compile(country, tally, &per, floor, &work)?;
+			let compiled = gmaps_optimal_placement_misc::compile(country, tally, &per, floor, &work)?;
 			report(compiled.stats());
 			write(out.unwrap_or_else(|| work.path().join("out").join(format!("{}.html", compiled.name()))), &compiled.render()?)
 		}
 	}
 }
 
+/// The documents a study is read from.
+#[derive(Clone, Copy, ValueEnum)]
+enum Doc {
+	/// A country's, compiled into the library: the grid, its columns and layers.
+	Base,
+	/// `--locations`' files: an area and the premises in it.
+	Location,
+}
+
+/// An area and the premises worth asking about in it. A location may not name a trade.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Location {
+	area: Area,
+	/// A premises is a location's, not a trade's: the same unit is worth asking about for whichever
+	/// trade would move into it.
+	#[serde(rename = "candidate", default)]
+	candidates: Vec<Candidate>,
+}
+
 /// What every harvested study collected: the two axes' product, and every definition the conductor
-/// ever handed in. How Google ranks is one mechanism, so every harvested study contributes.
+/// ever handed in, each once. How Google ranks is one mechanism, so every harvested study contributes.
 fn harvest(at: &Pair, work: &Work) -> Result<Vec<Observed>> {
-	let (categories, locations) = (categories(at, work)?, gmaps_optimal_placement::files(&at.locations)?);
-	let mut studies = Vec::new();
-	for (_, category) in &categories {
-		for l in &locations {
-			let area = gmaps_optimal_placement::location_area(l)?;
+	let mut defs: Vec<Definition> = Vec::new();
+	for (_, category) in categories(at, work)? {
+		for l in files(&at.locations)? {
+			let area = read_toml::<Location>(&l)?.area;
 			if area.country() == category.country {
-				let def = Definition {
+				defs.push(Definition {
 					area,
 					category: Some(category.clone()),
-				};
-				studies.push(gmaps_optimal_placement::load(&def, Base::Location(l))?);
+				});
 			}
 		}
 	}
-	let defined = work.path().join("studies");
-	if defined.is_dir() {
-		for e in std::fs::read_dir(&defined)? {
-			let path = e?.path();
-			if path.extension().is_some_and(|x| x == "json") {
-				let def: Definition = read(&path)?;
-				if def.category.is_some() {
-					studies.push(gmaps_optimal_placement::load(&def, Base::Country(&at.bases.country(&def)?))?);
-				}
-			}
-		}
-	}
+	defs.extend(studied(work)?.into_iter().filter(|d| d.category.is_some()));
+	let mut seen = std::collections::HashSet::new();
 	let mut observed = Vec::new();
-	for s in studies {
-		observed.extend(s.observations(work)?);
+	for def in defs {
+		if !seen.insert(def.id()) {
+			continue;
+		}
+		if let Some(e) = gmaps_optimal_placement::load(&def, Vec::new())?.observations(work)? {
+			observed.push(Observed::try_new(e.pois, e.places, &e.rankings)?);
+		}
 	}
 	eyre::ensure!(
 		!observed.is_empty(),
@@ -227,13 +173,53 @@ fn harvest(at: &Pair, work: &Work) -> Result<Vec<Observed>> {
 	Ok(observed)
 }
 
+/// Every definition a host studied in this work dir.
+fn studied(work: &Work) -> Result<Vec<Definition>> {
+	let dir = work.path().join("studies");
+	// no directory is a work dir nobody has studied in yet
+	if !dir.is_dir() {
+		return Ok(Vec::new());
+	}
+	let mut out = Vec::new();
+	for e in std::fs::read_dir(&dir)? {
+		let path = e?.path();
+		if path.extension().is_some_and(|x| x == "json") {
+			out.push(read(&path)?);
+		}
+	}
+	Ok(out)
+}
+
+/// Every `*.toml` directly under `path`, in file-stem order. A file is itself, so one axis of the
+/// product can be named on the command line while the other stays a directory.
+fn files(path: &Path) -> Result<Vec<PathBuf>> {
+	if path.is_file() {
+		return Ok(vec![path.to_owned()]);
+	}
+	let mut out: Vec<PathBuf> = std::fs::read_dir(path)
+		.wrap_err_with(|| format!("reading {}", path.display()))?
+		.map(|e| Ok(e?.path()))
+		.collect::<Result<Vec<_>>>()?
+		.into_iter()
+		.filter(|p| p.extension().is_some_and(|e| e == "toml"))
+		.collect();
+	out.sort();
+	eyre::ensure!(!out.is_empty(), "no *.toml under {}", path.display());
+	Ok(out)
+}
+
+fn read_toml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+	let text = std::fs::read_to_string(path).wrap_err_with(|| format!("reading {}", path.display()))?;
+	toml::from_str(&text).wrap_err_with(|| format!("parsing {}", path.display()))
+}
+
 /// The latest of each of the conductor's categories, as the definitions it handed in carry them,
 /// keyed. gop never reads the conductor, and a copy kept here would be one more place a category
 /// drifts from it.
 fn categories(at: &Pair, work: &Work) -> Result<Vec<(String, Category)>> {
 	let dir = work.path().join("studies");
 	let mut latest: Vec<(std::time::SystemTime, Category)> = Vec::new();
-	// no directory is a work dir the conductor has never handed a study
+	// no directory is a work dir nobody has studied in yet
 	if dir.is_dir() {
 		for e in std::fs::read_dir(&dir)? {
 			let path = e?.path();
