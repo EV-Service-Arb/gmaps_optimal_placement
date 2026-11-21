@@ -7,8 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use eyre::{Result, WrapErr, bail, ensure};
 use gmaps_optimal_placement_core::{
-	Ask, Candidate, Category, Column, Country, Definition, Expr, Layer, LayerOut, Notice, Payload, Poi, PoiOut, Scale, TierOut,
-	payload,
+	Ask, Candidate, Category, Column, Country, Definition, Expr, Layer, LayerOut, Notice, Payload, Poi, PoiOut, Scale, TierOut, payload,
 	rank::{self, Biz, Feats, Rank},
 };
 use gmaps_optimal_placement_sources::{Frame, GridSource, Ranking, Region, grid, poi, probe};
@@ -68,7 +67,7 @@ impl Study {
 		let mut grid = grid::load(self.grid.source, self.grid.vintage, frame.bbox, work)?;
 		grid.retain(|c| {
 			let (lon, lat) = c.ring.iter().fold((0., 0.), |(x, y), p| (x + p[0] / 4., y + p[1] / 4.));
-			frame.contains(lat, lon)
+			frame.contains([lat, lon])
 		});
 		ensure!(!grid.is_empty(), "no cell's centre falls inside {}", self.name);
 		let n = grid.len();

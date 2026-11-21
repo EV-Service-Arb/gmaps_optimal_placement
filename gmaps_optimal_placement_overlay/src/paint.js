@@ -25,7 +25,7 @@ export function attach(map, onView, onPoi) {
 		map, onPoi,
 		heat: canvas(0), haze: canvas(3), lines: canvas(0),
 		ringX: null, ringY: null, colors: null, shown: null, tint: '', alpha: null, segs: null, opacity: 0.62, dead: false,
-		markers: [], tiers: new Uint8Array(0), iw: new google.maps.InfoWindow(),
+		markers: [], iw: new google.maps.InfoWindow(),
 	};
 	s.overlay = new google.maps.OverlayView();
 	s.overlay.onAdd = function () {
@@ -129,42 +129,35 @@ function paint(s) {
 	}
 }
 
-/// The whole competitor set, replacing whatever is there. A click opens the info window; the hooks,
+/// The whole competitor set, replacing whatever is there: each its size and whether it shows decided
+/// in Rust. A click opens the info window, which reads what it scored on each search; the hooks,
 /// where the host gave them, also hear which dot it was.
 export function dots(s, json) {
 	for (const m of s.markers) m.setMap(null);
-	const el = s.map.getDiv();
 	s.markers = JSON.parse(json).map((c, i) => {
-		const scale = c.big ? 7 : 4.5;
 		const m = new google.maps.Marker({
-			position: { lat: c.lat, lng: c.lng }, zIndex: c.big ? 3 : 2,
+			position: { lat: c.lat, lng: c.lng }, zIndex: c.big ? 3 : 2, map: c.show ? s.map : null,
 			label: c.n_rev ? { text: String(c.n_rev), className: 'gop-nrev', color: '#fff', fontSize: '10px', fontWeight: '700' } : null,
 			icon: {
 				path: google.maps.SymbolPath.CIRCLE, fillColor: c.color, fillOpacity: 0.95,
-				strokeColor: '#111', strokeWeight: 1.2, scale,
+				strokeColor: '#111', strokeWeight: 1.2, scale: c.scale,
 				// labelOrigin is in path units, so divide out the scale to keep the gap constant in pixels
-				labelOrigin: new google.maps.Point(0, -(scale + 8) / scale),
+				labelOrigin: new google.maps.Point(0, -(c.scale + 8) / c.scale),
 			},
 		});
-		m.ti = c.ti;
 		m.addListener('click', () => {
+			const searches = c.searches.map(q => `<tr style="color:${q.on ? '#111' : '#999'}"><td>${esc(q.text)}</td><td style="text-align:right;padding-left:8px">${esc(q.w)}</td></tr>`).join('');
 			s.iw.setContent(`<div style="font:13px system-ui;max-width:250px;color:#111">
 				<b>${esc(c.name)}</b><br>${esc(c.addr)}<br>
 				<span style="color:#555">${esc(c.kind)} · ${esc(c.tier)}</span><br>
 				★ ${c.rating ?? '–'} (${c.n_rev} reviews)${c.tel ? '<br>' + esc(c.tel) : ''}
-				${c.web ? `<br><a href="${esc(c.web)}" target="_blank" rel="noreferrer">website</a>` : ''}</div>`);
+				${c.web ? `<br><a href="${esc(c.web)}" target="_blank" rel="noreferrer">website</a>` : ''}
+				<table style="margin-top:4px;font-size:12px;border-collapse:collapse"><tr><td colspan="2" style="color:#555">weight ${esc(c.w)}, by search</td></tr>${searches}</table></div>`);
 			s.iw.open(s.map, m);
 			if (s.onPoi) s.onPoi(i);
 		});
 		return m;
 	});
-	tiers(s, s.tiers);
-}
-
-/// One flag per tier. An empty array shows everything.
-export function tiers(s, flags) {
-	s.tiers = flags.slice();
-	for (const m of s.markers) m.setMap(s.tiers.length === 0 || s.tiers[m.ti] ? s.map : null);
 }
 
 const esc = t => String(t ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);

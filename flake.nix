@@ -18,6 +18,14 @@
         # inherited from the workspace, so it is not in the member's own `[package]`
         version = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.version;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
+        lib = pkgs.lib;
+        # the first of this repository's ten in SA_PORT_RANGE: site_conductor's docs/port_range.md
+        SA_PORTS = 52850;
+        rustPlatform = pkgs.makeRustPlatform { rustc = build_rust; cargo = build_rust; inherit stdenv; };
+        cargoLock = {
+          lockFile = ./Cargo.lock;
+          allowBuiltinFetchGit = true;
+        };
 
         rs = v_flakes.rs { inherit pkgs rust; pinDeps = true; };
         github = v_flakes.github {
@@ -54,13 +62,53 @@
           '';
         };
 
+        # The CLI must be the lock's `wasm-bindgen`: a skew is a hard error at bindgen time.
+        wasmBindgen = (lib.findFirst (p: p.name == "wasm-bindgen") (throw "Cargo.lock holds no wasm-bindgen") (lib.importTOML ./Cargo.lock).package).version;
+        wasm-bindgen-cli =
+          let cli = pkgs."wasm-bindgen-cli_${lib.replaceStrings [ "." ] [ "_" ] wasmBindgen}" or (throw "nixpkgs has no wasm-bindgen-cli ${wasmBindgen}, the lock's wasm-bindgen"); in
+          assert lib.assertMsg (cli.version == wasmBindgen) "wasm-bindgen-cli ${cli.version} is not the lock's wasm-bindgen ${wasmBindgen}";
+          cli;
+        # gmaps_optimal_placement_overlay as a page imports it: wasm-bindgen's module, its .d.ts, the wasm
+        overlay = rustPlatform.buildRustPackage {
+          pname = "gmaps_optimal_placement_overlay";
+          inherit version cargoLock;
+          src = pkgs.lib.cleanSource ./.;
+          nativeBuildInputs = [ wasm-bindgen-cli pkgs.binaryen ];
+          buildPhase = ''
+            runHook preBuild
+            cargo build --release -p gmaps_optimal_placement_overlay --target wasm32-unknown-unknown
+            wasm-bindgen --target web --out-dir "$out" --out-name overlay target/wasm32-unknown-unknown/release/gmaps_optimal_placement_overlay.wasm
+            wasm-opt -Oz "$out/overlay_bg.wasm" -o "$out/overlay_bg.wasm"
+            runHook postBuild
+          '';
+          installPhase = "true";
+          doCheck = false;
+          auditable = false; # cargo-auditable doesn't support edition 2024
+        };
+        # `view [<study>]` — a study of the work dir on a map, at 127.0.0.1:${SA_PORTS}; without one, picked with fzf
+        view = pkgs.writeShellApplication {
+          name = "view";
+          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold fzf ];
+          text = ''
+            cd "$(git rev-parse --show-toplevel)"
+            if [ $# -eq 0 ]; then
+              pick="$(cargo run -q -p gmaps_optimal_placement_cli -- view | fzf --prompt 'study> ' | cut -d' ' -f1)"
+              [ -n "$pick" ] || exit 1
+              set -- "$pick"
+            fi
+            exec cargo run -q -p gmaps_optimal_placement_cli -- view --overlay ${overlay} --port ${toString SA_PORTS} "$@"
+          '';
+        };
+
         help = pkgs.writeShellApplication {
           name = "help";
           text = ''
             cat <<'EOF'
+            nix run [-- <study>]            a study of the work dir on a map: what the conductor studied, and
+                                            each location under each of its categories; fzf picks one without
             nix run .#misc <country> <tally>  which towns in a country to write a study about at all:
                                             pool | building | parcel per --per column, --floor to skip hamlets
-            nix run [.#help]                this
+            nix run .#help                  this
             cached archives and API responses live under $XDG_CACHE_HOME/gmaps_optimal_placement
             a study is the conductor's category over an area, on the country's base compiled into
             the library; examples/locations/<l>.toml carries an area and its candidates. Both are
@@ -71,21 +119,18 @@
       in
       {
         apps = {
-          default = { type = "app"; program = pkgs.lib.getExe help; };
+          default = { type = "app"; program = pkgs.lib.getExe view; };
+          view = { type = "app"; program = pkgs.lib.getExe view; };
           misc = { type = "app"; program = pkgs.lib.getExe misc; };
           help = { type = "app"; program = pkgs.lib.getExe help; };
         };
 
+        packages.overlay = overlay;
         packages.default =
-          (pkgs.makeRustPlatform { rustc = build_rust; cargo = build_rust; inherit stdenv; }).buildRustPackage {
-            inherit pname;
-            inherit version;
+          rustPlatform.buildRustPackage {
+            inherit pname version cargoLock;
             buildInputs = with pkgs; [ openssl.dev ];
             nativeBuildInputs = with pkgs; [ pkg-config ];
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-              allowBuiltinFetchGit = true;
-            };
             src = pkgs.lib.cleanSource ./.;
             cargoBuildFlags = [ "-p" "gmaps_optimal_placement_cli" ];
             doCheck = false;
@@ -112,6 +157,7 @@
               python3
               (v_flakes.qlty system)
               rust
+              wasm-bindgen-cli
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
             env.RUST_BACKTRACE = 1;

@@ -7,7 +7,7 @@ use std::{
 
 use gmaps_optimal_placement_core::{
 	Model, Payload,
-	model::{HAZE, LEVELS, LayerRef, LayerSpec, Summary, TierState, TradeLayer, categories, fmt, haze, layer_id, ramp},
+	model::{Ages, HAZE, LEVELS, LayerRef, LayerSpec, Selection, Summary, TradeLayer, categories, fmt, haze, layer_id, ramp},
 	payload::Scale,
 };
 use js_sys::Function;
@@ -37,6 +37,9 @@ pub struct Legend {
 	heat: Option<Heat>,
 	pressure: Option<Pressure>,
 	competitors: Option<Competitors>,
+	/// How old the answers naming the competitors shown are, as of the study's `show`; null without
+	/// one shown.
+	ages: Option<Ages>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Tsify)]
@@ -110,6 +113,7 @@ impl Overlay {
 				noticed: false,
 				heat: None,
 				tune: Tune::default(),
+				now_s: 0.,
 				field: false,
 				focus: 0,
 				dots: false,
@@ -169,10 +173,18 @@ impl Overlay {
 	pub fn tune(&self, #[wasm_bindgen(unchecked_param_type = "Tune")] t: JsValue) -> Result<(), JsError> {
 		let t = String::from(js_sys::JSON::stringify(&t).map_err(|e| JsError::new(&format!("tune: {e:?}")))?);
 		let tune: Tune = serde_json::from_str(&t).map_err(|e| JsError::new(&format!("tune({t}): {e}")))?;
-		if let (Some(m), Some(tiers)) = (&self.inner.borrow().model, &tune.tiers) {
-			let known: Vec<String> = m.tier_states().into_iter().map(|s| s.name).collect();
-			if let Some(stray) = tiers.keys().find(|k| !known.contains(k)) {
-				return Err(JsError::new(&format!("tune: the shown study has no tier {stray:?}, only {known:?}")));
+		if let Some(t) = self.inner.borrow().model.as_ref().and_then(|m| m.traded()) {
+			let all = t.selection();
+			let tiers: Vec<String> = all.tiers.into_iter().map(|s| s.name).collect();
+			let terms: Vec<String> = t.trade.terms.iter().map(|x| x.text.clone()).collect();
+			for (asked, known, what) in [
+				(tune.tiers.as_ref().map(|t| t.keys().cloned().collect::<Vec<_>>()), &tiers, "tier"),
+				(tune.terms.clone(), &terms, "search"),
+				(tune.kinds.clone(), &all.kinds, "kind"),
+			] {
+				if let Some(stray) = asked.iter().flatten().find(|k| !known.contains(k)) {
+					return Err(JsError::new(&format!("tune: the shown study has no {what} {stray:?}, only {known:?}")));
+				}
 			}
 		}
 		run(&self.inner, |i| {
@@ -225,6 +237,14 @@ impl Overlay {
 pub struct Tune {
 	lambda_m: Option<f64>,
 	tiers: Option<HashMap<String, TierTune>>,
+	/// The searches a competitor's contributions count on, by `Summary.trade.terms[].text`; null:
+	/// every one.
+	#[serde(default)]
+	terms: Option<Vec<String>>,
+	/// The Places kinds shown, by `Summary.trade.categories[].kind`; null: every one. A hidden kind
+	/// leaves the marks and the pressure alike.
+	#[serde(default)]
+	kinds: Option<Vec<String>>,
 }
 
 #[derive(Clone, Deserialize, Tsify)]
@@ -242,6 +262,8 @@ struct Inner {
 	noticed: bool,
 	heat: Option<String>,
 	tune: Tune,
+	/// Unix seconds of the study's `show`, which the ages are read as of.
+	now_s: f64,
 	field: bool,
 	/// Which competitor the coverage layers are about. The loudest until one is clicked.
 	focus: usize,
@@ -272,6 +294,7 @@ impl Inner {
 		self.scene.show(model.iter().cloned().collect());
 		if changed {
 			self.focus = 0;
+			self.now_s = js_sys::Date::now() / 1000.;
 		}
 		self.model = model;
 		if self
@@ -289,17 +312,25 @@ impl Inner {
 		out
 	}
 
-	fn tiers(&self, m: &Model) -> Vec<TierState> {
-		let mut t = m.tier_states();
+	/// The payload's selection under `tune`; `None` without a trade.
+	fn selection(&self, m: &Model) -> Option<Selection> {
+		let t = m.traded()?;
+		let mut sel = t.selection();
 		if let Some(w) = &self.tune.tiers {
-			for s in &mut t {
+			for s in &mut sel.tiers {
 				if let Some(w) = w.get(&s.name) {
 					s.weight = w.weight;
 					s.show = w.show;
 				}
 			}
 		}
-		t
+		if let Some(on) = &self.tune.terms {
+			sel.terms = t.trade.terms.iter().map(|x| on.contains(&x.text)).collect();
+		}
+		if let Some(on) = &self.tune.kinds {
+			sel.kinds.retain(|k| on.contains(k));
+		}
+		Some(sel)
 	}
 
 	fn lambda(&self, m: &Model) -> Option<f64> {
@@ -308,9 +339,9 @@ impl Inner {
 
 	fn recompute(&mut self) {
 		(self.press, self.unmet) = match &self.model {
-			Some(m) => match (m.traded(), self.lambda(m)) {
-				(Some(t), Some(lambda)) => {
-					let press = t.pressure(lambda, &self.tiers(m));
+			Some(m) => match (m.traded(), self.lambda(m), self.selection(m)) {
+				(Some(t), Some(lambda), Some(sel)) => {
+					let press = t.pressure(lambda, &sel);
 					let unmet = t.unmet(&press);
 					(press, unmet)
 				}
@@ -321,17 +352,16 @@ impl Inner {
 	}
 
 	/// Coloured by Google category, as gop's own map colours them, so the panel's category list is
-	/// a legend for what is on the map; hidden tiers off it.
+	/// a legend for what is on the map; what the selection hides off it.
 	fn place_dots(&self) {
-		let Some(m) = self.model.as_ref().filter(|_| self.dots) else {
+		let Some((t, sel)) = self.model.as_ref().filter(|_| self.dots).and_then(|m| Some((m.traded()?, self.selection(m)?))) else {
 			self.scene.dots("[]");
 			return;
 		};
-		let cats = m.payload.trade.iter().flat_map(categories).collect::<Vec<_>>();
-		self.scene.dots(&scene::dots(&[m.as_ref()], |_, p, _| {
+		let cats = categories(t.trade);
+		self.scene.dots(&scene::dots(t, &sel, |p| {
 			cats.iter().find(|c| c.kind == p.poi.kind).expect("the list was built from these same pois").color.clone()
 		}));
-		self.scene.tiers(&self.tiers(m).iter().map(|t| u8::from(t.show)).collect::<Vec<_>>());
 	}
 
 	fn repaint(&mut self) -> Vec<Event> {
@@ -343,6 +373,7 @@ impl Inner {
 				heat: None,
 				pressure: None,
 				competitors: None,
+				ages: None,
 			});
 		};
 		let spec: Option<LayerSpec> = m.layers().into_iter().find(|l| Some(layer_id(&l.name)) == self.heat);
@@ -353,11 +384,12 @@ impl Inner {
 			Some(LayerRef::Trade(t)) => {
 				let traded = m.traded().expect("a model offers trade layers only with a trade");
 				let lambda = self.lambda(&m).expect("and so a λ");
-				traded.values(t, self.focus, lambda, &self.tiers(&m), &[]).into_owned() // unmet is read for Unmet alone, taken above
+				let sel = self.selection(&m).expect("and so a selection");
+				traded.values(t, self.focus, lambda, &sel, &[]).into_owned() // unmet is read for Unmet alone, taken above
 			}
 		};
 		let heat = [values.as_slice()];
-		self.scene.heat(spec.as_ref().map(|s| (heat.as_slice(), s.linear)));
+		self.scene.heat(spec.as_ref().map(|s| (heat.as_slice(), s.scale)));
 		let traded = m.traded().is_some();
 		let press = [self.press.as_slice()];
 		self.scene.field((self.field && traded).then_some(press.as_slice()));
@@ -371,7 +403,7 @@ impl Inner {
 				id: layer_id(&s.name),
 				name: s.name,
 				note: s.note,
-				scale: if s.linear { Scale::Linear } else { Scale::Percentile },
+				scale: s.scale,
 				stops: (0..=10)
 					.map(|q| {
 						let c = ramp(q as f64 / 10.);
@@ -388,13 +420,12 @@ impl Inner {
 			note: "Competitor pressure, Σ weight × exp(−distance/λ), as a percentile among the cells in view.".to_owned(),
 			levels: drawn.levels.map(|l| LEVELS.iter().zip(l).map(|(&q, v)| Level { q, value: fmt(v) }).collect()),
 		});
-		let competitors = (self.dots && traded).then(|| {
-			let shown = self.tiers(&m);
-			let t = m.payload.trade.as_ref().expect("traded");
-			let in_view = t.pois.iter().filter(|p| shown.iter().any(|s| s.show && s.name == p.poi.tier) && self.scene.sees(&p.poi)).count();
-			Competitors { in_view }
+		let shown = m.traded().zip(self.selection(&m));
+		let competitors = shown.as_ref().filter(|_| self.dots).map(|(t, sel)| Competitors {
+			in_view: (0..t.trade.pois.len()).filter(|&i| t.counts(sel, i) && self.scene.sees(&t.trade.pois[i].poi)).count(),
 		});
-		self.say(Legend { heat, pressure, competitors })
+		let ages = shown.as_ref().and_then(|(t, sel)| t.ages(sel, self.now_s));
+		self.say(Legend { heat, pressure, competitors, ages })
 	}
 
 	/// The legend, unless it reads as the last one did.

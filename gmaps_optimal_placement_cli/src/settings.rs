@@ -19,6 +19,8 @@ pub struct AppConfig {
 	/// Where what the conductor bought is read from: its `<origin>/api/queries_cache`, mirrored in the
 	/// work dir; or `local`, the mirror alone.
 	pub queries_cache: String,
+	/// A Google Maps JavaScript API key, for `view`'s page; `view` refuses to start without one.
+	pub maps_key: Option<String>,
 }
 
 /// How the competitor sweep tiles the ground. Every answer is cached under the exact quadtree tile it

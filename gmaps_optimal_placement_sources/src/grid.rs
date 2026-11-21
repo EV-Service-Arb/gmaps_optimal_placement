@@ -168,7 +168,7 @@ pub fn places(source: GridSource, vintage: u16, work: &Work) -> Result<IndexMap<
 	}
 	ensure!(!out.is_empty(), "{:?} published no cell at all", a.member);
 	for (code, (x, y, n)) in &laea {
-		let (lon, lat) = proj.to_wgs84(x / *n as f64, y / *n as f64)?;
+		let (lon, lat) = proj.to_wgs84([x / *n as f64, y / *n as f64])?;
 		out[code].at = [lat, lon];
 	}
 	eprintln!("{:?}: scanned {scanned} cells, rolled up into {} places", a.member, out.len());

@@ -2,6 +2,7 @@
 
 mod held;
 mod settings;
+mod view;
 
 use std::path::{Path, PathBuf};
 
@@ -54,6 +55,20 @@ enum Cmd {
 		/// Defaults to `<work dir>/out/<country>-<tally>-per-<column>.html`
 		#[arg(short, long)]
 		out: Option<PathBuf>,
+	},
+	/// Open a study on a map in the browser, at `127.0.0.1:<port>`, until Ctrl-C: built out of the work
+	/// dir and what the conductor bought, never buying, so a study with searches missing opens with
+	/// its notice. Without a study, the ones there are: `<id> <name>` a line
+	View {
+		/// A study's id (a prefix of it will do)
+		study: Option<String>,
+		#[command(flatten)]
+		at: Pair,
+		/// The overlay as wasm-bindgen wrote it (`nix build .#overlay`)
+		#[arg(long)]
+		overlay: Option<PathBuf>,
+		#[arg(short, long)]
+		port: Option<u16>,
 	},
 	/// Print a document's JSON schema. What the tool's own settings look like is `config schema` — a
 	/// study is the question, the settings are what asking it costs
@@ -111,6 +126,27 @@ fn main() -> Result<()> {
 			report(league.stats());
 			league.check()
 		}
+		Cmd::View { study: None, at, .. } => {
+			for (def, _) in studies(&at, &work)? {
+				println!("{} {}", &def.id()[..12], def.name());
+			}
+			Ok(())
+		}
+		Cmd::View { study: Some(id), at, overlay, port } => {
+			let key = cfg
+				.maps_key
+				.ok_or_else(|| eyre::eyre!("`view` draws on Google Maps, and needs the settings' `maps_key`: a Maps JavaScript API key"))?;
+			let (overlay, port) = match (overlay, port) {
+				(Some(o), Some(p)) => (o, p),
+				_ => eyre::bail!("`view <study>` needs --overlay and --port; `nix run` hands it both"),
+			};
+			let mut found = studies(&at, &work)?.into_iter().filter(|(d, _)| d.id().starts_with(&id));
+			let (Some((def, candidates)), None) = (found.next(), found.next()) else {
+				eyre::bail!("{id:?} is not the id of exactly one study; `view` with none lists them")
+			};
+			let payload = serde_json::to_vec(&gmaps_optimal_placement::load(&def, candidates)?.build(&work)?)?;
+			view::serve(payload, &overlay, &key, port)
+		}
 		Cmd::Misc { country, tally, per, floor, out } => {
 			let compiled = gmaps_optimal_placement_misc::compile(country, tally, &per, floor, &work)?;
 			report(compiled.stats());
@@ -139,28 +175,11 @@ struct Location {
 	candidates: Vec<Candidate>,
 }
 
-/// What every harvested study collected: the two axes' product, and every definition the conductor
-/// ever handed in, each once. How Google ranks is one mechanism, so every harvested study contributes.
+/// What every harvested study collected: every study, each once. How Google ranks is one mechanism,
+/// so every one with a category contributes.
 fn harvest(at: &Pair, work: &Work) -> Result<Vec<Observed>> {
-	let mut defs: Vec<Definition> = Vec::new();
-	for (_, category) in categories(at, work)? {
-		for l in files(&at.locations)? {
-			let area = read_toml::<Location>(&l)?.area;
-			if area.country() == category.country {
-				defs.push(Definition {
-					area,
-					category: Some(category.clone()),
-				});
-			}
-		}
-	}
-	defs.extend(studied(work)?.into_iter().filter(|d| d.category.is_some()));
-	let mut seen = std::collections::HashSet::new();
 	let mut observed = Vec::new();
-	for def in defs {
-		if !seen.insert(def.id()) {
-			continue;
-		}
+	for (def, _) in studies(at, work)?.into_iter().filter(|(d, _)| d.category.is_some()) {
 		if let Some(e) = gmaps_optimal_placement::load(&def, Vec::new())?.observations(work)? {
 			observed.push(Observed::try_new(e.pois, e.places, &e.rankings)?);
 		}
@@ -171,6 +190,29 @@ fn harvest(at: &Pair, work: &Work) -> Result<Vec<Observed>> {
 		at.locations.display()
 	);
 	Ok(observed)
+}
+
+/// The two axes' product — each location with its premises, under each of the conductor's
+/// categories in its country — and every definition a host ever studied here, each once.
+fn studies(at: &Pair, work: &Work) -> Result<Vec<(Definition, Vec<Candidate>)>> {
+	let mut out: Vec<(Definition, Vec<Candidate>)> = Vec::new();
+	let categories = categories(at, work)?;
+	for l in files(&at.locations)? {
+		let Location { area, candidates } = read_toml(&l)?;
+		for (_, category) in categories.iter().filter(|(_, c)| c.country == area.country()) {
+			let def = Definition {
+				area: area.clone(),
+				category: Some(category.clone()),
+			};
+			out.push((def, candidates.clone()));
+		}
+	}
+	for def in studied(work)? {
+		if !out.iter().any(|(d, _)| d.id() == def.id()) {
+			out.push((def, Vec::new()));
+		}
+	}
+	Ok(out)
 }
 
 /// Every definition a host studied in this work dir.

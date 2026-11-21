@@ -2,9 +2,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use eyre::{Result, WrapErr, bail, ensure};
-use gmaps_optimal_placement_core::{grid::Bbox, payload::Poi};
+use gmaps_optimal_placement_core::{Ask, Category, grid::Bbox, payload::Poi, primary_keyword};
 use indexmap::IndexMap;
-use gmaps_optimal_placement_core::{Ask, Category, primary_keyword};
 
 use crate::{
 	Frame,
@@ -235,7 +234,7 @@ pub fn cached(category: &Category, frame: Frame, work: &Work) -> Result<Inventor
 			bail!("Places result {name:?} has no location: {p}")
 		};
 		// a tile of the quadtree reaches past the frame, and what it found there is someone else's map
-		if !frame.contains(lat, lng) {
+		if !frame.contains([lat, lng]) {
 			continue;
 		}
 		out.push(Poi {

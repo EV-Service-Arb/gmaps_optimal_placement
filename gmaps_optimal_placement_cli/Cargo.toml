@@ -12,6 +12,7 @@ name = "gmaps_optimal_placement"
 path = "src/main.rs"
 
 [dependencies]
+axum.workspace = true
 clap = { workspace = true, features = ["derive"] }
 color-eyre.workspace = true
 eyre.workspace = true
@@ -28,6 +29,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 smart-default.workspace = true
+tokio.workspace = true
 toml.workspace = true
 ureq.workspace = true
 v_utils.workspace = true
