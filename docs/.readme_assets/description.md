@@ -4,7 +4,8 @@ A study is a category over an area. The area — a city's outline or a circle, o
 gives the statistical grid behind it; the category, the conductor's trade set up in a country, gives
 the Google categories and keywords its competitors are found and scored by, and how demand follows
 from the columns the grid publishes. `gmaps_optimal_placement` paints that demand under the
-competitors already on the ground, and the conductor's map draws it. How much any one competitor
+competitors already on the ground: a library the conductor links and draws on its map, and a CLI
+that opens the same studies here. How much any one competitor
 counts is fitted, not guessed: `gmaps_optimal_placement fit` estimates what Google's ordering
 rewards, over the orderings the conductor's queries cache already holds. `gmaps_optimal_placement
 strength` is what says that estimate is worth painting: every candidate model cross-validated over

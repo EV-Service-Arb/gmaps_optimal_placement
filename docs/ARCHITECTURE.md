@@ -4,50 +4,57 @@ Where should a service business open. An area and the country base under it desc
 and the statistical grid behind it; the conductor's category — a trade set up in a country —
 describes everything else: the Google categories and keywords its competitors are found by, what
 each keyword is worth, what is never a competitor, and how demand follows from whatever columns the
-grid publishes. The tool builds the payload that answers it; the conductor's map draws it.
+grid publishes. The library builds the payload that answers it; the conductor links it and draws it
+on its map, and the CLI's viewer draws the same studies here.
 
 The question is the input. Retargeting an area, a country or a category is an edit to one of those
 documents, never to the code.
 
 ```
-  category (conductor) · country.nix // area ─── the pinned interface
+  the conductor's category · an area · bases/<CC>.toml ─── a Definition, addressed by its SHA-256
                    │
    ┌───────────────┴───────────────────────────────────────────┐
-   │ gmaps_optimal_placement_sources        network, cache     │
-   │   GridSource ─ INSEE Filosofi 200 m                       │
-   │               GEOSTAT 1 km                                │
-   │   poi        ─ the conductor's queries cache (Places)     │
-   │   probe      ─ the same, asked from a node                │
+   │ gmaps_optimal_placement_sources        network, work dir  │
+   │   GridSource ─ INSEE Filosofi 200 m · GEOSTAT 1 km        │
+   │   poi, probe ─ the sweep and the probe, out of Held       │
+   │   Work { dir, since, Held }                               │
    └──────┬────────────────────────────────────┬───────────────┘
           │                                    │  the grid rolled up by commune
-          │              ┌─────────────────────┴─────────────────────┐
-          │              │ gmaps_optimal_placement_misc              │
-          │              │   Country · Tally — what a cadastre draws,│
-          │              │   per commune, ÷ any column, one map      │
-          │              └───────────────────────────────────────────┘
-          │  cells + named columns, POIs + tiers, orderings
+          │                    ┌───────────────┴───────────────────────────┐
+          │                    │ gmaps_optimal_placement_misc              │
+          │                    │   what a cadastre draws, per commune      │
+          │                    └───────────────────────────────────────────┘
    ┌──────┴────────────────────────────────────────────────────┐
    │ gmaps_optimal_placement_core     no I/O, wasm-safe        │
+   │   Definition · Category · Ask · Country — the vocabulary  │
    │   Reproject · CellId · Grid · Expr                        │
-   │   rank — features, Plackett–Luce, COEF                    │
+   │   rank — features, Plackett–Luce, COEF, divisors          │
    │   Payload — the whole thin waist                          │
-   │   model — pressure, unmet, capture, top-N, clouds         │
-   └───────┬───────────────────────────────────────┬───────────┘
-           │  every expression                     │  every slider
-   ┌───────┴──────────────────────────┐   ┌────────┴──────────────────────┐
-   │ gmaps_optimal_placement          │   │ gmaps_optimal_placement_web   │
-   │   CLI, study, settings           │──▶│   the conductor's API:        │
-   │   categories × areas             │   │   Definition in, Payload out  │
-   └───────┬──────────────────────────┘   └────────┬──────────────────────┘
-           │  the orderings on disk                 ▼
-   ┌───────┴──────────────────────────┐   site_conductor: its map's overlay links
-   │ gmaps_optimal_placement_rank     │   `_core` (Payload, Model) at build time
+   │   model — Selection, pressure, unmet, capture, top-N      │
+   └───────┬─────────────────────────────────┬─────────────────┘
+           │                                 │
+   ┌───────┴────────────────────────┐  ┌─────┴──────────────────────────┐
+   │ gmaps_optimal_placement        │  │ gmaps_optimal_placement_overlay│
+   │   load · asks · build          │  │   Overlay · Scene · paint.js   │
+   │   bases compiled in            │  │   (wasm)                       │
+   └───────┬──────────────┬─────────┘  └─────┬───────────────┬──────────┘
+           │              └─────────┬────────┘               │
+           │                        ▼                        │
+           │             site_conductor links both, one pin  │
+   ┌───────┴─────────────────────────────────┐               │
+   │ gmaps_optimal_placement_cli             │◀──────────────┘
+   │   view · fit · strength · misc · schema │
+   │   Held: the work dir's mirror of the    │
+   │   conductor's public queries cache      │
+   └───────┬─────────────────────────────────┘
+   ┌───────┴──────────────────────────┐
+   │ gmaps_optimal_placement_rank     │
    │   Observed · Strategy · Strength │
    │   Adam, k-fold, the league table │
    └──────────────────────────────────┘
 ```
 
-A study is an `sa_core::placement::Definition`: an area (a city's viewport or a circle, and a margin, as
+A study is a `Definition` (`_core`): an area (a city's viewport or a circle, and a margin, as
 the conductor keeps it) and a category, each named as the conductor names it. The category drives
 the billed half. The sweep searches its primary Google category's name and each of its keywords,
 then each additional category's name. A competitor's tier is the first of those whose search found
@@ -61,40 +68,42 @@ identity of the pairing. `Payload::trade` is the one `Option` that says so, and 
 is everything that is billed. A city can therefore be looked at before any of the Places quota goes
 on it.
 
-The CLI's commands other than `serve` hold two axes, the conductor's categories and `--locations`
-(files): a category is the latest the conductor handed in (the definitions under the work dir's
-`studies/`), because gop never reads the conductor, and a copy of a category kept here would drift
-from it. What a study is *called* — `<trade>·<CC>·<slug>` — is the definition's.
+The CLI's commands hold two axes, the conductor's categories and `--locations` (files): a category is
+the latest a host studied (the definitions under the work dir's `studies/`), because the CLI never
+reads the conductor's catalogue, and a copy of a category kept here would drift from it. What a study is *called* — `<trade>·<CC>·<slug>` — is the definition's.
 
 ## The line between baked and live
 
 Rust evaluates everything that a slider cannot move — the demand model and every configured layer —
 into a `Payload` the browser fetches. Competitor pressure, underserved demand, the capture score and
-the top-N sweep are recomputed in the page, because they are functions of λ and the tier weights,
-which are live controls. Moving either side across this line costs the map its interactivity or the
+the top-N sweep are recomputed in the page, because they are functions of λ, the tier weights and
+which searches and kinds are selected (one `Selection`), which are live controls. Moving either side across this line costs the map its interactivity or the
 study its reproducibility.
 
 Competitor weight is baked, and deliberately: `rank` scores every competitor once in `build`, before
-the payload is serialised, so the browser only re-weights by tier and λ. What the probe observed of
+the payload is serialised; the model splits that score into its per-search contributions, so the
+browser only selects among them and re-weights by tier and λ. What the probe observed of
 each competitor, node by node, is baked the same way. The one thing scored live is the what-if — one
 business, one arithmetic pass — so the scoring function reaches wasm only through that, and only a
 model that can score one hypothetical business has to.
 
 Where a fitted model *comes from* never reaches wasm at all. `gmaps_optimal_placement_rank` holds
 the optimiser, the entrants and the cross-validation, and is linked by the CLI alone: an entrant may
-carry whatever it needs without that landing in the browser or beside the HTTP server.
+carry whatever it needs without that landing in the browser or in a host.
 
 Both sides are Rust. `gmaps_optimal_placement_core` is wasm-safe and holds the model, so the same code that
 `cargo t` pins against a fixture is the code the browser runs.
 
 ## The line between this repo and the conductor
 
-The conductor is the one surface placement is used through. Its map is drawn by its own crate, which
-depends on `_core` here (the `ts` feature: its types in the overlay's `.d.ts`), so the model the
-browser runs and the payload it reads are checked against each other by the compiler: `Model::try_new`
-checks a payload's weights against the `rank::COEF` it was linked with. Everything else crosses as
-`sa_core::placement`. This repo keeps what training needs: the grids, the sources, `probe`'s plan,
-`fit`, `strength`; and what it trains on is what the conductor bought, never a search of its own.
+The conductor depends on placement at build time only: it links the library (`load`, `asks`,
+`build`), `_core` for the vocabulary its stored categories are written in, and the overlay, from one
+pin. `Model::try_new` checks a payload's weights against the `rank::COEF` it was linked with, so
+that pin is what makes builder and renderer one model. Nothing placement links depends on the
+conductor; the CLI alone reads its public queries-cache wire (`sa_core::queries_cache`), and the
+conductor never links the CLI. This repo keeps what training needs — the grids, the sources,
+`probe`'s plan, `fit`, `strength` — and the viewer a fit is judged by; what it trains on is what
+the conductor bought, never a search of its own.
 
 ## Two visual axes
 
@@ -107,28 +116,23 @@ colour comes near it.
 Both scales are relative to the cells in view. A city zoomed into is read against itself, and the
 legend's ticks move with the view.
 
-## Behind the conductor
+## Held, and a pull
 
-`serve` serves no page and holds no axis: it takes `--countries` and builds whatever
-definition the conductor hands in (`gmaps_optimal_placement_web`). Its operations are one
-`ev_lib::api` table: each row's gate is an `sa_auth::Gate` naming the permission it opens for, and a
-refusal is `{code, error}`. Every request carries the conductor's assertion for exactly its method
-and path, checked against `PANEL_ASSERTION_KEYS`; a pull's two operations need
-`sa:placement:study:spend`, anything else `sa:placement:study:read`. Nothing here buys: every
-study is built out of the work dir and the queries cache, and one whose sweep is not all there opens
-on what is, its notice saying how many searches it lacks at least.
+Placement fetches no billed answer. A Places search is an `Ask`, and what was answered for it is
+whatever the host's `Held` returns, with when it was fetched: the conductor's reads its own queries
+cache, from the blocking thread a build runs on; the CLI's reads the work dir's mirror of that cache.
+Public archives are placement's own, under the work dir.
 
-A pull is the conductor's: it asks `POST /studies/asks` what the study lacks — the first unanswered
-page down each branch of the sweep, as an `sa_core::placement::Ask` keyed as the work dir keys it —
-buys those into the queries cache, and asks again, since what lies behind a page (the next one, a
-tile's quarters) is known only once it is answered. Once none is lacking it asks `POST
-/studies/pull`, which builds the study again out of them. The conductor prices and charges every
-search it bought; placement never counts one.
+A pull is its host's. It calls `asks` — the first unanswered page down each branch of the sweep —
+buys those, and asks again, since what lies behind a page (the next one, a tile's quarters) is known
+only once it is answered; once none is lacking it calls `build`. Placement never counts a purchase.
 
-A pull re-asks every answer written before it began — unless one before it did not end whole, in
-which case it re-asks only those written before *that* one began (`{sha}.resume` beside the
-definition, its id, the `since` every `asks` answers with, gone on `/studies/pull`). What a stopped
-pull paid for is served to its retry, so a refunded failure is never bought twice.
+`Work::since` is the pull's: an answer fetched before it is lacking. The host keeps when the first
+pull since the study's last whole one began, and forgets it once one ends whole, so what a stopped
+pull paid for is served to its retry and a refunded failure is never bought twice.
+
+Every `asks` and `build` keeps the definition under `studies/<id>.json`, whichever host built it:
+that is what `fit` harvests.
 
 ## Invariants
 
@@ -161,11 +165,12 @@ pull paid for is served to its retry, so a refunded failure is never bought twic
 - **The conductor is the one center of data ingestion.** A Places search is never bought here, for
   a map or for training: the conductor buys what a pull lacks, and `fit` and `strength` read only
   what it already holds. A study placement cannot build out of that says so and opens on the rest.
-- **A billed answer is bought once, wherever this runs.** Places answers are kept in the conductor's
-  queries cache (settings' `queries_cache`; site_conductor's docs/ARCHITECTURE.md, Queries cache);
-  the work dir under `$XDG_CACHE_HOME/gmaps_optimal_placement` mirrors what it served, and a run goes on from that mirror with the cache out of reach until it needs an
-  answer the mirror lacks. `local` reads the work dir alone. Bulk archives are free and cache there alone — the INSEE archive is ~87 MB.
-  A 200 that is a refusal is never kept: it would answer for its request everywhere.
+- **A billed answer is bought once, wherever it is read.** Places answers are kept in the conductor's
+  queries cache (site_conductor's docs/ARCHITECTURE.md, Queries cache), which its `Held` reads in
+  process; the CLI's mirrors what that cache serves under `$XDG_CACHE_HOME/gmaps_optimal_placement`,
+  and runs on from the mirror with the cache out of reach until it needs an answer the mirror lacks
+  (`local`: the mirror alone). Bulk archives are free and cache in the work dir alone — the INSEE
+  archive is ~87 MB. A 200 that is a refusal is never kept: it would answer for its request everywhere.
 - **Nothing in that cache expires.** An answer older than its kind's configured age is served anyway,
   and its age rides onto the map beside the imputed flag. Google's daily search quota is the scarce
   side, and refetching spends a day of it to learn what is mostly the same thing; a pull is the only
@@ -199,7 +204,7 @@ decision, and they are the difference between a map that informs one and a map t
 guess into authority. The worked examples are in `examples/`.
 
 - **Motorisation is estimated, not measured.** No 200 m source publishes households-with-a-car;
-  INSEE has it only at IRIS level. `countries/FR.nix` infers it from the house/flat split
+  INSEE has it only at IRIS level. `bases/FR.toml` infers it from the house/flat split
   (`men_mais × 1.55 + men_coll × 0.85`) as a base layer, and a detailing category's demand reads
   it. Directionally right, not a measurement.
 - **Most fine-grained cells are modelled.** ~80 % of INSEE 200 m cells have fewer than 11 fiscal

@@ -1,37 +1,22 @@
-CLI and the study document.
+The library a host links: a study's definition over its country's base, built out of a work dir and
+whatever the host holds of the billed answers.
 
-Every command but `serve` takes the same two axes: the conductor's categories, as the definitions it handed in
-carry them (the latest of each, `-c <key>` to name one), and `-l` locations (`*.nix`, a directory or
-a single file), over `--countries` country bases looked up by name. `fit` and `strength` take
-the whole product, with every definition the conductor ever handed in.
-
-```sh
-gmaps_optimal_placement serve    --countries <dir> [--port 8731]           # the conductor's studies
-gmaps_optimal_placement fit      [-c <category>] -l <locations>              # refit rank::COEF over every ordering cached
-gmaps_optimal_placement strength [-c <category>] -l <locations>              # cross-validate the entrants
-gmaps_optimal_placement schema                    # JSON schema for the study document
+```text
+load(definition, candidates) ─▶ Study ─┬─ asks(&Work)  ─▶ [Ask]     what a pull buys next
+                                       └─ build(&Work) ─▶ Payload   what is held; a notice for the rest
+Work { dir, since, Held }
 ```
 
-The study is [`Study`]: an `sa_core::placement::Definition` — an area and a category — laid over the
-area's base, evaluating to a grid source, its derived columns and layers, and the category's demand
-columns and layers after them. [`load`] is where they meet. The study is named
-`<trade>·<CC>·<slug>`. `column` adds derived columns in list order, so a study can name a quantity
-its source only implies. Every expression is evaluated before any of it reaches the map — an
-expression naming a column that does not exist is an error, not a zero.
+- [`load`] lays the definition over the base compiled in for its country (`bases/<CC>.toml`, a
+  [`Base`]): the area on top, then the candidates (a location's), then the category's demand columns
+  and layers after the base's. Every expression is evaluated before any of it reaches the map — one
+  naming a column that does not exist is an error, not a zero.
+- [`Held`] is the one seam for billed answers: the host's own. Nothing here fetches one.
+  `Work::since` makes an answer fetched before it lacking, which is how a pull asks again.
+- `asks` and `build` keep the definition under the work dir's `studies/<id>.json`, whichever host
+  built it: what the CLI's `fit` harvests.
+- [`Study::observations`] is the ordering evidence a fit reads, as plain data.
+- Feature `testing`: a fixture work dir of real Filosofi rows, so a host's tests build a study offline.
 
-`load` takes no category as well, and then an area is already a study: [`Study::build`] never
-reaches the sweep, and what comes back is the grid's own layers under the area's own name.
-
-The category's weighted keywords are the terms competitors are scored on. The probe's plan asks them
-from equal-demand strata; `fit` estimates `gmaps_optimal_placement_core::rank::COEF` over every
-ordering in the work dir — the whole product at once, because how Google ranks is one mechanism and
-one pairing on its own is about fifty orderings. A pairing nobody harvested contributes nothing and
-costs nothing: `fit` reads what the conductor's queries cache holds, so it cannot buy what it is
-missing. [`fit::Fit::check`] is what refuses a fit whose implied catchment nothing observed.
-
-[`Payload`] is what `serve` hands the conductor, whose map draws it. It carries evaluated per-cell
-values only: competitor pressure, underserved demand, capture scores and the top-N sweep are
-`gmaps_optimal_placement_core::model`, recomputed in the browser because they move with the sliders.
-
-No key is held here: the conductor buys every search. Archives and API responses cache under
-`$XDG_CACHE_HOME/gmaps_optimal_placement`.
+No category is the identity of the pairing: an area alone is a study whose build never reaches the
+sweep, named after the area.
