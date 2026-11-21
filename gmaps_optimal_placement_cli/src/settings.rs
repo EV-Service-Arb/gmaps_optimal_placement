@@ -1,6 +1,8 @@
 //! What the tool does, rather than what a study is about. A study document is the two axes of the
 //! product and nothing else; anything that would be the same for every study — how old an answer may
 //! get before the map says so, how a frame is tiled — lives here.
+use std::path::PathBuf;
+
 use gmaps_optimal_placement_sources::{poi::Tiling, work::Age as Ages};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -18,7 +20,7 @@ pub struct AppConfig {
 	pub sweep: Sweep,
 	/// A copy of prod's `panel.db`, what the conductor bought read off it: site_conductor's
 	/// `nix run .#prod-restore -- panel-data/panel.db=<this path>` takes one.
-	pub queries_cache: std::path::PathBuf,
+	pub queries_cache: PathBuf,
 	/// A Google Maps JavaScript API key, for `view`'s page; `view` refuses to start without one.
 	pub maps_key: Option<String>,
 }
