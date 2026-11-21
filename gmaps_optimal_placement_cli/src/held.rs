@@ -9,7 +9,7 @@ use std::{
 
 use eyre::{Result, WrapErr, bail};
 use gmaps_optimal_placement::Held;
-use gmaps_optimal_placement_core::Ask;
+use gmaps_optimal_placement_core::{Ask, SEARCH_TEXT};
 use sa_core::queries_cache::{Key, Scheme, Stored, gop, under};
 use sha2::{Digest, Sha256};
 
@@ -53,7 +53,7 @@ impl Mirror {
 
 impl Held for Mirror {
 	fn held(&self, ask: &Ask) -> Result<Option<(serde_json::Value, SystemTime)>> {
-		let key = Key(Sha256::digest(gop(&ask.body).as_bytes()).into());
+		let key = Key(Sha256::digest(gop(SEARCH_TEXT, &ask.body).as_bytes()).into());
 		let dst = self.dir.join(format!("{key}.json"));
 		match fs::read_to_string(&dst) {
 			Ok(s) => {
@@ -102,7 +102,7 @@ mod tests {
 			mask: String::new(),
 			body: serde_json::json!({"textQuery": q}).to_string(),
 		};
-		let key = Key(Sha256::digest(gop(&ask("kept").body).as_bytes()).into());
+		let key = Key(Sha256::digest(gop(SEARCH_TEXT, &ask("kept").body).as_bytes()).into());
 		std::fs::create_dir_all(&held.dir).unwrap();
 		std::fs::write(held.dir.join(format!("{key}.json")), r#"{"places":[]}"#).unwrap();
 
