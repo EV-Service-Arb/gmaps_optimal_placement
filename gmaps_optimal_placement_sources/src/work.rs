@@ -1,8 +1,6 @@
-//! The work dir: bulk archives and API responses, so a rerun costs nothing. A billed response is
-//! the conductor's queries cache's to keep (`sa_core::queries_cache`), so it is bought once wherever
-//! this runs; the work dir mirrors what the cache served, and runs on from that mirror while the
-//! cache is out of reach, until a response it does not hold is needed. A Places search is never
-//! bought here: the conductor buys what a study lacks ([`sa_core::placement::Ask`]), and this reads it.
+//! The work dir: bulk archives and what is derived from them, so a rerun costs nothing, and the
+//! studies built over it. A billed answer is never fetched here: it is what the host [`Held`] for an
+//! [`Ask`], bought by whoever buys.
 //!
 //! Nothing here expires. An answer past the age its kind allows is still served and its age is
 //! reported, because the alternative — refetching — spends a day of quota to learn the same thing,
@@ -15,7 +13,7 @@ use std::{
 };
 
 use eyre::{Result, WrapErr, bail};
-use sa_core::queries_cache::{Key, Scheme, Stored, gop, under};
+use gmaps_optimal_placement_core::Ask;
 use sha2::{Digest, Sha256};
 
 const YEAR: Duration = Duration::from_secs(365 * 86_400);
@@ -59,22 +57,15 @@ pub struct Aged {
 	pub stale: bool,
 }
 
-/// Where the responses a run pays for are cached: the settings' `queries_cache`.
-#[derive(Clone, Debug)]
-pub enum QueriesCache {
-	/// `local`: the work dir alone, shared with no other machine.
-	Local,
-	/// The conductor's queries cache at this URL (`<origin>/api/queries_cache`); the work dir
-	/// mirrors it.
-	Conductor(String),
+/// The billed answers a study is built from, as its host holds them.
+pub trait Held {
+	/// The answer held for `ask`, and when it was fetched.
+	fn held(&self, ask: &Ask) -> Result<Option<(serde_json::Value, SystemTime)>>;
 }
 
 pub struct Work {
 	dir: PathBuf,
-	cache: QueriesCache,
-	/// Configured rather than `ureq::get`: the default turns a 4xx into an error before the body is
-	/// read, and the queries cache's error body is the only thing that says what went wrong.
-	agent: ureq::Agent,
+	held: Box<dyn Held>,
 	age: Age,
 	tiling: crate::poi::Tiling,
 	/// An answer written before this is as good as none: a pull's, which asks again what it is built from.
@@ -83,11 +74,10 @@ pub struct Work {
 	served: RefCell<Vec<(Kind, Duration)>>,
 }
 impl Work {
-	pub fn at(dir: impl Into<PathBuf>, cache: QueriesCache) -> Self {
+	pub fn at(dir: impl Into<PathBuf>, held: Box<dyn Held>) -> Self {
 		Self {
 			dir: dir.into(),
-			cache,
-			agent: ureq::Agent::config_builder().http_status_as_error(false).build().new_agent(),
+			held,
 			age: Age::default(),
 			tiling: crate::poi::Tiling::default(),
 			since: None,
@@ -114,17 +104,8 @@ impl Work {
 		self
 	}
 
-	/// Whether an answer written `at` is as good as none.
-	pub(crate) fn stale(&self, at: SystemTime) -> bool {
-		self.since.is_some_and(|since| at < since)
-	}
-
 	pub fn path(&self) -> &Path {
 		&self.dir
-	}
-
-	pub fn queries_cache(&self) -> &QueriesCache {
-		&self.cache
 	}
 
 	/// Answers served for `kind`, paid or not — one per page, which is one unit of
@@ -144,7 +125,7 @@ impl Work {
 		let oldest = seen[seen.len() - 1];
 		Some(Aged {
 			oldest,
-			median: seen[seen.len() / 2],
+			median: seen[seen.len().div_euclid(2)],
 			stale: oldest > self.age.of(kind),
 		})
 	}
@@ -193,7 +174,8 @@ impl Work {
 		}
 		eprintln!("downloading {url}");
 		let mut body = ureq::get(url).call().wrap_err_with(|| format!("GET {url}"))?.into_body().into_reader();
-		let part = dst.with_extension("part");
+		// a part of its own: two runs may download the same archive at once, and the first to finish renames it into place
+		let part = dst.with_extension(format!("{}.{:?}.part", std::process::id(), std::thread::current().id()).replace(['(', ')'], ""));
 		let mut out = fs::File::create(&part).wrap_err_with(|| format!("creating {}", part.display()))?;
 		let n = std::io::copy(&mut body, &mut out)?;
 		if n == 0 {
@@ -204,60 +186,9 @@ impl Work {
 		Ok(dst)
 	}
 
-	/// The answer to this exact Places search and when it was written, if the conductor has bought it:
-	/// out of the work dir, else (or when that one is [stale](Self::stale)) out of the queries cache,
-	/// mirrored. Reading the probe's orderings back this way is what keeps a refit from turning into a
-	/// purchase.
-	pub fn cached(&self, body: &serde_json::Value) -> Result<Option<(serde_json::Value, SystemTime)>> {
-		let key = Key(Sha256::digest(gop(&serde_json::to_string(body)?).as_bytes()).into());
-		let dst = self.post_path(key)?;
-		let mirrored = match fs::read_to_string(&dst) {
-			Ok(s) => Some((serde_json::from_str(&s).wrap_err_with(|| format!("cached response {} is not JSON", dst.display()))?, mtime(&dst)?)),
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-			Err(e) => return Err(e).wrap_err_with(|| format!("reading {}", dst.display())),
-		};
-		if mirrored.as_ref().is_some_and(|(_, at)| !self.stale(*at)) {
-			return Ok(mirrored);
-		}
-		if let QueriesCache::Local = self.cache {
-			return Ok(mirrored);
-		}
-		match self.ask_cache("GET", &under(Scheme::Gop, key), &[])? {
-			(200, text) => Ok(Some(self.mirror(&dst, serde_json::from_str(&text).wrap_err("the queries cache's answer")?)?)),
-			// a mirror the cache never held: kept here before the cache was
-			(404, _) => Ok(mirrored),
-			(status, text) => bail!("the queries cache refused a read: {status}: {text}"),
-		}
-	}
-
-	/// `kept` written to `dst` as of when it was fetched, so its age reads the same from either.
-	fn mirror(&self, dst: &Path, kept: Stored) -> Result<(serde_json::Value, SystemTime)> {
-		let at = SystemTime::from(kept.fetched_at);
-		let part = dst.with_extension("part");
-		fs::write(&part, kept.answer.to_string())?;
-		fs::File::options().write(true).open(&part)?.set_modified(at)?;
-		fs::rename(&part, dst)?;
-		Ok((kept.answer, at))
-	}
-
-	/// A request `under` the conductor's queries cache: its status and body.
-	fn ask_cache(&self, method: &str, under: &str, body: &[u8]) -> Result<(u16, String)> {
-		let QueriesCache::Conductor(cache) = &self.cache else {
-			unreachable!("asked only of a conductor's cache")
-		};
-		let url = format!("{cache}{under}");
-		let req = ureq::http::Request::builder()
-			.method(method)
-			.uri(&url)
-			.header("content-type", "application/json")
-			.body(body.to_vec())?;
-		let mut res = self.agent.run(req).wrap_err_with(|| format!("the queries cache at {cache} did not answer"))?;
-		let text = res.body_mut().read_to_string().wrap_err_with(|| format!("{method} {url}: the answer was cut off"))?;
-		Ok((res.status().as_u16(), text))
-	}
-
-	fn post_path(&self, key: Key) -> Result<PathBuf> {
-		Ok(self.dir("data/places_cache")?.join(format!("{key}.json")))
+	/// What [`Held`] holds for `ask`, unless fetched before [`since`](Self::since).
+	pub(crate) fn answer(&self, ask: &Ask) -> Result<Option<(serde_json::Value, SystemTime)>> {
+		Ok(self.held.held(ask)?.filter(|(_, at)| self.since.is_none_or(|since| *at >= since)))
 	}
 
 	/// A cached GET, and when the answer was written.
@@ -279,18 +210,6 @@ impl std::fmt::Display for Aged {
 		write!(f, "oldest {:.1} d, median {:.1} d", days(self.oldest), days(self.median))
 	}
 }
-impl std::str::FromStr for QueriesCache {
-	type Err = eyre::Report;
-
-	fn from_str(s: &str) -> Result<Self> {
-		match s.trim() {
-			"local" => Ok(Self::Local),
-			url if url.starts_with("http://") || url.starts_with("https://") => Ok(Self::Conductor(url.trim_end_matches('/').to_owned())),
-			other => bail!("queries_cache is `local` or the conductor's `<origin>/api/queries_cache`, not {other:?}"),
-		}
-	}
-}
-
 fn mtime(p: &Path) -> Result<SystemTime> {
 	fs::metadata(p)?.modified().wrap_err_with(|| format!("{} has no mtime", p.display()))
 }

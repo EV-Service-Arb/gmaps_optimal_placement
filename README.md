@@ -13,7 +13,8 @@ A study is a category over an area. The area — a city's outline or a circle, o
 gives the statistical grid behind it; the category, the conductor's trade set up in a country, gives
 the Google categories and keywords its competitors are found and scored by, and how demand follows
 from the columns the grid publishes. `gmaps_optimal_placement` paints that demand under the
-competitors already on the ground, and the conductor's map draws it. How much any one competitor
+competitors already on the ground: a library the conductor links and draws on its map, and a CLI
+that opens the same studies here. How much any one competitor
 counts is fitted, not guessed: `gmaps_optimal_placement fit` estimates what Google's ordering
 rewards, over the orderings the conductor's queries cache already holds. `gmaps_optimal_placement
 strength` is what says that estimate is worth painting: every candidate model cross-validated over
@@ -41,31 +42,34 @@ cargo install --path gmaps_optimal_placement
 
 ## Usage
 ```sh
-# Where what is bought is cached for everyone, so no machine buys the same query twice: the
-# Service-Arb conductor's queries cache, or `local` for this machine's work dir alone. No Places
-# search is bought here: the conductor buys what a pull lacks.
+# What the conductor bought is read from its queries cache, and mirrored in the work dir; `local`
+# reads the mirror alone. Nothing is bought here.
 #   queries_cache = "https://sa.evinvest.ltd/api/queries_cache";
+# `view` draws on Google Maps.
+#   maps_key = "...";
 
-# Serve the Service-Arb conductor, the map's one host: it hands in each category and area it wants
-# studied, over the country bases, and draws the payload itself.
-PANEL_ASSERTION_KEYS=... gmaps_optimal_placement serve --countries examples/countries
+# The studies the work dir holds: what the conductor studied, and each location under each of its
+# categories. Then one of them on a map, until Ctrl-C.
+gmaps_optimal_placement view
+gmaps_optimal_placement view <id> --overlay <wasm-bindgen output> --port 52850
 
 # Refit the ranking model over every ordering the work dir holds.
 gmaps_optimal_placement fit -l examples/locations
 
-# Show the schema of the study document.
-gmaps_optimal_placement schema
+# Show the schema of a country's base, or of a location.
+gmaps_optimal_placement schema base
 
 # Find the towns in a country that are worth a study. Count what a cadastre draws, per commune, and
 # divide by a column of the grid. Towns below the floor are not counted, and not downloaded.
 gmaps_optimal_placement misc france pool --per ind --floor 2000
 ```
 
-From a checkout, `nix run` does the same. Everything after `--` is the binary's own, and paths are
-read from the repository root.
+From a checkout, `nix run` opens a study, picked with fzf, with the overlay the flake builds.
+Everything after `--` is the binary's own, and paths are read from the repository root.
 
 ```sh
-nix run .#conductor -- --port 52850
+nix run
+nix run -- <id>
 nix run .#help
 ```
 

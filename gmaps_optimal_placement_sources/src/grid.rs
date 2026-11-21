@@ -1,7 +1,7 @@
 //! Statistical grids published as one CSV of EPSG:3035 cells.
 //!
 //! Both catalogued sources encode the cell corner in its id, so the whole difference between them
-//! is the [`Archive`] table below: where the file is, which columns are text, and which one carries
+//! is the `Archive` table below: where the file is, which columns are text, and which one carries
 //! provenance.
 use std::collections::{BTreeSet, HashMap};
 
@@ -168,7 +168,7 @@ pub fn places(source: GridSource, vintage: u16, work: &Work) -> Result<IndexMap<
 	}
 	ensure!(!out.is_empty(), "{:?} published no cell at all", a.member);
 	for (code, (x, y, n)) in &laea {
-		let (lon, lat) = proj.to_wgs84(x / *n as f64, y / *n as f64)?;
+		let (lon, lat) = proj.to_wgs84([x / *n as f64, y / *n as f64])?;
 		out[code].at = [lat, lon];
 	}
 	eprintln!("{:?}: scanned {scanned} cells, rolled up into {} places", a.member, out.len());

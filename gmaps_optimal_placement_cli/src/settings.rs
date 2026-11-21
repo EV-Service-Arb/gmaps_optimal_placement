@@ -16,10 +16,11 @@ pub struct AppConfig {
 	pub age: Age,
 	#[settings(flatten)]
 	pub sweep: Sweep,
-	/// Where what is bought is cached for everyone: the conductor's `<origin>/api/queries_cache`,
-	/// where it buys a study's Places searches, so no machine buys the same query twice; or `local`,
-	/// this machine's work dir alone, which holds no search the conductor did not buy.
+	/// Where what the conductor bought is read from: its `<origin>/api/queries_cache`, mirrored in the
+	/// work dir; or `local`, the mirror alone.
 	pub queries_cache: String,
+	/// A Google Maps JavaScript API key, for `view`'s page; `view` refuses to start without one.
+	pub maps_key: Option<String>,
 }
 
 /// How the competitor sweep tiles the ground. Every answer is cached under the exact quadtree tile it

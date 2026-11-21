@@ -1,38 +1,30 @@
 //! Two areas that overlap share every answer either bought: the sweep asks tiles of one quadtree,
 //! never tiles of the area that asked, so a second area over the same ground pays only for the
 //! ground the first did not cover.
-use std::path::Path;
-
-use gmaps_optimal_placement_core::grid::Bbox;
+use gmaps_optimal_placement_core::{Area, Ask, Category, Country, Excluded, Gcid, Keyword, LatLng, grid::Bbox};
 use gmaps_optimal_placement_sources::{
 	Frame, Work,
-	poi::{self, SEARCH_TEXT, Tile, Tiling},
-	work::{Age, QueriesCache},
+	poi::{self, Tile, Tiling},
+	work::Age,
 };
-use sa_core::{
-	gbp::Country,
-	geo::LatLng,
-	placement::{Area, Category, Excluded, Gcid, Keyword},
-};
-use sha2::{Digest, Sha256};
+
+use crate::Answers;
 
 const ZOOM: u32 = 12;
 
-/// Where `Work` keeps the answer to the first page of "plombier" over `tile`.
-fn answer(dir: &Path, tile: Tile, places: serde_json::Value) {
+/// The first page of "plombier" over `tile`, answered.
+fn answer(held: &Answers, tile: Tile, places: serde_json::Value) {
 	let b: Bbox = tile.bbox();
 	let rect = serde_json::json!({
 		"low":  {"latitude": b.lat[0], "longitude": b.lon[0]},
 		"high": {"latitude": b.lat[1], "longitude": b.lon[1]},
 	});
 	let body = serde_json::json!({"textQuery": "plombier", "pageSize": 20, "locationRestriction": {"rectangle": rect}});
-	let key: String = Sha256::digest(format!("{SEARCH_TEXT}\n{}", serde_json::to_string(&body).unwrap()).as_bytes())
-		.iter()
-		.map(|b| format!("{b:02x}"))
-		.collect();
-	let at = dir.join("data/places_cache");
-	std::fs::create_dir_all(&at).unwrap();
-	std::fs::write(at.join(format!("{key}.json")), serde_json::json!({ "places": places }).to_string()).unwrap();
+	let ask = Ask {
+		mask: String::new(),
+		body: serde_json::to_string(&body).unwrap(),
+	};
+	held.answer(&ask, serde_json::json!({ "places": places }));
 }
 
 fn circle(slug: &str, lat: f64, lng: f64) -> Area {
@@ -67,7 +59,8 @@ fn an_overlapping_area_pays_only_for_new_ground() {
 		excluded: Excluded::default(),
 		demand: None,
 	};
-	let work = Work::at(&dir, QueriesCache::Local).policy(Age::default(), Tiling { zoom: ZOOM, depth: 3 });
+	let held = Answers::default();
+	let work = Work::at(&dir, Box::new(held.clone())).policy(Age::default(), Tiling { zoom: ZOOM, depth: 3 });
 
 	let (first, second) = (circle("a", 45.77, 3.08), circle("b", 45.77, 3.16));
 	let (a, b) = (Tile::covering(Frame::from(&first).bbox, ZOOM), Tile::covering(Frame::from(&second).bbox, ZOOM));
@@ -82,7 +75,7 @@ fn an_overlapping_area_pays_only_for_new_ground() {
 				serde_json::json!([{"id": "far", "displayName": {"text": "Plomberie du Bord"}, "location": t.bbox().lat.iter().zip(t.bbox().lon).map(|(lat, lon)| serde_json::json!({"latitude": lat, "longitude": lon})).next().unwrap()}]),
 			false => serde_json::json!([]),
 		};
-		answer(&dir, t, places);
+		answer(&held, t, places);
 	}
 	assert_eq!(poi::cached(&cfg, Frame::from(&first), &work).unwrap().asks.len(), 0, "the first area is answered in full");
 	assert_eq!(
@@ -94,5 +87,7 @@ fn an_overlapping_area_pays_only_for_new_ground() {
 		poi::cached(&cfg, Frame::from(&first), &work).unwrap().pois.is_empty(),
 		"a competitor in a corner of a tile, outside the circle, is not on the circle's map"
 	);
-	std::fs::remove_dir_all(&dir).unwrap();
+	if dir.exists() {
+		std::fs::remove_dir_all(&dir).unwrap();
+	}
 }

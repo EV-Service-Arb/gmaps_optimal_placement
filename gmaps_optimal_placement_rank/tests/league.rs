@@ -29,7 +29,7 @@ fn pois() -> Vec<Poi> {
 			name: format!("{} {} {i}", HEADS[i % HEADS.len()], if i % 3 == 0 { "Clermont" } else { "Sarl" }),
 			addr: String::new(),
 			lat: 45.75 + (i % 4) as f64 * 0.012,
-			lng: 3.08 + (i / 4) as f64 * 0.015,
+			lng: 3.08 + i.div_euclid(4) as f64 * 0.015,
 			rating: (i % 7 != 0).then_some(3.2 + (i % 9) as f64 * 0.2),
 			n_rev: (i * 7 % 40) as f64 * 3.,
 			kind: String::new(),
@@ -57,7 +57,7 @@ fn corpus(pois: &[Poi]) -> Vec<Ranking> {
 
 	let mut out = Vec::new();
 	for n in 0..NODES {
-		let at = [45.74 + (n % 9) as f64 * 0.008, 3.06 + (n / 9) as f64 * 0.008];
+		let at = [45.74 + (n % 9) as f64 * 0.008, 3.06 + n.div_euclid(9) as f64 * 0.008];
 		for term in TERMS {
 			let mut keyed: Vec<(f64, &Poi)> = pois
 				.iter()

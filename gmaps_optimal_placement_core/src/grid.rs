@@ -23,7 +23,7 @@ impl Bbox {
 		let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
 		for lon in self.lon {
 			for lat in self.lat {
-				let (x, y) = proj.to_laea(lon, lat)?;
+				let (x, y) = proj.to_laea([lon, lat])?;
 				(x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
 			}
 		}
@@ -57,7 +57,7 @@ impl CellId {
 		let (e, n, s) = (self.east as f64, self.north as f64, self.res_m as f64);
 		let mut ring = [[0.0; 2]; 4];
 		for (slot, (x, y)) in ring.iter_mut().zip([(e, n), (e + s, n), (e + s, n + s), (e, n + s)]) {
-			let (lon, lat) = proj.to_wgs84(x, y)?;
+			let (lon, lat) = proj.to_wgs84([x, y])?;
 			*slot = [lon, lat];
 		}
 		Ok(ring)

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>placement</title>
+<style>
+	body { margin: 0; display: flex; height: 100vh; font: 13px system-ui; color: #111 }
+	#panel { width: 300px; overflow: auto; padding: 10px 12px; box-sizing: border-box; border-right: 1px solid #ddd }
+	#map { flex: 1 }
+	h2 { font-size: 15px; margin: 0 0 8px }
+	h3 { margin: 14px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #666 }
+	.row { display: flex; gap: 6px; align-items: center; padding: 2px 4px; cursor: pointer; border-radius: 4px; user-select: none }
+	.row:hover { background: #f2f2f2 }
+	.row.on { background: #e8eefc }
+	.row.off { opacity: .4 }
+	.num { margin-left: auto; font-variant-numeric: tabular-nums; color: #555 }
+	.sw { width: 10px; height: 10px; border-radius: 50%; flex: none }
+	#notice { background: #fff4d6; padding: 6px 8px; border-radius: 4px; margin-bottom: 8px }
+	#notice:empty { display: none }
+	.ramp { height: 10px; border-radius: 2px; margin: 4px 0 2px }
+	.ticks { display: flex; justify-content: space-between; color: #555; font-size: 11px }
+	.note { color: #555; font-size: 11px; margin: 2px 0 }
+	.ages { position: relative; height: 48px; margin: 4px 0 18px }
+	.ages div { position: absolute; bottom: 0; font-size: 10px; color: #fff; text-align: center; overflow: hidden }
+	.ages span { position: absolute; bottom: -14px; transform: translateX(-50%); font-size: 10px; color: #666 }
+</style>
+</head>
+<body>
+<div id="panel">
+	<h2 id="name"></h2>
+	<div id="notice"></div>
+	<h3>Heat</h3><div id="layers"></div>
+	<h3>Show</h3><div id="toggles"></div>
+	<h3>Searches</h3><div id="searches"></div>
+	<h3>Kinds</h3><div id="kinds"></div>
+	<h3>Legend</h3><div id="legend"></div>
+	<h3>Data age</h3><div id="ages"></div>
+</div>
+<div id="map"></div>
+<script type="module">
+const KEY = {{MAPS_KEY}};
+const $ = (id) => document.getElementById(id);
+const el = (tag, attrs = {}, ...kids) => {
+	const e = Object.assign(document.createElement(tag), attrs);
+	e.append(...kids);
+	return e;
+};
+
+await new Promise((ok, fail) => {
+	window.__maps = ok;
+	document.head.append(el('script', { src: `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(KEY)}&v=weekly&callback=__maps`, onerror: fail }));
+});
+const { default: init, Overlay } = await import('/overlay/overlay.js');
+await init();
+const text = await (await fetch('/payload.json')).text();
+const payload = JSON.parse(text);
+const map = new google.maps.Map($('map'), { center: { lat: payload.center[0], lng: payload.center[1] }, zoom: payload.zoom, mapTypeControl: false, streetViewControl: false });
+
+// what is selected, null for all: the overlay's `Tune`
+const view = { heat: null, pressure: true, competitors: true, terms: null, kinds: null };
+let summary = null;
+
+const overlay = new Overlay(map, (e) => {
+	if (e.kind === 'data') {
+		summary = e.detail;
+		if (view.heat === null && summary?.layers.length) view.heat = summary.layers[0].id;
+		overlay.heat(view.heat);
+		controls();
+	} else if (e.kind === 'legend') legend(e.detail);
+	else if (e.kind === 'notice') $('notice').textContent = e.detail.text ?? '';
+});
+overlay.show(text, false);
+overlay.pressure(view.pressure);
+overlay.competitors(view.competitors);
+
+function toggled(list, all, key) {
+	const on = list ?? all;
+	const next = on.includes(key) ? on.filter((k) => k !== key) : [...on, key];
+	return next.length === all.length ? null : next;
+}
+
+function controls() {
+	$('name').textContent = summary?.name ?? '';
+	$('layers').replaceChildren(...(summary?.layers ?? []).map((l) =>
+		el('div', { className: `row${l.id === view.heat ? ' on' : ''}`, title: l.note, onclick: () => { view.heat = l.id; overlay.heat(l.id); controls(); } }, l.name)));
+	const trade = summary?.trade;
+	$('toggles').replaceChildren(...[['pressure', 'Competitor pressure'], ['competitors', 'Competitors']].map(([k, label]) =>
+		el('div', { className: `row${trade && view[k] ? ' on' : ' off'}`, onclick: () => { if (!trade) return; view[k] = !view[k]; overlay[k](view[k]); controls(); } }, label)));
+	if (!trade) {
+		$('searches').replaceChildren(el('div', { className: 'note' }, 'No category: nothing on the ground to weigh.'));
+		$('kinds').replaceChildren();
+		return;
+	}
+	const hits = (t) => trade.queries.find((q) => q.text.toLowerCase() === t.toLowerCase())?.hits ?? '–';
+	const terms = trade.terms.map((t) => t.text);
+	$('searches').replaceChildren(...trade.terms.map((t) => {
+		const on = view.terms === null || view.terms.includes(t.text);
+		return el('div', { className: `row${on ? ' on' : ' off'}`, title: `weight ${t.weight}, ${hits(t.text)} competitors on the map found by it`, onclick: () => { view.terms = toggled(view.terms, terms, t.text); tune(); } },
+			t.text, el('span', { className: 'num' }, `${t.weight} · ${hits(t.text)}`));
+	}), ...trade.unweighted.map((t) => el('div', { className: 'row off', title: 'scanned, not scored: no weight' }, t, el('span', { className: 'num' }, `– · ${hits(t)}`))));
+	const kinds = trade.categories.map((c) => c.kind);
+	$('kinds').replaceChildren(...trade.categories.map((c) => {
+		const on = view.kinds === null || view.kinds.includes(c.kind);
+		return el('div', { className: `row${on ? '' : ' off'}`, onclick: () => { view.kinds = toggled(view.kinds, kinds, c.kind); tune(); } },
+			el('span', { className: 'sw', style: `background:${c.color}` }), c.label, el('span', { className: 'num' }, String(c.counts.reduce((a, b) => a + b, 0))));
+	}));
+}
+
+function tune() {
+	overlay.tune({ terms: view.terms, kinds: view.kinds });
+	controls();
+}
+
+function legend(l) {
+	const out = [];
+	if (l.heat) {
+		out.push(el('div', {}, el('b', {}, l.heat.name), l.heat.focus ? ` · ${l.heat.focus}` : ''));
+		out.push(el('div', { className: 'ramp', style: `background:linear-gradient(to right,${l.heat.stops.join(',')})` }));
+		if (l.heat.ticks) out.push(el('div', { className: 'ticks' }, ...l.heat.ticks.map((t) => el('span', {}, t))));
+		out.push(el('div', { className: 'note' }, `${l.heat.cells} cells in view · ${l.heat.note}`));
+	}
+	if (l.pressure) {
+		out.push(el('div', { className: 'ramp', style: `background:linear-gradient(to right,${l.pressure.stops.join(',')})` }));
+		out.push(el('div', { className: 'note' }, l.pressure.note + (l.pressure.levels ? ` Lines at ${l.pressure.levels.map((v) => `p${Math.round(v.q * 100)} ${v.value}`).join(', ')}.` : '')));
+	}
+	if (l.competitors) out.push(el('div', { className: 'note' }, `${l.competitors.in_view} competitors in view`));
+	$('legend').replaceChildren(...out);
+	$('ages').replaceChildren(...(l.ages ? [
+		el('div', { className: 'note' }, `oldest ${Math.round(l.ages.oldest_days)} d`),
+		el('div', { className: 'ages' },
+			...l.ages.bars.map((b) => el('div', { title: `${b.count} competitors, ${b.span} old`, style: `left:${b.left}%;width:calc(${b.width}% - 1px);height:${b.height}%;background:oklch(0.74 ${(0.16 * b.fresh).toFixed(3)} 235)` }, String(b.count))),
+			...l.ages.ticks.map((t) => el('span', { style: `left:${t.left}%` }, t.label))),
+	] : []));
+}
+</script>
+</body>
+</html>

@@ -3,8 +3,8 @@
 //! `clermont_payload.json` is one `car_detailing.nix` x `Clermont-Ferrand.nix` build — the
 //! billed half of the pipeline, frozen, so this runs with no network and no key.
 use gmaps_optimal_placement_core::{
-	Model, Payload,
-	model::{LayerRef, Report, TierState, colorise, field, fmt},
+	Model, Payload, Scale,
+	model::{LayerRef, Report, colorise, field, fmt},
 };
 
 fn model() -> Model {
@@ -43,10 +43,10 @@ fn render(r: &Report) -> String {
 #[test]
 fn state_matches_the_study() {
 	let m = model();
-	let tiers = m.tier_states();
+	let tiers = trade(&m).selection();
 	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
 	let unmet = trade(&m).unmet(&press).expect("the fixture carries a demand");
-	let c = colorise(&unmet, &m.payload.imputed, false, false, &everywhere(&m));
+	let c = colorise(&unmet, &m.payload.imputed, false, Scale::Percentile, &everywhere(&m));
 
 	insta::assert_snapshot!(format!(
 		"cells {}\ncompetitors {}\nimputed {}\nshown {}\npressure nonzero {}\ndemand nonzero {}\ndemand total {:.1}\nunmet total {:.1}\npressure total {:.6}",
@@ -67,8 +67,8 @@ fn state_matches_the_study() {
 	pressure nonzero 8576
 	demand nonzero 10446
 	demand total 346002.4
-	unmet total 117654.5
-	pressure total 27340.837444
+	unmet total 117654.6
+	pressure total 27340.844594
 	");
 }
 
@@ -77,30 +77,40 @@ fn state_matches_the_study() {
 #[test]
 fn pressure_moves_with_the_controls() {
 	let m = model();
-	let base = m.tier_states();
+	let base = trade(&m).selection();
 	let mut no_wash = base.clone();
-	no_wash.iter_mut().find(|t| t.name == "wash").unwrap().show = false;
+	no_wash.tiers.iter_mut().find(|t| t.name == "wash").unwrap().show = false;
+	let mut first_term = base.clone();
+	first_term.terms.iter_mut().skip(1).for_each(|on| *on = false);
+	let mut no_commonest_kind = base.clone();
+	no_commonest_kind.kinds.remove(0);
 
 	let p_base = sum(&trade(&m).pressure(trade(&m).trade.lambda_m, &base));
 	let p_no_wash = sum(&trade(&m).pressure(trade(&m).trade.lambda_m, &no_wash));
 	let p_wide = sum(&trade(&m).pressure(4000., &base));
 	let p_again = sum(&trade(&m).pressure(trade(&m).trade.lambda_m, &base));
+	let p_first_term = sum(&trade(&m).pressure(trade(&m).trade.lambda_m, &first_term));
+	let p_no_kind = sum(&trade(&m).pressure(trade(&m).trade.lambda_m, &no_commonest_kind));
 
 	assert!(p_no_wash < p_base, "dropping washes must lower pressure");
+	assert!(p_first_term < p_base, "a competitor counts only on the searches selected");
+	assert!(p_no_kind < p_base, "a hidden kind leaves the pressure");
 	assert!(p_wide > p_base, "wider λ must raise pressure");
 	assert_eq!(p_base, p_again, "recompute is deterministic");
 
-	insta::assert_snapshot!(format!("base {p_base:.6}\nno wash {p_no_wash:.6}\nlambda 4000 {p_wide:.6}"), @"
-	base 27340.837444
-	no wash 12574.450215
-	lambda 4000 87845.339268
+	insta::assert_snapshot!(format!("base {p_base:.6}\nno wash {p_no_wash:.6}\nlambda 4000 {p_wide:.6}\nfirst term only {p_first_term:.6}\nno commonest kind {p_no_kind:.6}"), @"
+	base 27340.844594
+	no wash 12574.475618
+	lambda 4000 87845.339739
+	first term only 16393.907896
+	no commonest kind 13930.146820
 	");
 }
 
 #[test]
 fn top_ten_sites() {
 	let m = model();
-	let tiers = m.tier_states();
+	let tiers = trade(&m).selection();
 	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
 	let (picked, pool) = trade(&m).rank_sites(trade(&m).trade.lambda_m, &press, 10).expect("the fixture carries a demand");
 
@@ -126,7 +136,7 @@ fn top_ten_sites() {
 #[test]
 fn site_report_downtown() {
 	let m = model();
-	let tiers = m.tier_states();
+	let tiers = trade(&m).selection();
 	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
 	insta::assert_snapshot!(render(&trade(&m).site_report([45.7797, 3.0863], None, Some("Nettoyage Auto Clermont"), trade(&m).trade.lambda_m, &press, &tiers)), @r#"
 	Clermont-Ferrand
@@ -150,7 +160,7 @@ fn site_report_downtown() {
 #[test]
 fn candidates_compare() {
 	let m = model();
-	let tiers = m.tier_states();
+	let tiers = trade(&m).selection();
 	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
 	insta::assert_snapshot!(render(&trade(&m).compare(&m.payload.candidates, trade(&m).trade.lambda_m, &press)), @"
 	Candidates · λ=2.0 km
@@ -169,7 +179,7 @@ fn candidates_compare() {
 #[test]
 fn every_layer_colours() {
 	let m = model();
-	let tiers = m.tier_states();
+	let tiers = trade(&m).selection();
 	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
 	let unmet = trade(&m).unmet(&press).expect("the fixture carries a demand");
 
@@ -179,8 +189,8 @@ fn every_layer_colours() {
 			LayerRef::Study(i) => std::borrow::Cow::Borrowed(m.layer(i)),
 			LayerRef::Trade(t) => trade(&m).values(t, 0, trade(&m).trade.lambda_m, &tiers, &unmet),
 		};
-		let shown = colorise(&v, &m.payload.imputed, false, spec.linear, &everywhere(&m));
-		let hidden = colorise(&v, &m.payload.imputed, true, spec.linear, &everywhere(&m));
+		let shown = colorise(&v, &m.payload.imputed, false, spec.scale, &everywhere(&m));
+		let hidden = colorise(&v, &m.payload.imputed, true, spec.scale, &everywhere(&m));
 		s.push_str(&format!(
 			"{:<28} {:>5} shown, {:>5} without imputed, ticks {}\n",
 			spec.name,
@@ -205,11 +215,11 @@ fn every_layer_colours() {
 #[test]
 fn tooltip_over_a_cell() {
 	let m = model();
-	let tiers: Vec<TierState> = m.tier_states();
+	let tiers = trade(&m).selection();
 	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
 	let unmet = trade(&m).unmet(&press).expect("the fixture carries a demand");
-	let shown = colorise(&unmet, &m.payload.imputed, false, false, &everywhere(&m)).shown;
-	let hit = m.cell_at(45.7797, 3.0863, &shown).expect("the study centre is on the grid");
+	let shown = colorise(&unmet, &m.payload.imputed, false, Scale::Percentile, &everywhere(&m)).shown;
+	let hit = m.cell_at([45.7797, 3.0863], &shown).expect("the study centre is on the grid");
 	insta::assert_snapshot!(m.tooltip(hit, &press, &unmet), @"
 	Clermont-Ferrand
 	Population 424
@@ -228,12 +238,12 @@ fn tooltip_over_a_cell() {
 #[test]
 fn the_view_sets_the_scale() {
 	let m = model();
-	let tiers = m.tier_states();
+	let tiers = trade(&m).selection();
 	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
 	let centre: Vec<bool> = (0..m.n()).map(|i| (m.c_lat[i] - 45.7797).abs() < 0.02 && (m.c_lng[i] - 3.0863).abs() < 0.03).collect();
 
-	let whole = colorise(&press, &m.payload.imputed, false, false, &everywhere(&m));
-	let zoomed = colorise(&press, &m.payload.imputed, false, false, &centre);
+	let whole = colorise(&press, &m.payload.imputed, false, Scale::Percentile, &everywhere(&m));
+	let zoomed = colorise(&press, &m.payload.imputed, false, Scale::Percentile, &centre);
 	assert!(zoomed.count < whole.count, "the centre is a narrower, hotter range");
 	assert!(zoomed.ticks[0] > whole.ticks[0], "the centre is a narrower, hotter range");
 
@@ -259,12 +269,12 @@ fn without_a_demand_the_competitors_stand_alone() {
 	let mut payload: Payload = serde_json::from_str(include_str!("clermont_payload.json")).unwrap();
 	payload.trade.as_mut().unwrap().demand = None;
 	let m = Model::try_new(payload).unwrap();
-	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &m.tier_states());
+	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &trade(&m).selection());
 	assert!(sum(&press) > 0., "the competitors still press on the map");
 	assert!(trade(&m).unmet(&press).is_none());
 	assert!(trade(&m).rank_sites(trade(&m).trade.lambda_m, &press, 10).is_none());
 	let layers: Vec<String> = m.layers().into_iter().map(|l| l.name).collect();
 	assert!(!layers.iter().any(|l| l.contains("emand")), "{layers:?}");
-	let report = trade(&m).site_report([45.7797, 3.0863], None, None, trade(&m).trade.lambda_m, &press, &m.tier_states());
+	let report = trade(&m).site_report([45.7797, 3.0863], None, None, trade(&m).trade.lambda_m, &press, &trade(&m).selection());
 	assert!(!report.rows.iter().any(|r| r.label.contains("Capture") || r.label.contains("Demand")), "{report:?}");
 }

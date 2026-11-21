@@ -1,11 +1,12 @@
 [workspace]
 members = [
     "gmaps_optimal_placement",
+    "gmaps_optimal_placement_cli",
     "gmaps_optimal_placement_core",
     "gmaps_optimal_placement_misc",
+    "gmaps_optimal_placement_overlay",
     "gmaps_optimal_placement_rank",
     "gmaps_optimal_placement_sources",
-    "gmaps_optimal_placement_web",
 ]
 resolver = "3"
 
@@ -31,27 +32,25 @@ unused_features = "allow"
 non_kebab_case_bins = "allow"
 
 [workspace.dependencies]
+
+axum = "0.8.9"
+
+clap = "4.6.9"
+color-eyre = "0.6.5"
+csv = "1.4.0"
+evalexpr = "13.1.0"
+eyre = "0.6.14"
+flate2 = "1.1.11"
+gmaps_optimal_placement = { path = "gmaps_optimal_placement", version = "0.1.0" }
 gmaps_optimal_placement_core = { path = "gmaps_optimal_placement_core", version = "0.1.0" }
 gmaps_optimal_placement_misc = { path = "gmaps_optimal_placement_misc", version = "0.1.0" }
 gmaps_optimal_placement_rank = { path = "gmaps_optimal_placement_rank", version = "0.1.0" }
 gmaps_optimal_placement_sources = { path = "gmaps_optimal_placement_sources", version = "0.1.0" }
-gmaps_optimal_placement_web = { path = "gmaps_optimal_placement_web", version = "0.1.0" }
-
-base64 = "0.23.1"
-clap = "4.6.9"
-color-eyre = "0.6.5"
-csv = "1.4.0"
-ev_lib = { version = "0.34", default-features = false }
-evalexpr = "13.1.0"
-eyre = "0.6.14"
-flate2 = "1.1.11"
 indexmap = { version = "2.14.2", features = ["serde"] }
 insta = "1.49.0"
-jiff = "0.2.46"
+js-sys = "0.3.106"
 proj4rs = "0.3.1"
-# the panel's assertion and the permission catalog
-sa_auth = { git = "https://github.com/EV-Service-Arb/site_conductor", branch = "main" }
-# the answers store's wire and its signature
+# the public queries cache's wire, read by the CLI alone
 sa_core = { git = "https://github.com/EV-Service-Arb/site_conductor", branch = "main" }
 schemars = { version = "1.2.3", features = ["indexmap2"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -59,15 +58,13 @@ serde_json = "1.0.154"
 sha2 = "0.11.1"
 smart-default = "0.7.1"
 strum = { version = "0.28.0", features = ["derive"] }
-# core's types in the overlay's .d.ts (site_conductor's placement_overlay)
+tokio = { version = "1.54.1", features = ["net", "rt-multi-thread", "sync"] }
+toml = "1.2.1"
+# core's types in the overlay's .d.ts
 tsify = "0.5.8"
 ureq = "3.5.2"
-# the CLI's own settings, and `Timeframe` for the cache ages. Only the top crate depends on it:
-# `_sources` is handed resolved durations, so `_core`/`_web` and the wasm build stay clear of it.
+# the CLI's own settings, and `Timeframe` for the cache ages. Only the CLI depends on it: `_sources`
+# is handed resolved durations, so the library and the wasm build stay clear of it.
 v_utils = { version = "=2.18.0", default-features = false, features = ["cli", "macros"] }
-zip = "9.8.1"
-
-axum = "0.8.9"
-tokio = { version = "1.54.1", features = ["net", "rt-multi-thread", "sync"] }
-tower-http = { version = "0.7.1", features = ["compression-gzip"] }
 wasm-bindgen = "=0.2.129"
+zip = "9.8.1"

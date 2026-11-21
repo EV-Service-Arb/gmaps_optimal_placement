@@ -20,9 +20,6 @@ pub const FOLDS: usize = 5;
 /// area this search could reach. For a node that is `REACH` times the furthest result it did return,
 /// which is self-calibrating and needs no magic radius; for a tile it is the tile.
 const REACH: f64 = 1.5;
-/// One page of Places results. Past it the probe saw nothing, which is the same thing as a business
-/// it never returned, so the observed field zeroes there rather than going missing.
-const CAP: usize = 20;
 
 /// Google's log-preference for one business, on one term, asked from one place.
 ///
@@ -323,35 +320,6 @@ impl Observed {
 			})
 			.collect()
 	}
-}
-
-/// What the probe saw of every business, node by node: per business, one value per node, term
-/// weights applied. Pure data — the probe asked each term from each node and Google answered, and
-/// this is that answer with nothing added.
-///
-/// A business Google put at the top of the page counts for one and one it put off the page counts
-/// for nothing, linearly between. That is a reading of position, not an estimate of anything: what
-/// the field is for is the *shape* of a competitor's reach, which is lumpy in a way no radial decay
-/// can be, and which the map has been throwing away.
-pub fn observed(pois: &[Poi], nodes: &[[f64; 2]], rankings: &[Ranking], terms: &[(String, f64)]) -> Vec<Vec<f64>> {
-	let mut out = vec![vec![0.; nodes.len()]; pois.len()];
-	let total: f64 = terms.iter().map(|(_, w)| w).sum();
-	if total <= 0. {
-		return out;
-	}
-	let by_id: IndexMap<&str, usize> = pois.iter().enumerate().map(|(i, p)| (p.id.as_str(), i)).collect();
-	for r in rankings {
-		let Region::Node(at, _) = r.from else { continue };
-		let (Some(n), Some((_, w))) = (nodes.iter().position(|o| *o == at), terms.iter().find(|(t, _)| *t == r.term)) else {
-			continue;
-		};
-		for (rank, id) in r.ids.iter().enumerate().take(CAP) {
-			if let Some(&i) = by_id.get(id.as_str()) {
-				out[i][n] += w / total * (1. - rank as f64 / CAP as f64);
-			}
-		}
-	}
-	out
 }
 
 /// One feature context over several studies. How Google ranks is one mechanism, so the evidence

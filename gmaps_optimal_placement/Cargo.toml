@@ -7,29 +7,24 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# a fixture work dir: real Filosofi rows, so a host's tests build a study offline
+testing = ["dep:zip"]
+
 [dependencies]
-clap = { workspace = true, features = ["derive"] }
-color-eyre.workspace = true
 eyre.workspace = true
 gmaps_optimal_placement_core.workspace = true
-gmaps_optimal_placement_misc.workspace = true
-gmaps_optimal_placement_rank.workspace = true
 gmaps_optimal_placement_sources.workspace = true
-gmaps_optimal_placement_web.workspace = true
-indexmap.workspace = true
-sa_core.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-smart-default.workspace = true
-v_utils.workspace = true
+toml.workspace = true
+zip = { workspace = true, optional = true }
 
 [dev-dependencies]
-base64.workspace = true
+gmaps_optimal_placement = { path = ".", features = ["testing"] }
+
 insta.workspace = true
-sa_auth.workspace = true
-sha2.workspace = true
-ureq.workspace = true
 
 [lints]
 workspace = true

@@ -126,11 +126,10 @@ pub struct Poi {
 }
 
 #[cfg_attr(feature = "ts", derive(tsify::Tsify))]
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scale {
 	/// Rank, not magnitude — these quantities are heavy-tailed and a linear ramp shows one hot pixel.
-	#[default]
 	Percentile,
 	Linear,
 }

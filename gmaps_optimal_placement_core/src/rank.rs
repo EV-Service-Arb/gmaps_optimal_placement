@@ -97,7 +97,7 @@ impl Feats {
 			Some(r) => (b.n_rev * r + SHRINK * self.mu) / (b.n_rev + SHRINK) - self.mu,
 			None => 0.,
 		};
-		x[NAME] = containment(&folded, term);
+		x[NAME] = containment(&words(&folded).iter().map(|w| grams(w)).collect::<Vec<_>>(), term);
 		x[PLACE] = f64::from(self.places.iter().any(|p| folded.contains(p.as_str())));
 		x[DIST] = node.map_or(0., |n| km(n, [b.lat, b.lng]));
 		x
@@ -126,14 +126,41 @@ impl Rank {
 	/// left out — `model::pressure` supplies `exp(−d/λ)` itself, and applying it twice would count
 	/// the same geometry against a competitor twice.
 	pub fn strength(&self, b: &Biz, terms: &[(String, f64)]) -> f64 {
+		self.contributions(b, terms).iter().sum()
+	}
+
+	/// [`Self::strength`]'s terms, one per search.
+	pub fn contributions(&self, b: &Biz, terms: &[(String, f64)]) -> Vec<f64> {
 		terms
 			.iter()
 			.map(|(t, w)| {
 				let x = self.feats.at(b, t, None);
 				w * (0..N).filter(|&i| i != DIST).map(|i| self.coef[i] * x[i]).sum::<f64>().exp()
 			})
-			.sum()
+			.collect()
 	}
+}
+
+/// Per tier, the median raw [`Rank::strength`] of its competitors (`tier[i]` is competitor `i`'s):
+/// what a payload's `w` is that strength divided by. `w = 1` is "a competitor as strong as the thing
+/// I am about to open" — `Model::capture_at` gives a candidate's own pull an implicit weight of 1.0.
+/// Per tier, because `Model::pressure` already multiplies by the tier weight: a fitted strength that
+/// has learned a wash ranks below a detailer would otherwise be discounted twice. `None` for a tier
+/// nobody is in.
+pub fn divisors(tier: &[usize], raw: &[f64], tiers: usize) -> Result<Vec<Option<f64>>> {
+	assert_eq!(tier.len(), raw.len(), "one tier per competitor");
+	(0..tiers)
+		.map(|t| {
+			let mut w: Vec<f64> = tier.iter().zip(raw).filter(|(x, _)| **x == t).map(|(_, r)| *r).collect();
+			if w.is_empty() {
+				return Ok(None);
+			}
+			w.sort_by(f64::total_cmp);
+			let med = w[w.len().div_euclid(2)];
+			ensure!(med > 0., "tier {t} has a median strength of {med}, so it cannot be normalised");
+			Ok(Some(med))
+		})
+		.collect()
 }
 
 /// One observed ordering. The first `ranked` feature vectors are in the order Places returned them;
@@ -199,44 +226,55 @@ pub fn nodes(at: &[[f64; 2]], demand: &[f64], n: usize) -> Result<Vec<Node>> {
 	let lat0 = at.iter().map(|p| p[0]).sum::<f64>() / at.len() as f64;
 	let total: f64 = idx.iter().map(|&i| demand[i]).sum();
 	let mut out = Vec::with_capacity(n);
-	split(&mut idx, at, demand, lat0, n.trailing_zeros(), total, &mut out);
+	Strata { at, demand, lat0, total }.split(&mut idx, n.trailing_zeros(), &mut out);
 	ensure!(out.len() == n, "the split produced {} strata, not {n}", out.len());
 	Ok(out)
 }
 
-fn split(idx: &mut [usize], at: &[[f64; 2]], demand: &[f64], lat0: f64, depth: u32, total: f64, out: &mut Vec<Node>) {
-	if depth == 0 {
-		let mass: f64 = idx.iter().map(|&i| demand[i]).sum();
-		let mut c = [0., 0.];
-		for &i in idx.iter() {
-			c[0] += demand[i] * at[i][0];
-			c[1] += demand[i] * at[i][1];
+/// What every split of [`nodes`] reads.
+struct Strata<'a> {
+	at: &'a [[f64; 2]],
+	demand: &'a [f64],
+	/// Where east-west is foreshortened.
+	lat0: f64,
+	total: f64,
+}
+impl Strata<'_> {
+	fn split(&self, idx: &mut [usize], depth: u32, out: &mut Vec<Node>) {
+		let Self { at, demand, lat0, total } = *self;
+		if depth == 0 {
+			let mass: f64 = idx.iter().map(|&i| demand[i]).sum();
+			let mut c = [0., 0.];
+			for &i in idx.iter() {
+				c[0] += demand[i] * at[i][0];
+				c[1] += demand[i] * at[i][1];
+			}
+			out.push(Node {
+				at: [c[0] / mass, c[1] / mass],
+				share: mass / total,
+			});
+			return;
 		}
-		out.push(Node {
-			at: [c[0] / mass, c[1] / mass],
-			share: mass / total,
-		});
-		return;
-	}
-	let span = |k: usize| {
-		let (lo, hi) = idx.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &i| (lo.min(at[i][k]), hi.max(at[i][k])));
-		hi - lo
-	};
-	let axis = usize::from(span(1) * lat0.to_radians().cos() > span(0));
-	idx.sort_by(|&a, &b| at[a][axis].total_cmp(&at[b][axis]));
+		let span = |k: usize| {
+			let (lo, hi) = idx.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &i| (lo.min(at[i][k]), hi.max(at[i][k])));
+			hi - lo
+		};
+		let axis = usize::from(span(1) * lat0.to_radians().cos() > span(0));
+		idx.sort_by(|&a, &b| at[a][axis].total_cmp(&at[b][axis]));
 
-	let half: f64 = idx.iter().map(|&i| demand[i]).sum::<f64>() / 2.;
-	let (mut acc, mut cut) = (0., 0);
-	while cut < idx.len() - 1 && acc + demand[idx[cut]] <= half {
-		acc += demand[idx[cut]];
-		cut += 1;
+		let half: f64 = idx.iter().map(|&i| demand[i]).sum::<f64>() / 2.;
+		let (mut acc, mut cut) = (0., 0);
+		while cut < idx.len() - 1 && acc + demand[idx[cut]] <= half {
+			acc += demand[idx[cut]];
+			cut += 1;
+		}
+		// a leaf with no cell has no centroid, so each side keeps one cell per leaf below it
+		let keep = 1usize << (depth - 1);
+		let cut = cut.clamp(keep, idx.len() - keep);
+		let (lo, hi) = idx.split_at_mut(cut);
+		self.split(lo, depth - 1, out);
+		self.split(hi, depth - 1, out);
 	}
-	// a leaf with no cell has no centroid, so each side keeps one cell per leaf below it
-	let keep = 1usize << (depth - 1);
-	let cut = cut.clamp(keep, idx.len() - keep);
-	let (lo, hi) = idx.split_at_mut(cut);
-	split(lo, at, demand, lat0, depth - 1, total, out);
-	split(hi, at, demand, lat0, depth - 1, total, out);
 }
 
 /// Flat-earth, over one agglomeration — the same approximation `model` projects with.
@@ -250,8 +288,7 @@ fn km(a: [f64; 2], b: [f64; 2]) -> f64 {
 /// Asymmetric `|A∩B|/|B|` over trigrams: per term word, the best-covering token of the name. Not
 /// Dice — Dice penalises extra tokens, so "Plombier Clermont" would score worse than bare
 /// "Plombier", backwards from the premise.
-fn containment(folded_name: &str, term: &str) -> f64 {
-	let tokens: Vec<Vec<String>> = words(folded_name).iter().map(|w| grams(w)).collect();
+fn containment(tokens: &[Vec<String>], term: &str) -> f64 {
 	let term = words(&fold(term));
 	if term.is_empty() || tokens.is_empty() {
 		return 0.;

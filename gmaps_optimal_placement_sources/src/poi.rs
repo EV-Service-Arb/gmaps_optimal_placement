@@ -2,10 +2,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use eyre::{Result, WrapErr, bail, ensure};
-use gmaps_optimal_placement_core::{grid::Bbox, payload::Poi};
+use gmaps_optimal_placement_core::{Ask, Category, grid::Bbox, payload::Poi, primary_keyword};
 use indexmap::IndexMap;
-pub use sa_core::placement::SEARCH_TEXT;
-use sa_core::placement::{Ask, Category, primary_keyword};
 
 use crate::{
 	Frame,
@@ -134,12 +132,15 @@ pub struct Inventory {
 	pub calls: usize,
 }
 
-/// One text search, paged, in rank order, out of what the work dir and the queries cache hold. The
-/// body and the field mask are the caller's, because they are what decides the SKU.
+/// A search's hits in rank order: each place's id, its answer, and when that answer was fetched.
+type Hits = Vec<(String, serde_json::Value, SystemTime)>;
+
+/// One text search, paged, in rank order, out of what the work dir's `Held` holds. The body and the
+/// field mask are the caller's, because they are what decides the SKU.
 ///
-/// The first page with no answer, or a [stale](Work::stale) one, ends the search: the hits before
-/// it, and it.
-pub fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pages: usize, kind: Kind) -> Result<(Vec<(String, serde_json::Value, SystemTime)>, Option<Ask>)> {
+/// The first page with no answer, or one fetched before [`Work::since`], ends the search: the hits
+/// before it, and it.
+pub(crate) fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pages: usize, kind: Kind) -> Result<(Hits, Option<Ask>)> {
 	let mut out = Vec::new();
 	let mut token: Option<String> = None;
 	for _ in 0..pages {
@@ -147,10 +148,12 @@ pub fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pages: usi
 		if let Some(t) = &token {
 			body["pageToken"] = serde_json::Value::String(t.clone());
 		}
-		let (res, at) = match work.cached(&body)? {
-			Some((_, at)) if work.stale(at) => return Ok((out, Some(lacking(&body, mask)?))),
-			Some(hit) => hit,
-			None => return Ok((out, Some(lacking(&body, mask)?))),
+		let ask = Ask {
+			mask: mask.to_owned(),
+			body: serde_json::to_string(&body)?,
+		};
+		let Some((res, at)) = work.answer(&ask)? else {
+			return Ok((out, Some(ask)));
 		};
 		work.record(kind, at);
 		if let Some(e) = res.get("error") {
@@ -234,7 +237,7 @@ pub fn cached(category: &Category, frame: Frame, work: &Work) -> Result<Inventor
 			bail!("Places result {name:?} has no location: {p}")
 		};
 		// a tile of the quadtree reaches past the frame, and what it found there is someone else's map
-		if !frame.contains(lat, lng) {
+		if !frame.contains([lat, lng]) {
 			continue;
 		}
 		out.push(Poi {
@@ -261,13 +264,6 @@ pub fn cached(category: &Category, frame: Frame, work: &Work) -> Result<Inventor
 		eprintln!("  depth {d}: {c} calls, {q} of them interior");
 	}
 	Ok(Inventory { pois: out, obs, asks, calls: total })
-}
-
-fn lacking(body: &serde_json::Value, mask: &str) -> Result<Ask> {
-	Ok(Ask {
-		mask: mask.to_owned(),
-		body: serde_json::to_string(body)?,
-	})
 }
 
 /// The first page of `query` over `tile`, which is also its cache key.

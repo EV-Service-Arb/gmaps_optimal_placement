@@ -1,7 +1,6 @@
 //! What is drawn of an area: its outline grown by its margin. Cells and competitors are taken
 //! inside it.
-use gmaps_optimal_placement_core::grid::Bbox;
-use sa_core::{geo::LatLng, placement::Area};
+use gmaps_optimal_placement_core::{Area, LatLng, grid::Bbox};
 
 const M_PER_DEG: f64 = 111_320.;
 
@@ -13,7 +12,7 @@ pub struct Frame {
 	circle: Option<(LatLng, f64)>,
 }
 impl Frame {
-	pub fn contains(&self, lat: f64, lng: f64) -> bool {
+	pub fn contains(&self, [lat, lng]: [f64; 2]) -> bool {
 		let b = self.bbox;
 		let boxed = lat >= b.lat[0] && lat <= b.lat[1] && lng >= b.lon[0] && lng <= b.lon[1];
 		match self.circle {
