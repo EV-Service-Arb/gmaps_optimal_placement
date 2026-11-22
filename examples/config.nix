@@ -6,7 +6,6 @@
     ordering = "1y";
   };
   sweep = { depth = 3; root = 3; };
-  google = (import /home/v/s/ev/_sa/accounting/google.nix).accounts;
   # a copy of prod's panel.db: site_conductor's `nix run .#prod-restore -- panel-data/panel.db=<this>`
   queries_cache = "/home/v/.local/share/gmaps_optimal_placement/panel.db";
 }
