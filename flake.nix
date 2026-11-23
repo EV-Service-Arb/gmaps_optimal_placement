@@ -28,10 +28,12 @@
         };
 
         rs = v_flakes.rs { inherit pkgs rust; pinDeps = true; };
+        oldestSupportedVersion = "nightly-2026-06-29";
+        newestSupportedNightly = "nightly-2026-07-14";
         github = v_flakes.github {
           inherit pkgs pname rs;
           enable = true;
-          lastSupportedVersion = "nightly-2026-07-14";
+          inherit oldestSupportedVersion; inherit newestSupportedNightly;
           jobs.default = true;
           lfs = false;
           labels.extra = [
@@ -42,9 +44,9 @@
         readme = v_flakes.readme-fw {
           inherit pkgs pname;
           defaults = true;
-          lastSupportedVersion = "nightly-1.92";
+          inherit oldestSupportedVersion; inherit newestSupportedNightly;
           rootDir = ./.;
-          badges = [ "msrv" "loc" "ci" ];
+          badges = [ "msrv" "newest_nightly" "loc" "ci" ];
         };
         combined = v_flakes.utils.combine { inherit rust; modules = [ rs github readme ]; };
 
