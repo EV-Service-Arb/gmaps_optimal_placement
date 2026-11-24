@@ -32,46 +32,46 @@ pub enum Event {
 
 /// What is drawn in view. `cells` 0, `levels` null and `in_view` 0 are each a layer that draws
 /// nothing.
-#[derive(Clone, PartialEq, Serialize, Tsify)]
+#[derive(Clone, Deserialize, PartialEq, Serialize, Tsify)]
 pub struct Legend {
-	heat: Option<Heat>,
-	pressure: Option<Pressure>,
-	competitors: Option<Competitors>,
+	pub heat: Option<Heat>,
+	pub pressure: Option<Pressure>,
+	pub competitors: Option<Competitors>,
 	/// How old the answers naming the competitors shown are, as of the study's `show`; null without
 	/// one shown.
-	ages: Option<Ages>,
+	pub ages: Option<Ages>,
 }
 
-#[derive(Clone, PartialEq, Serialize, Tsify)]
+#[derive(Clone, Deserialize, PartialEq, Serialize, Tsify)]
 pub struct Heat {
 	/// A `Summary.layers[].id`.
-	id: String,
-	name: String,
-	note: String,
-	scale: Scale,
-	stops: Vec<String>,
-	cells: usize,
-	ticks: Option<Vec<String>>,
+	pub id: String,
+	pub name: String,
+	pub note: String,
+	pub scale: Scale,
+	pub stops: Vec<String>,
+	pub cells: usize,
+	pub ticks: Option<Vec<String>>,
 	/// The competitor a coverage layer is about.
-	focus: Option<String>,
+	pub focus: Option<String>,
 }
 
-#[derive(Clone, PartialEq, Serialize, Tsify)]
+#[derive(Clone, Deserialize, PartialEq, Serialize, Tsify)]
 pub struct Pressure {
-	stops: Vec<String>,
-	note: String,
-	levels: Option<Vec<Level>>,
+	pub stops: Vec<String>,
+	pub note: String,
+	pub levels: Option<Vec<Level>>,
 }
 
-#[derive(Clone, PartialEq, Serialize, Tsify)]
+#[derive(Clone, Deserialize, PartialEq, Serialize, Tsify)]
 pub struct Level {
-	q: f64,
-	value: String,
+	pub q: f64,
+	pub value: String,
 }
 
-#[derive(Clone, PartialEq, Serialize, Tsify)]
+#[derive(Clone, Deserialize, PartialEq, Serialize, Tsify)]
 pub struct Competitors {
-	in_view: usize,
+	pub in_view: usize,
 }
 
 /// Why the map is less than asked; a null `text` clears it.

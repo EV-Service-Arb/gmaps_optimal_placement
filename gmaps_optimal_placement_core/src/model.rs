@@ -6,7 +6,7 @@
 use std::borrow::Cow;
 
 use eyre::{Result, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
 	payload::{Candidate, Payload, PoiOut, Scale, Trade},
@@ -84,7 +84,7 @@ pub struct Selection {
 /// not dwarf the day before it, each as wide as the period it covers. Percent of the chart's width
 /// and of the tallest bar.
 #[cfg_attr(feature = "ts", derive(tsify::Tsify))]
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Ages {
 	pub oldest_days: f64,
 	pub bars: Vec<AgeBar>,
@@ -92,7 +92,7 @@ pub struct Ages {
 }
 
 #[cfg_attr(feature = "ts", derive(tsify::Tsify))]
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AgeBar {
 	pub count: usize,
 	/// The period it covers, as a person says it: `1w–2w`, `under a day`, `over 4y`.
@@ -105,7 +105,7 @@ pub struct AgeBar {
 }
 
 #[cfg_attr(feature = "ts", derive(tsify::Tsify))]
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AgeTick {
 	pub label: String,
 	pub left: f64,
