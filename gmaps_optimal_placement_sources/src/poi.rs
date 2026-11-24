@@ -17,6 +17,9 @@ const FIELDS: &str = "places.id,places.displayName,places.formattedAddress,place
 /// Of twenty each: what one text search will hand back.
 const PAGES: usize = 3;
 
+/// A search's hits in rank order: each place's id, its answer, and when that answer was fetched.
+type Hits = Vec<(String, serde_json::Value, SystemTime)>;
+
 /// One tile of the grid every sweep asks: one Web-Mercator level for every frame, so an answer is about
 /// a tile of ground rather than about whichever area asked, and two areas that overlap share what
 /// either bought. What a search finds in one past its `PAGES` is not collected.
@@ -113,46 +116,6 @@ pub struct Inventory {
 	pub calls: usize,
 }
 
-/// A search's hits in rank order: each place's id, its answer, and when that answer was fetched.
-type Hits = Vec<(String, serde_json::Value, SystemTime)>;
-
-/// One text search, paged, in rank order, out of what the work dir's `Held` holds. The body and the
-/// field mask are the caller's, because they are what decides the SKU.
-///
-/// The first page with no answer, or one fetched before [`Work::since`], ends the search: the hits
-/// before it, and it.
-pub(crate) fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pages: usize, kind: Kind) -> Result<(Hits, Option<Ask>)> {
-	let mut out = Vec::new();
-	let mut token: Option<String> = None;
-	for _ in 0..pages {
-		let mut body = body.clone();
-		if let Some(t) = &token {
-			body["pageToken"] = serde_json::Value::String(t.clone());
-		}
-		body.sort_all_objects(); // the cache's key is this string: a consumer's `serde_json/preserve_order` must not move it
-		let ask = Ask {
-			mask: mask.to_owned(),
-			body: serde_json::to_string(&body)?,
-		};
-		let Some((res, at)) = work.answer(&ask)? else {
-			return Ok((out, Some(ask)));
-		};
-		work.record(kind, at);
-		if let Some(e) = res.get("error") {
-			bail!("Places text search {}: {e}", body["textQuery"]);
-		}
-		for p in res["places"].as_array().into_iter().flatten() {
-			let id = p["id"].as_str().ok_or_else(|| eyre::eyre!("Places returned a result without an id: {p}"))?;
-			out.push((id.to_owned(), p.clone(), at));
-		}
-		match res["nextPageToken"].as_str() {
-			Some(t) => token = Some(t.to_owned()),
-			None => break,
-		}
-	}
-	Ok((out, None))
-}
-
 /// The sweep, out of what the work dir and the queries cache hold. A pairing nobody ever harvested
 /// yields nothing, which is how a refit reads evidence without turning into a purchase.
 ///
@@ -246,6 +209,43 @@ pub fn cached(category: &Category, frame: Frame, work: &Work) -> Result<Inventor
 		out.len()
 	);
 	Ok(Inventory { pois: out, obs, asks, calls })
+}
+
+/// One text search, paged, in rank order, out of what the work dir's `Held` holds. The body and the
+/// field mask are the caller's, because they are what decides the SKU.
+///
+/// The first page with no answer, or one fetched before [`Work::since`], ends the search: the hits
+/// before it, and it.
+pub(crate) fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pages: usize, kind: Kind) -> Result<(Hits, Option<Ask>)> {
+	let mut out = Vec::new();
+	let mut token: Option<String> = None;
+	for _ in 0..pages {
+		let mut body = body.clone();
+		if let Some(t) = &token {
+			body["pageToken"] = serde_json::Value::String(t.clone());
+		}
+		body.sort_all_objects(); // the cache's key is this string: a consumer's `serde_json/preserve_order` must not move it
+		let ask = Ask {
+			mask: mask.to_owned(),
+			body: serde_json::to_string(&body)?,
+		};
+		let Some((res, at)) = work.answer(&ask)? else {
+			return Ok((out, Some(ask)));
+		};
+		work.record(kind, at);
+		if let Some(e) = res.get("error") {
+			bail!("Places text search {}: {e}", body["textQuery"]);
+		}
+		for p in res["places"].as_array().into_iter().flatten() {
+			let id = p["id"].as_str().ok_or_else(|| eyre::eyre!("Places returned a result without an id: {p}"))?;
+			out.push((id.to_owned(), p.clone(), at));
+		}
+		match res["nextPageToken"].as_str() {
+			Some(t) => token = Some(t.to_owned()),
+			None => break,
+		}
+	}
+	Ok((out, None))
 }
 
 /// The first page of `query` over `tile`, which is also its cache key.
