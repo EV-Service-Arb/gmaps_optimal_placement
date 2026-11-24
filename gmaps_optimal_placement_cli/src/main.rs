@@ -16,6 +16,7 @@ use gmaps_optimal_placement::{Base, Work};
 use gmaps_optimal_placement_core::{Area, Category, Definition};
 use gmaps_optimal_placement_rank::{League, Observed, Ordering, fit, pooled};
 use settings::{AppConfig, SettingsCommand, SettingsFlags};
+use sha2::{Digest, Sha256};
 
 #[derive(Parser)]
 #[command(about = "Paint a category's demand over the competitors already on the ground")]
@@ -179,14 +180,23 @@ fn studies(of: &Categories, work: &Work) -> Result<Vec<Definition>> {
 	Ok(out)
 }
 
-/// Every area the definitions the conductor handed in are over, each once, by its slug.
+/// Every area the definitions the conductor handed in are over, each once, by its slug; one redefined
+/// under its slug as `<slug> @<id8>` each.
 fn locations(studied: &[Definition]) -> Vec<(String, Area)> {
-	let mut out: Vec<(String, Area)> = Vec::new();
+	let mut areas: Vec<&Area> = Vec::new();
 	for def in studied {
-		if !out.iter().any(|(_, a)| *a == def.area) {
-			out.push((def.area.slug().to_owned(), def.area.clone()));
+		if !areas.contains(&&def.area) {
+			areas.push(&def.area);
 		}
 	}
+	let label = |a: &Area| match areas.iter().filter(|o| o.slug() == a.slug()).count() {
+		1 => a.slug().to_owned(),
+		_ => {
+			let alone = Definition { area: a.clone(), category: None };
+			format!("{} @{}", a.slug(), &alone.id()[..8])
+		}
+	};
+	let mut out: Vec<(String, Area)> = areas.iter().map(|a| (label(a), (*a).clone())).collect();
 	out.sort_by(|a, b| a.0.cmp(&b.0));
 	out
 }
@@ -201,11 +211,22 @@ fn studied(dir: &Path) -> Result<Vec<Definition>> {
 	for e in std::fs::read_dir(dir)? {
 		let path = e?.path();
 		if path.extension().is_some_and(|x| x == "json") {
-			let text = std::fs::read_to_string(&path).wrap_err_with(|| format!("reading {}", path.display()))?;
-			out.push(serde_json::from_str(&text).wrap_err_with(|| format!("parsing {}", path.display()))?);
+			let bytes = std::fs::read(&path).wrap_err_with(|| format!("reading {}", path.display()))?;
+			let sha = address(&bytes);
+			eyre::ensure!(path.file_stem().is_some_and(|s| s == sha.as_str()), "{} is corrupt: its bytes' SHA-256 is {sha}", path.display());
+			match serde_json::from_slice(&bytes) {
+				Ok(def) => out.push(def),
+				// whole by its address: written when a definition had another format
+				Err(e) => eprintln!("{} is of another format, not studied: {e}", path.display()),
+			}
 		}
 	}
 	Ok(out)
+}
+
+/// What a kept definition's file is named by: its bytes' SHA-256, as `Definition::id` is.
+fn address(bytes: &[u8]) -> String {
+	Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Every setting of every trade the definitions the conductor handed in carry, keyed
@@ -255,17 +276,23 @@ mod tests {
 
 	use super::*;
 
-	/// Two settings of one trade are two categories of it, never its latest.
-	#[test]
-	fn a_trade_keeps_each_of_its_settings() {
-		let dir = std::env::temp_dir().join(format!("gop_cli_test_settings_{}", std::process::id()));
+	/// Kept as `build` keeps it: the canonical bytes, under their own SHA-256.
+	fn kept(name: &str, bytes: &[&[u8]]) -> PathBuf {
+		let dir = std::env::temp_dir().join(format!("gop_cli_test_{name}_{}", std::process::id()));
 		std::fs::create_dir_all(&dir).unwrap();
-		let setting = |weight: f64| Definition {
+		for b in bytes {
+			std::fs::write(dir.join(format!("{}.json", address(b))), b).unwrap();
+		}
+		dir
+	}
+
+	fn study(radius_m: f64, weight: f64) -> Definition {
+		Definition {
 			area: Area::Circle {
 				slug: "clermont".into(),
 				country: Country::FR,
 				center: LatLng { lat: 45.78, lng: 3.08 },
-				radius_m: 1000.,
+				radius_m,
 				margin_m: 0.,
 			},
 			category: Some(Category {
@@ -288,10 +315,18 @@ mod tests {
 				excluded: Excluded::default(),
 				demand: None,
 			}),
-		};
-		for d in [setting(0.5), setting(0.7), setting(0.7)] {
-			std::fs::write(dir.join(format!("{}.json", d.id())), serde_json::to_vec(&d).unwrap()).unwrap();
 		}
+	}
+
+	fn bytes(d: Definition) -> Vec<u8> {
+		serde_json::to_vec(&d.canonical()).unwrap()
+	}
+
+	/// Two settings of one trade are two categories of it, never its latest.
+	#[test]
+	fn a_trade_keeps_each_of_its_settings() {
+		let (a, b) = (bytes(study(1000., 0.5)), bytes(study(1000., 0.7)));
+		let dir = kept("settings", &[&a, &b]);
 		let studied = studied(&dir).unwrap();
 		std::fs::remove_dir_all(&dir).unwrap();
 		let of = |category: Option<&str>| Categories {
@@ -304,5 +339,31 @@ mod tests {
 		assert!(all.iter().all(|(k, _)| k.starts_with("Plombier·FR (gcid:plumber@")), "{all:?}");
 		assert_eq!(under_trade.len(), 2);
 		assert_eq!(one.len(), 1);
+	}
+
+	/// A definition of another format is whole by its address and not a study; bytes that are not their
+	/// address's are an error.
+	#[test]
+	fn another_format_is_passed_over_and_a_corrupt_file_is_not() {
+		let now = bytes(study(1000., 0.5));
+		let then = br#"{"area":{"kind":"circle","slug":"clermont"},"category":{"trade":5,"name":"Plumbing"}}"#;
+		let dir = kept("formats", &[&now, then]);
+		let read = studied(&dir).unwrap();
+		std::fs::write(dir.join(format!("{}.json", address(&now))), &now[..now.len() - 1]).unwrap();
+		let corrupt = studied(&dir);
+		std::fs::remove_dir_all(&dir).unwrap();
+		assert_eq!(read, [study(1000., 0.5).canonical()]);
+		assert!(corrupt.is_err(), "{corrupt:?}");
+	}
+
+	/// The conductor redefines an area under its own slug.
+	#[test]
+	fn a_redefined_area_is_two_locations_told_apart() {
+		let one = locations(&[study(1000., 0.5), study(1000., 0.7)]);
+		let two = locations(&[study(1000., 0.5), study(2000., 0.5)]);
+		assert_eq!(one.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["clermont"]);
+		assert_eq!(two.len(), 2);
+		assert_ne!(two[0].0, two[1].0);
+		assert!(two.iter().all(|(l, _)| l.starts_with("clermont @")), "{two:?}");
 	}
 }

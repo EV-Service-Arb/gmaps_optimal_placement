@@ -78,7 +78,7 @@ on it.
 
 The CLI's commands hold two axes, both read off the definitions under the work dir's `studies/`: a
 category is each setting of a trade a host studied, told apart by `Category::id`, and a location is
-each area a host studied, called by its slug. The CLI never reads the conductor's catalogue, and a
+each area a host studied, called by its slug, and by its id too where a slug was redefined. The CLI never reads the conductor's catalogue, and a
 copy of either kept here would drift from it. What a study is *called* — `<trade>·<CC>·<slug>` — is the definition's.
 
 ## The line between baked and live
@@ -145,7 +145,8 @@ pull since the study's last whole one began, and forgets it once one ends whole,
 pull paid for is served to its retry and a refunded failure is never bought twice.
 
 Every `asks` and `build` keeps the definition under `studies/<id>.json`, whichever host built it:
-that is what `fit` harvests.
+that is what `fit` harvests. Its name is its bytes' SHA-256, which tells a definition of another
+format, whole and named as passed over, from a corrupt one, an error.
 
 ## Invariants
 
