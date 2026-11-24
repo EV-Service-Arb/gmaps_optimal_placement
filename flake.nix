@@ -88,33 +88,33 @@
           auditable = false; # cargo-auditable doesn't support edition 2024
         };
         # The server (`ssr`, inside the CLI) and the wasm client (`hydrate`) are separate compilations;
-        # this is the one place that knows how to produce the client, under target/site/pkg.
-        client = ''
+        # this is the one place that knows how to produce the client, under `site`'s pkg/.
+        client = site: ''
           cargo build -p gmaps_optimal_placement_web --lib --target wasm32-unknown-unknown --no-default-features --features hydrate
-          wasm-bindgen --target web --out-dir target/site/pkg --out-name gmaps_optimal_placement_web \
+          wasm-bindgen --target web --out-dir ${site}/pkg --out-name gmaps_optimal_placement_web \
             target/wasm32-unknown-unknown/debug/gmaps_optimal_placement_web.wasm
         '';
-        # `view [-c <category>] [-l <locations>]` — the GUI, from this checkout
+        # `view [-c <category>]` — the GUI, from this checkout
         view = pkgs.writeShellApplication {
           name = "view";
           runtimeInputs = with pkgs; [ rust git pkg-config openssl mold wasm-bindgen-cli tailwindcss_4 ];
           text = ''
             cd "$(git rev-parse --show-toplevel)"
-            ${client}
+            ${client "target/site"}
             exec cargo run -p gmaps_optimal_placement_cli -- view --port ${toString SA_PORTS} --site target/site "$@"
           '';
         };
         # The GUI in headless Chromium: the picker, one pairing loaded, the map painted. Served on the
-        # range's second port, so a GUI already up on the first is left alone.
+        # range's second port out of a site of its own, so a GUI already up is left alone.
         smoke = pkgs.writeShellApplication {
           name = "smoke";
           runtimeInputs = with pkgs; [ rust git pkg-config openssl mold wasm-bindgen-cli tailwindcss_4 nodejs chromium curl ];
           text = ''
             cd "$(git rev-parse --show-toplevel)"
-            ${client}
+            ${client "target/smoke"}
             cargo build -p gmaps_optimal_placement_cli # a cold compile outlasts any wait for the port
             port=${toString (SA_PORTS + 1)}
-            cargo run -p gmaps_optimal_placement_cli -- view --port "$port" --site target/site "$@" &
+            cargo run -p gmaps_optimal_placement_cli -- view --port "$port" --site target/smoke "$@" &
             server=$!
             trap 'kill $server 2>/dev/null || true' EXIT
             up=
@@ -130,9 +130,8 @@
           name = "help";
           text = ''
             cat <<'EOF'
-            nix run -- [-c <category>] [-l <locations>]  the GUI on 127.0.0.1:${toString SA_PORTS}: every location
-                                            (default examples/locations, and every area a host studied) under
-                                            every category the work dir's studies carry, or on its own;
+            nix run -- [-c <category>]      the GUI on 127.0.0.1:${toString SA_PORTS}: every area the work dir's
+                                            studies are over, under every category they carry, or on its own;
                                             category and location are picked side by side, `t` opens another
                                             as a tab over the same map. Buys nothing: what is not held is named
             nix run .#smoke                 the GUI in headless Chromium: pick a pairing, see the map paint
@@ -140,9 +139,8 @@
                                             pool | building | parcel per --per column, --floor to skip hamlets
             nix run .#help                  this
             cached archives and API responses live under $XDG_CACHE_HOME/gmaps_optimal_placement
-            a study is the conductor's category over an area, on the country's base compiled into
-            the library; examples/locations/<l>.toml carries an area and its candidates. Both are
-            what `gmaps_optimal_placement schema base|location` describes.
+            a study is the conductor's category over the conductor's area, on the country's base
+            compiled into the library, which `gmaps_optimal_placement schema base` describes.
             EOF
           '';
         };
