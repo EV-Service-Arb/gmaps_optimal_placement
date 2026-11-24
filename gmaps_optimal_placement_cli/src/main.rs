@@ -100,7 +100,7 @@ fn main() -> Result<()> {
 	let cfg = AppConfig::try_build(cli.settings)?;
 	let works = {
 		let (dir, cfg) = (v_utils::xdg_cache_dir!(""), cfg.clone());
-		move || -> Result<Work> { Ok(Work::at(&dir, Box::new(held::Copy::open(&cfg.queries_cache)?)).policy((&cfg.age).into(), (&cfg.sweep).into())) }
+		move || -> Result<Work> { Ok(Work::at(&dir, Box::new(held::Copy::open(&cfg.queries_cache)?)).policy((&cfg.age).into())) }
 	};
 	let work = works()?;
 	match cli.cmd {

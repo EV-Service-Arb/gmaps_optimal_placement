@@ -135,9 +135,9 @@ impl Study {
 		(Frame::from(&self.def.area).area_m2() / NODES as f64 / std::f64::consts::PI).sqrt()
 	}
 
-	/// The Places searches this study lacks, the first down each branch of its sweep; none for an
-	/// area on its own. What lies behind one (the next page, a tile's quarters) is known only once it
-	/// is answered, so a pull asks again until none is lacking.
+	/// The Places searches this study lacks, the first page of each; none for an area on its own.
+	/// Whether another is behind it is known only once it is answered, so a pull asks again until none
+	/// is lacking.
 	pub fn asks(&self, work: &Work) -> Result<Vec<Ask>> {
 		self.keep(work)?;
 		let Some(c) = &self.def.category else { return Ok(Vec::new()) };

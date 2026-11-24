@@ -493,6 +493,7 @@ impl Model {
 				(Some(d), Some(u)) => s.push_str(&format!("\ndemand {} · pressure {press:.2} · unmet {}", fmt(d[i]), fmt(u[i]))),
 				_ => s.push_str(&format!("\npressure {press:.2}")),
 			}
+			s.push_str("\nat most 60 competitors per search in each 7 km tile");
 		}
 		if self.payload.imputed[i] == 1 {
 			s.push_str("\n(imputed cell)");

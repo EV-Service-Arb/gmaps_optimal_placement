@@ -11,7 +11,7 @@ variant and a row to the table it matches on, not a trait implementation.
   [`probe::cached`] reads what of it was ever answered. A [`Ranking`] carries the [`Region`] it was asked from, which
   is what says who could have been returned — and, for a rectangle, that nobody was standing in it.
 - [`Work`] is the work dir, the host's [`Held`], `since`, and the policy: how old an answer of
-  each [`work::Kind`] may get before it is reported as old, and how the sweep tiles. Bulk archives
+  each [`work::Kind`] may get before it is reported as old. Bulk archives
   download once; anything computed out of them is kept under a key its own inputs decide — the grid
   extract is one. Nothing expires and nothing here refuses: [`Work::age`] reports how old an answer
   is, and a pull is the only thing that asks again.

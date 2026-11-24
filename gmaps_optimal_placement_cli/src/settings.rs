@@ -1,9 +1,9 @@
 //! What the tool does, rather than what a study is about. A study document is the two axes of the
 //! product and nothing else; anything that would be the same for every study — how old an answer may
-//! get before the map says so, how a frame is tiled — lives here.
+//! get before the map says so — lives here.
 use std::path::PathBuf;
 
-use gmaps_optimal_placement_sources::{poi::Tiling, work::Age as Ages};
+use gmaps_optimal_placement_sources::work::Age as Ages;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smart_default::SmartDefault;
@@ -16,33 +16,11 @@ use v_utils::{
 pub struct AppConfig {
 	#[settings(flatten)]
 	pub age: Age,
-	#[settings(flatten)]
-	pub sweep: Sweep,
 	/// A copy of prod's `panel.db`, what the conductor bought read off it: site_conductor's
 	/// `nix run .#prod-restore -- panel-data/panel.db=<this path>` takes one.
 	pub queries_cache: PathBuf,
 	/// A Google Maps JavaScript API key, for the GUI's map.
 	pub maps_key: Option<String>,
-}
-
-/// How the competitor sweep tiles the ground. Every answer is cached under the exact quadtree tile it
-/// was asked for, so a changed `zoom` asks a new set of tiles; a deeper `depth` asks the finer tiles
-/// under whatever came back at the cap.
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, SettingsNested, SmartDefault)]
-#[serde(default)]
-pub struct Sweep {
-	/// The Web-Mercator level a query is first asked at.
-	#[default(Tiling::ZOOM)]
-	pub zoom: u32,
-	/// How many times a tile that came back at Google's 60-result cap may be quartered.
-	#[default(Tiling::DEPTH)]
-	pub depth: u32,
-}
-
-impl From<&Sweep> for Tiling {
-	fn from(s: &Sweep) -> Self {
-		Self { zoom: s.zoom, depth: s.depth }
-	}
 }
 
 /// How old an answer may get before the map says so. Nothing is evicted and nothing is refetched:

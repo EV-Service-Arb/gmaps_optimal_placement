@@ -67,7 +67,6 @@ pub struct Work {
 	dir: PathBuf,
 	held: Box<dyn Held>,
 	age: Age,
-	tiling: crate::poi::Tiling,
 	/// An answer written before this is as good as none: a pull's, which asks again what it is built from.
 	since: Option<SystemTime>,
 	/// Age of every cached answer this run served, by kind.
@@ -79,7 +78,6 @@ impl Work {
 			dir: dir.into(),
 			held,
 			age: Age::default(),
-			tiling: crate::poi::Tiling::default(),
 			since: None,
 			served: RefCell::default(),
 		}
@@ -87,15 +85,9 @@ impl Work {
 
 	/// The policy the CLI resolved out of its config. Plain values rather than the config type, so
 	/// `_sources` stands alone and the wasm side never sees the settings crate.
-	pub fn policy(mut self, age: Age, tiling: crate::poi::Tiling) -> Self {
+	pub fn policy(mut self, age: Age) -> Self {
 		self.age = age;
-		self.tiling = tiling;
 		self
-	}
-
-	/// Which tiles the inventory sweep asks for, which is which answers in this dir are the ones asked for.
-	pub(crate) fn tiling(&self) -> crate::poi::Tiling {
-		self.tiling
 	}
 
 	/// Answers written before `since` are lacking.

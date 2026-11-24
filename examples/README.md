@@ -24,8 +24,7 @@ Every category × every location in its country is a study, named `<trade>·<CC>
 
 Nothing in a base may name a trade, and nothing in a category may vary with the area. What would
 want to — the tiling of the POI sweep, the probe's bias radius — is derived instead: the sweep asks
-tiles of one quadtree and quarters a tile whenever a query comes back at Google's 60-result cap, and
-the radius is the frame ÷ the probe's strata as a circle. The catchment λ is what `rank::COEF`'s
+every search of each tile of one fixed grid, up to the 60 results Google hands back for it, and the radius is the frame ÷ the probe's strata as a circle. The catchment λ is what `rank::COEF`'s
 distance term implies.
 
 ## What the map gives you

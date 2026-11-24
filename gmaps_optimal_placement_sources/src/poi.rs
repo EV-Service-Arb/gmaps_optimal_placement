@@ -14,52 +14,37 @@ use crate::{
 /// The map displays all three.
 const FIELDS: &str = "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,\
 	places.types,places.primaryType,places.primaryTypeDisplayName,places.businessStatus,places.websiteUri,places.nationalPhoneNumber,nextPageToken";
-/// Three pages of twenty is all one text search will hand back, so a tile that comes back at this
-/// has more in it than it said.
-const CAP: usize = 60;
+/// Of twenty each: what one text search will hand back.
+const PAGES: usize = 3;
 
-/// How the inventory sweep cuts the ground: one Web-Mercator quadtree for every frame, so an answer
-/// is about a tile of ground rather than about whichever area asked, and two areas that overlap
-/// share what either bought.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Tiling {
-	/// The quadtree level a query is first asked at.
-	pub zoom: u32 = Self::ZOOM,
-	/// How many times a tile at the cap may be quartered. A query still at the cap there is reported
-	/// rather than passed off as the whole inventory.
-	pub depth: u32 = Self::DEPTH,
-}
-impl Tiling {
-	/// Then the floor is under a kilometre.
-	pub const DEPTH: u32 = 3;
-	/// ~7 km a side at 45°N: an agglomeration is a handful of tiles, and a small circle one or four.
-	pub const ZOOM: u32 = 12;
-}
-
-/// One tile of the quadtree.
+/// One tile of the grid every sweep asks: one Web-Mercator level for every frame, so an answer is about
+/// a tile of ground rather than about whichever area asked, and two areas that overlap share what
+/// either bought. What a search finds in one past its `PAGES` is not collected.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Tile {
-	pub z: u32,
-	pub x: u32,
-	pub y: u32,
+	x: u32,
+	y: u32,
 }
 impl Tile {
-	/// Every tile at `z` that meets `bbox`.
-	pub fn covering(bbox: Bbox, z: u32) -> Vec<Self> {
-		let n = f64::from(1u32 << z);
-		let x = |lon: f64| (((lon + 180.) / 360. * n).floor() as u32).min((1 << z) - 1);
+	/// ~7 km a side at 45°N: an agglomeration is a handful of tiles, and a small circle one or four.
+	const ZOOM: u32 = 12;
+
+	/// Every tile that meets `bbox`.
+	pub fn covering(bbox: Bbox) -> Vec<Self> {
+		let n = f64::from(1u32 << Self::ZOOM);
+		let x = |lon: f64| (((lon + 180.) / 360. * n).floor() as u32).min((1 << Self::ZOOM) - 1);
 		let y = |lat: f64| {
 			let r = lat.to_radians();
-			(((1. - (r.tan() + 1. / r.cos()).ln() / std::f64::consts::PI) / 2. * n).floor() as u32).min((1 << z) - 1)
+			(((1. - (r.tan() + 1. / r.cos()).ln() / std::f64::consts::PI) / 2. * n).floor() as u32).min((1 << Self::ZOOM) - 1)
 		};
 		let (x0, x1, y0, y1) = (x(bbox.lon[0]), x(bbox.lon[1]), y(bbox.lat[1]), y(bbox.lat[0]));
-		(y0..=y1).flat_map(|y| (x0..=x1).map(move |x| Self { z, x, y })).collect()
+		(y0..=y1).flat_map(|y| (x0..=x1).map(move |x| Self { x, y })).collect()
 	}
 
 	/// Corners rounded to 1e-7°, about a centimetre: the bbox is the cache key, and `sinh`/`atan` may
 	/// differ in the last bit between one libm and the next.
 	pub fn bbox(self) -> Bbox {
-		let n = f64::from(1u32 << self.z);
+		let n = f64::from(1u32 << Self::ZOOM);
 		let r = |v: f64| (v * 1e7).round() / 1e7;
 		let lon = |x: u32| r(f64::from(x) / n * 360. - 180.);
 		let lat = |y: u32| r((std::f64::consts::PI * (1. - 2. * f64::from(y) / n)).sinh().atan().to_degrees());
@@ -68,12 +53,8 @@ impl Tile {
 			lon: [lon(self.x), lon(self.x + 1)],
 		}
 	}
-
-	fn children(self) -> [Self; 4] {
-		let (z, x, y) = (self.z + 1, self.x * 2, self.y * 2);
-		[Self { z, x, y }, Self { z, x: x + 1, y }, Self { z, x, y: y + 1 }, Self { z, x: x + 1, y: y + 1 }]
-	}
 }
+
 /// What the sweep asks, each with the index into [`tiers`] of the tier what it returns is filed under:
 /// the trade's name and every keyword but the one that is that name, then each additional's name.
 pub fn queries(c: &Category) -> Result<Vec<(String, usize)>> {
@@ -125,10 +106,10 @@ pub enum Region {
 pub struct Inventory {
 	pub pois: Vec<Poi>,
 	pub obs: Vec<Ranking>,
-	/// The first page this walk found no answer for down each branch, which is what the conductor
-	/// buys next: what lies behind it (the next page, a tile's quarters) is known only once it is answered.
+	/// The first page of each search this found no answer for, which is what the conductor buys next:
+	/// whether another is behind it is known only once it is answered.
 	pub asks: Vec<Ask>,
-	/// Pages this walk was answered with: what a pull asks again, if every tile fills as it did.
+	/// Pages this was answered with: what a pull asks again, if every tile fills as it did.
 	pub calls: usize,
 }
 
@@ -181,43 +162,42 @@ pub(crate) fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pag
 pub fn cached(category: &Category, frame: Frame, work: &Work) -> Result<Inventory> {
 	let tiers = tiers(category)?;
 	let queries = queries(category)?;
-	let Tiling { zoom, depth } = work.tiling();
-	let roots = Tile::covering(frame.bbox, zoom);
-	let mut found = Found {
-		calls: vec![(0, 0); depth as usize + 1],
-		..Found::default()
-	};
+	let tiles = Tile::covering(frame.bbox);
+	let start = work.calls(Kind::Inventory);
+	// each place, when it was last seen, and the tier of the first search that found it
+	let mut raw: IndexMap<String, (serde_json::Value, SystemTime, usize)> = IndexMap::new();
+	let (mut obs, mut asks) = (Vec::new(), Vec::new());
 	for (q, tier) in &queries {
-		let (before, spent) = (found.raw.len(), work.calls(Kind::Inventory));
-		for &tile in &roots {
-			descend(work, q, *tier, tile, 0, &mut found).wrap_err_with(|| format!("sweeping {q:?}"))?;
+		let (before, spent) = (raw.len(), work.calls(Kind::Inventory));
+		for tile in &tiles {
+			let bbox = tile.bbox();
+			let (page, lacks) = search_text(work, &ask(q, bbox), FIELDS, PAGES, Kind::Inventory).wrap_err_with(|| format!("sweeping {q:?}"))?;
+			asks.extend(lacks);
+			// an ordering of nothing identifies nothing, and it is also what a tile that was never harvested looks like
+			if page.is_empty() {
+				continue;
+			}
+			obs.push(Ranking {
+				from: Region::Tile(bbox),
+				term: q.clone(),
+				ids: page.iter().map(|(id, ..)| id.clone()).collect(),
+			});
+			// the freshest answer naming a place is what it is known as of
+			for (id, p, at) in page {
+				raw.entry(id).and_modify(|e| e.1 = e.1.max(at)).or_insert((p, at, *tier));
+			}
 		}
 		// new, not returned: the queries overlap by design, and what the eighth one adds over the seven
 		// before it is what says whether it earns its calls
-		eprintln!(
-			"  {q:?}: {} new of {} calls, {} orderings",
-			found.raw.len() - before,
-			work.calls(Kind::Inventory) - spent,
-			found.obs.len(),
-		);
+		eprintln!("  {q:?}: {} new of {} calls, {} orderings", raw.len() - before, work.calls(Kind::Inventory) - spent, obs.len(),);
 	}
-	let Found { raw, obs, censored, asks, calls } = found;
+	let calls = work.calls(Kind::Inventory) - start;
 	if let Some(a) = work.age(Kind::Inventory) {
 		eprintln!("places: served from cache, {a}");
 		if a.stale {
 			eprintln!("  past `age.inventory` — shops have opened and closed since. A pull re-asks, and costs a day's quota");
 		}
 	}
-	if !censored.is_empty() {
-		eprintln!(
-			"places: {} tiles are still at the {CAP}-result cap at depth {depth}, so the inventory under them is partial:",
-			censored.len()
-		);
-		for (q, t) in &censored {
-			eprintln!("  {q:?} over lat {:?} lon {:?}", t.lat, t.lon);
-		}
-	}
-
 	let mut out = Vec::new();
 	for (id, (p, at, tier)) in &raw {
 		match p["businessStatus"].as_str() {
@@ -237,7 +217,7 @@ pub fn cached(category: &Category, frame: Frame, work: &Work) -> Result<Inventor
 		let (Some(lat), Some(lng)) = (lat, lng) else {
 			bail!("Places result {name:?} has no location: {p}")
 		};
-		// a tile of the quadtree reaches past the frame, and what it found there is someone else's map
+		// a tile reaches past the frame, and what it found there is someone else's map
 		if !frame.contains([lat, lng]) {
 			continue;
 		}
@@ -258,13 +238,14 @@ pub fn cached(category: &Category, frame: Frame, work: &Work) -> Result<Inventor
 		});
 	}
 	out.sort_by(|a, b| b.n_rev.total_cmp(&a.n_rev));
-	eprintln!("places: {} raw over {} searches ({} lacking), {} kept", raw.len(), obs.len(), asks.len(), out.len());
-	let (total, interior) = calls.iter().fold((0, 0), |(t, i), (c, q)| (t + c, i + q));
-	eprintln!("places: {total} calls, {interior} on tiles that quartered and were re-covered by their four children:");
-	for (d, (c, q)) in calls.iter().enumerate().filter(|(_, (c, _))| *c > 0) {
-		eprintln!("  depth {d}: {c} calls, {q} of them interior");
-	}
-	Ok(Inventory { pois: out, obs, asks, calls: total })
+	eprintln!(
+		"places: {} raw over {} searches ({} lacking), {calls} calls, {} kept",
+		raw.len(),
+		obs.len(),
+		asks.len(),
+		out.len()
+	);
+	Ok(Inventory { pois: out, obs, asks, calls })
 }
 
 /// The first page of `query` over `tile`, which is also its cache key.
@@ -275,58 +256,4 @@ fn ask(query: &str, tile: Bbox) -> serde_json::Value {
 		"high": {"latitude": tile.lat[1], "longitude": tile.lon[1]},
 	});
 	serde_json::json!({"textQuery": query, "pageSize": 20, "locationRestriction": {"rectangle": rect}})
-}
-
-/// One query over one tile, quartered wherever the answer came back at the cap. Splitting is per
-/// query and not once for the whole sweep: "lavage auto" saturates downtown where "covering
-/// carrosserie" does not, and the quadrants of a tile nobody filled are not worth asking.
-///
-/// Not a study's to state: the cap bites on competitor density, which is a fact about the trade and
-/// the ground together, and which no document knows before it asks.
-fn descend(work: &Work, query: &str, tier: usize, tile: Tile, depth: u32, found: &mut Found) -> Result<()> {
-	let body = ask(query, tile.bbox());
-	let spent = work.calls(Kind::Inventory);
-	let (page, lacks) = search_text(work, &body, FIELDS, 3, Kind::Inventory)?;
-	found.asks.extend(lacks);
-	let paged = work.calls(Kind::Inventory) - spent;
-	found.calls[depth as usize].0 += paged;
-	// an ordering of nothing identifies nothing, and it is also what a tile that was never harvested looks like
-	if page.is_empty() {
-		return Ok(());
-	}
-	found.obs.push(Ranking {
-		from: Region::Tile(tile.bbox()),
-		term: query.to_owned(),
-		ids: page.iter().map(|(id, ..)| id.clone()).collect(),
-	});
-	let full = page.len() >= CAP;
-	// the freshest answer naming a place is what it is known as of; the first search to find it, its tier
-	for (id, p, at) in page {
-		found.raw.entry(id).and_modify(|e| e.1 = e.1.max(at)).or_insert((p, at, tier));
-	}
-	if !full {
-		return Ok(());
-	}
-	if depth == work.tiling().depth {
-		found.censored.push((query.to_owned(), tile.bbox()));
-		return Ok(());
-	}
-	found.calls[depth as usize].1 += paged;
-	for child in tile.children() {
-		descend(work, query, tier, child, depth + 1, found)?;
-	}
-	Ok(())
-}
-
-/// What the recursion accumulates, before the tiering rules turn it into an `Inventory`.
-#[derive(Default)]
-struct Found {
-	/// Each place, when it was last seen, and the tier of the first search that found it.
-	raw: IndexMap<String, (serde_json::Value, SystemTime, usize)>,
-	obs: Vec<Ranking>,
-	/// Query and tile still at the cap at the depth floor: the inventory under them is partial.
-	censored: Vec<(String, Bbox)>,
-	asks: Vec<Ask>,
-	/// Per depth: calls made, and how many of those were on a tile that then quartered.
-	calls: Vec<(usize, usize)>,
 }

@@ -136,9 +136,12 @@ whatever the host's `Held` returns, with when it was fetched: the conductor's re
 cache, from the blocking thread a build runs on; the CLI's reads a copy of prod's `panel.db`.
 Public archives are placement's own, under the work dir.
 
-A pull is its host's. It calls `asks` — the first unanswered page down each branch of the sweep —
-buys those, and asks again, since what lies behind a page (the next one, a tile's quarters) is known
-only once it is answered; once none is lacking it calls `build`. Placement never counts a purchase.
+The sweep asks each search of each tile of one fixed grid, and takes the 60 results Google hands back
+for it as all there is: whoever ranks under them in a full tile is not on the map, and the hint says so.
+
+A pull is its host's. It calls `asks` — the first unanswered page of each search — buys those, and
+asks again, since whether another page is behind one is known only once it is answered; once none is
+lacking it calls `build`. Placement never counts a purchase.
 
 `Work::since` is the pull's: an answer fetched before it is lacking. The host keeps when the first
 pull since the study's last whole one began, and forgets it once one ends whole, so what a stopped
@@ -161,8 +164,8 @@ format, whole and named as passed over, from a corrupt one, an error.
   is the tool's; what the category says is which queries it cares about and what each is worth.
 - **A category may not name an area, and an area may not name a trade.** They are the two axes of a
   product, and a quantity that needs both is a quantity neither document can state honestly: it
-  belongs in Rust, derived, or in the tool's own settings. The probe's bias radius and the POI
-  sweep's tiling (`sweep.zoom`, `sweep.depth`) are there for exactly this reason. The alternative
+  belongs in Rust, derived, or in the tool's own settings. The probe's bias radius and the sweep's
+  one tile size are there for exactly this reason. The alternative
   is the same knob written out per pairing, drifting apart silently.
 - **Demand is the category's word.** Its demand is what it says the grid means to it. Without one
   there is no demand surface, and nothing stands in for it: the demand layers are absent and what
@@ -192,11 +195,10 @@ format, whole and named as passed over, from a corrupt one, an error.
 - **Nothing in that cache expires.** An answer older than its kind's configured age is served anyway,
   and its age rides onto the map beside the imputed flag. Google's daily search quota is the scarce
   side, and refetching spends a day of it to learn what is mostly the same thing; a pull is the only
-  thing that re-asks. Age is a caption and a changed tiling is a setting;
-  neither is a trigger.
+  thing that re-asks. Age is a caption, never a trigger.
 - **A cache key covers everything its answer depends on**, so a changed input is a different file
   rather than a stale one and nothing needs invalidating. An answer is keyed on the ground it is
-  about — a tile of one Web-Mercator quadtree — never on the area that asked, so overlapping areas
+  about — a tile of the sweep's one grid — never on the area that asked, so overlapping areas
   share it. A derived answer is cached only where it is
   reproducible from what is kept: the grid extract keeps the archive's own rows and re-parses them,
   because caching the floats would need a round-trip no text format gives.

@@ -228,6 +228,7 @@ fn tooltip_over_a_cell() {
 	Households in houses 2.00
 	Estimated cars 219
 	demand 339 · pressure 16.61 · unmet 19
+	at most 60 competitors per search in each 7 km tile
 	");
 }
 

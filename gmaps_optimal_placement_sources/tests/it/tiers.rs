@@ -4,11 +4,7 @@
 use std::collections::BTreeMap;
 
 use gmaps_optimal_placement_core::{Additional, Area, Category, Country, Excluded, Gcid, Keyword, LatLng};
-use gmaps_optimal_placement_sources::{
-	Frame, Work,
-	poi::{self, Tiling},
-	work::Age,
-};
+use gmaps_optimal_placement_sources::{Frame, Work, poi};
 
 use crate::Answers;
 
@@ -72,7 +68,7 @@ fn a_competitor_is_tiered_by_the_search_that_found_it() {
 		radius_m: 300.,
 		margin_m: 0.,
 	};
-	let work = Work::at(&dir, Box::new(held.clone())).policy(Age::default(), Tiling { zoom: 12, depth: 0 });
+	let work = Work::at(&dir, Box::new(held.clone()));
 
 	let asked = poi::cached(&category, Frame::from(&area), &work).unwrap().asks;
 	let mut queries: Vec<String> = Vec::new();
