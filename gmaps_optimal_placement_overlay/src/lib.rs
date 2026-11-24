@@ -1,7 +1,6 @@
 #![doc = include_str!("../README.md")]
 use std::{
 	cell::RefCell,
-	collections::HashMap,
 	rc::{Rc, Weak},
 };
 
@@ -118,8 +117,6 @@ impl Overlay {
 				focus: 0,
 				dots: false,
 				hide_imputed: false,
-				press: Vec::new(),
-				unmet: None,
 				legend: None,
 				hooks: Some((on_view, on_poi)),
 			})
@@ -169,16 +166,15 @@ impl Overlay {
 		Ok(())
 	}
 
-	/// A tier the shown study lacks is the host's mistake.
+	/// A tier, search or kind the shown study lacks is the host's mistake.
 	pub fn tune(&self, #[wasm_bindgen(unchecked_param_type = "Tune")] t: JsValue) -> Result<(), JsError> {
 		let t = String::from(js_sys::JSON::stringify(&t).map_err(|e| JsError::new(&format!("tune: {e:?}")))?);
 		let tune: Tune = serde_json::from_str(&t).map_err(|e| JsError::new(&format!("tune({t}): {e}")))?;
 		if let Some(t) = self.inner.borrow().model.as_ref().and_then(|m| m.traded()) {
 			let all = t.selection();
-			let tiers: Vec<String> = all.tiers.into_iter().map(|s| s.name).collect();
 			let terms: Vec<String> = t.trade.terms.iter().map(|x| x.text.clone()).collect();
 			for (asked, known, what) in [
-				(tune.tiers.as_ref().map(|t| t.keys().cloned().collect::<Vec<_>>()), &tiers, "tier"),
+				(tune.tiers.clone(), &all.tiers, "tier"),
 				(tune.terms.clone(), &terms, "search"),
 				(tune.kinds.clone(), &all.kinds, "kind"),
 			] {
@@ -189,7 +185,6 @@ impl Overlay {
 		}
 		run(&self.inner, |i| {
 			i.tune = tune;
-			i.recompute();
 			i.place_dots();
 			i.repaint()
 		});
@@ -231,27 +226,20 @@ impl Overlay {
 	}
 }
 
-/// `tune()`'s argument. A null is the payload's own; a tier left out keeps its own weight and shows.
+/// `tune()`'s argument: which of the marks are shown — the dots, the counts and the ages. Each a list
+/// of those shown; null: every one.
 #[derive(Clone, Default, Deserialize, Tsify)]
 #[serde(deny_unknown_fields)]
 pub struct Tune {
-	lambda_m: Option<f64>,
-	tiers: Option<HashMap<String, TierTune>>,
-	/// The searches a competitor's contributions count on, by `Summary.trade.terms[].text`; null:
-	/// every one.
+	/// By `Summary.trade.tiers[].name`.
+	#[serde(default)]
+	tiers: Option<Vec<String>>,
+	/// The searches a mark is sized on, by `Summary.trade.terms[].text`.
 	#[serde(default)]
 	terms: Option<Vec<String>>,
-	/// The Places kinds shown, by `Summary.trade.categories[].kind`; null: every one. A hidden kind
-	/// leaves the marks and the pressure alike.
+	/// The Places kinds, by `Summary.trade.categories[].kind`.
 	#[serde(default)]
 	kinds: Option<Vec<String>>,
-}
-
-#[derive(Clone, Deserialize, Tsify)]
-#[serde(deny_unknown_fields)]
-pub struct TierTune {
-	weight: f64,
-	show: bool,
 }
 
 struct Inner {
@@ -269,10 +257,6 @@ struct Inner {
 	focus: usize,
 	dots: bool,
 	hide_imputed: bool,
-	/// At `tune`. Moves only with `tune` and the model, never with the view.
-	press: Vec<f64>,
-	/// None without a demand.
-	unmet: Option<Vec<f64>>,
 	legend: Option<Legend>,
 	/// Kept alive while attached: `paint.js` calls them on settle and on a dot's click.
 	hooks: Option<Hooks>,
@@ -304,7 +288,6 @@ impl Inner {
 		{
 			self.heat = None;
 		}
-		self.recompute();
 		self.place_dots();
 		let mut out = vec![Event::Data(self.model.as_ref().map(|m| Summary::of(m)))];
 		self.legend = None; // a new study's legend is said even when it reads the same
@@ -316,13 +299,8 @@ impl Inner {
 	fn selection(&self, m: &Model) -> Option<Selection> {
 		let t = m.traded()?;
 		let mut sel = t.selection();
-		if let Some(w) = &self.tune.tiers {
-			for s in &mut sel.tiers {
-				if let Some(w) = w.get(&s.name) {
-					s.weight = w.weight;
-					s.show = w.show;
-				}
-			}
+		if let Some(on) = &self.tune.tiers {
+			sel.tiers.retain(|t| on.contains(t));
 		}
 		if let Some(on) = &self.tune.terms {
 			sel.terms = t.trade.terms.iter().map(|x| on.contains(&x.text)).collect();
@@ -331,24 +309,6 @@ impl Inner {
 			sel.kinds.retain(|k| on.contains(k));
 		}
 		Some(sel)
-	}
-
-	fn lambda(&self, m: &Model) -> Option<f64> {
-		Some(self.tune.lambda_m.unwrap_or(m.payload.trade.as_ref()?.lambda_m))
-	}
-
-	fn recompute(&mut self) {
-		(self.press, self.unmet) = match &self.model {
-			Some(m) => match (m.traded(), self.lambda(m), self.selection(m)) {
-				(Some(t), Some(lambda), Some(sel)) => {
-					let press = t.pressure(lambda, &sel);
-					let unmet = t.unmet(&press);
-					(press, unmet)
-				}
-				_ => (vec![0.; m.n()], None),
-			},
-			None => (Vec::new(), None),
-		};
 	}
 
 	/// Coloured by Google category, as gop's own map colours them, so the panel's category list is
@@ -380,19 +340,12 @@ impl Inner {
 		let values: Vec<f64> = match spec.as_ref().map(|s| s.source) {
 			None => vec![0.; m.n()],
 			Some(LayerRef::Study(i)) => m.layer(i).to_vec(),
-			Some(LayerRef::Trade(TradeLayer::Unmet)) => self.unmet.clone().expect("the unmet layer is listed only with a demand"),
-			Some(LayerRef::Trade(t)) => {
-				let traded = m.traded().expect("a model offers trade layers only with a trade");
-				let lambda = self.lambda(&m).expect("and so a λ");
-				let sel = self.selection(&m).expect("and so a selection");
-				traded.values(t, self.focus, lambda, &sel, &[]).into_owned() // unmet is read for Unmet alone, taken above
-			}
+			Some(LayerRef::Trade(t)) => m.traded().expect("a model offers trade layers only with a trade").values(t, self.focus).into_owned(),
 		};
 		let heat = [values.as_slice()];
 		self.scene.heat(spec.as_ref().map(|s| (heat.as_slice(), s.scale)));
-		let traded = m.traded().is_some();
-		let press = [self.press.as_slice()];
-		self.scene.field((self.field && traded).then_some(press.as_slice()));
+		let press = m.traded().filter(|_| self.field).map(|t| [t.trade.pressure.as_slice()]);
+		self.scene.field(press.as_ref().map(|p| p.as_slice()));
 		let Some(drawn) = self.scene.draw() else { return Vec::new() };
 
 		let heat = spec.zip(drawn.heat).map(|(s, (ticks, cells))| {
@@ -415,9 +368,9 @@ impl Inner {
 				focus,
 			}
 		});
-		let pressure = (self.field && traded).then(|| Pressure {
+		let pressure = press.map(|_| Pressure {
 			stops: (0..=4).map(|q| format!("rgba({},{},{},{:.3})", HAZE[0], HAZE[1], HAZE[2], haze(q as f64 / 4.))).collect(),
-			note: "Competitor pressure, Σ weight × exp(−distance/λ), as a percentile among the cells in view.".to_owned(),
+			note: "Competitor pressure, as a percentile among the cells in view.".to_owned(),
 			levels: drawn.levels.map(|l| LEVELS.iter().zip(l).map(|(&q, v)| Level { q, value: fmt(v) }).collect()),
 		});
 		let shown = m.traded().zip(self.selection(&m));

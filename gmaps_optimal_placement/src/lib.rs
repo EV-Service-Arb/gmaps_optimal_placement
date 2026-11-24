@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use eyre::{Result, WrapErr, bail, ensure};
 use gmaps_optimal_placement_core::{
-	Ask, Category, Column, Country, Definition, Expr, Layer, LayerOut, Notice, Payload, Poi, PoiOut, Scale, TierOut, payload,
+	Ask, Category, Column, Country, Definition, Expr, Layer, LayerOut, Model, Notice, Payload, Poi, PoiOut, Scale, TierOut,
+	model::CUTOFF,
+	payload,
 	rank::{self, Biz, Feats, Rank},
 };
 use gmaps_optimal_placement_sources::{Frame, GridSource, Ranking, Region, grid, poi, probe};
@@ -148,8 +150,6 @@ impl Study {
 		self.keep(work)?;
 		let cells = self.cells(work)?;
 		let n = cells.grid.len();
-		let place: Vec<String> = cells.grid.cells.iter().map(|c| c.place.clone()).collect();
-
 		let mut ring = Vec::with_capacity(n * 8);
 		for c in &cells.grid.cells {
 			for p in c.ring {
@@ -158,6 +158,17 @@ impl Study {
 				ring.push(round1(p[1], 5));
 			}
 		}
+		let grid = Model::try_new(Payload {
+			name: self.name.clone(),
+			center: Frame::from(&self.def.area).center,
+			zoom: Frame::from(&self.def.area).zoom(),
+			ring,
+			place: cells.grid.cells.iter().map(|c| c.place.clone()).collect(),
+			imputed: cells.grid.cells.iter().map(|c| u8::from(c.imputed)).collect(),
+			layers: Vec::new(),
+			trade: None,
+			notice: None,
+		})?;
 		let (trade, notice) = match &self.def.category {
 			None => (None, None),
 			Some(c) => {
@@ -176,7 +187,7 @@ impl Study {
 				};
 				match (notice.is_some(), inv.pois.is_empty()) {
 					(true, true) => (None, notice),
-					_ => (Some(billed(c, &cells, &place, inv, self.radius_m(), work)?), notice),
+					_ => (Some(billed(c, &cells, &grid, inv, self.radius_m(), work)?), notice),
 				}
 			}
 		};
@@ -199,15 +210,10 @@ impl Study {
 		}
 		layers.extend(cells.layers);
 		Ok(Payload {
-			name: self.name.clone(),
-			center: Frame::from(&self.def.area).center,
-			zoom: Frame::from(&self.def.area).zoom(),
-			ring,
-			imputed: cells.grid.cells.iter().map(|c| u8::from(c.imputed)).collect(),
-			place,
 			layers,
 			trade,
 			notice,
+			..grid.payload
 		})
 	}
 
@@ -271,9 +277,9 @@ struct Cells {
 	layers: Vec<LayerOut>,
 }
 
-/// The billed half, over the inventory held.
-fn billed(c: &Category, cells: &Cells, place: &[String], inv: poi::Inventory, radius_m: f64, work: &Work) -> Result<payload::Trade> {
-	let model = Rank::try_new(feats(place, &inv.pois)?, rank::COEF)?;
+/// The billed half, over the inventory held. `grid` is the study with no trade on it yet.
+fn billed(c: &Category, cells: &Cells, grid: &Model, inv: poi::Inventory, radius_m: f64, work: &Work) -> Result<payload::Trade> {
+	let model = Rank::try_new(feats(&grid.payload.place, &inv.pois)?, rank::COEF)?;
 	let terms = terms(c);
 
 	// a study nobody has probed carries no nodes, and the map offers no observed coverage layer;
@@ -335,13 +341,15 @@ fn billed(c: &Category, cells: &Cells, place: &[String], inv: poi::Inventory, ra
 	for (p, t) in pois.iter_mut().zip(tier) {
 		p.w = round1(p.w / divisors[t].expect("a tier a competitor is in has a divisor"), 4);
 	}
+	let tiers: Vec<TierOut> = tiers.into_iter().map(|(name, weight)| TierOut { name, weight }).collect();
 	Ok(payload::Trade {
 		lambda_m: rank::LAMBDA_M,
+		pressure: pressure(grid, &pois, &tiers, rank::LAMBDA_M),
 		demand: c.demand.as_ref().map(|d| payload::Demand {
 			note: d.expr.clone(),
 			values: round(cells.demand.clone().expect("evaluated off the same category"), 3),
 		}),
-		tiers: tiers.into_iter().map(|(name, weight)| TierOut { name, weight }).collect(),
+		tiers,
 		terms: terms.into_iter().map(|(text, weight)| payload::TermOut { text, weight }).collect(),
 		unweighted: c.keywords.iter().filter(|k| k.weight.is_none()).map(|k| k.text.clone()).collect(),
 		queries,
@@ -349,6 +357,31 @@ fn billed(c: &Category, cells: &Cells, place: &[String], inv: poi::Inventory, ra
 		pois,
 		searches: inv.calls,
 	})
+}
+
+/// Competitor pressure, one per cell: Σ over the competitors within [`CUTOFF`] λ of weight × its
+/// tier's weight × exp(−distance/λ).
+fn pressure(grid: &Model, pois: &[PoiOut], tiers: &[TierOut], lambda_m: f64) -> Vec<f64> {
+	let comps: Vec<([f64; 2], f64)> = pois
+		.iter()
+		.map(|p| {
+			let tier = tiers.iter().find(|t| t.name == p.poi.tier).expect("the sweep files every competitor under one of its tiers");
+			(grid.to_local([p.poi.lat, p.poi.lng]), p.w * tier.weight)
+		})
+		.collect();
+	grid.c_lat
+		.iter()
+		.zip(&grid.c_lng)
+		.map(|(&lat, &lng)| {
+			let [x, y] = grid.to_local([lat, lng]);
+			comps
+				.iter()
+				.map(|([cx, cy], w)| (w, (x - cx).hypot(y - cy)))
+				.filter(|(_, d)| *d <= CUTOFF * lambda_m)
+				.map(|(w, d)| w * (-d / lambda_m).exp())
+				.sum()
+		})
+		.collect()
 }
 
 /// The category's keywords that weigh something: what a competitor is scored on and the probe asks.
@@ -419,4 +452,49 @@ fn observed(pois: &[Poi], nodes: &[[f64; 2]], rankings: &[Ranking], terms: &[(St
 		}
 	}
 	out
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The payload `_core`'s tests read: one whole Clermont study, frozen.
+	fn clermont() -> (Model, payload::Trade) {
+		let mut p: Payload = serde_json::from_str(include_str!("../../gmaps_optimal_placement_core/tests/it/clermont_payload.json")).unwrap();
+		let trade = p.trade.take().expect("the Clermont fixture is a trade over a location");
+		(Model::try_new(p).unwrap(), trade)
+	}
+
+	#[test]
+	fn pressure_is_what_the_frozen_study_carries() {
+		let (grid, t) = clermont();
+		let computed = pressure(&grid, &t.pois, &t.tiers, t.lambda_m);
+		assert_eq!(computed.len(), t.pressure.len());
+		let worst = computed.iter().zip(&t.pressure).map(|(a, b)| (a - b).abs()).fold(0., f64::max);
+		assert!(worst < 1e-12, "a cell's pressure is {worst:e} off what the fixture carries");
+	}
+
+	/// Dropping a tier lowers pressure, a wider catchment and a heavier tier raise it, and it is a
+	/// function of its inputs alone.
+	#[test]
+	fn pressure_moves_with_what_is_on_the_ground() {
+		let (grid, t) = clermont();
+		let sum = |pois: &[PoiOut], tiers: &[TierOut], lambda_m: f64| pressure(&grid, pois, tiers, lambda_m).iter().sum::<f64>();
+		let no_wash: Vec<PoiOut> = t.pois.iter().filter(|p| p.poi.tier != "wash").cloned().collect();
+		let mut heavy = t.tiers.clone();
+		heavy[0].weight *= 2.;
+
+		let base = sum(&t.pois, &t.tiers, t.lambda_m);
+		let (no_wash, wide, heavy) = (sum(&no_wash, &t.tiers, t.lambda_m), sum(&t.pois, &t.tiers, 4000.), sum(&t.pois, &heavy, t.lambda_m));
+		assert!(no_wash < base, "dropping washes must lower pressure");
+		assert!(wide > base, "wider λ must raise pressure");
+		assert!(heavy > base, "a heavier tier must raise pressure");
+		assert_eq!(base, sum(&t.pois, &t.tiers, t.lambda_m), "it is deterministic");
+		insta::assert_snapshot!(format!("base {base:.6}\nno wash {no_wash:.6}\nlambda 4000 {wide:.6}\nfirst tier doubled {heavy:.6}"), @"
+		base 27340.837444
+		no wash 12574.450215
+		lambda 4000 87845.339268
+		first tier doubled 39915.287659
+		");
+	}
 }

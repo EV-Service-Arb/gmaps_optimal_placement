@@ -3,7 +3,7 @@
 use std::time::{Duration, SystemTime};
 
 use gmaps_optimal_placement::{Work, testing};
-use gmaps_optimal_placement_core::{Area, Ask, Category, Country, Definition, Demand, Excluded, Gcid, Keyword, Payload};
+use gmaps_optimal_placement_core::{Area, Ask, Category, Country, Definition, Demand, Excluded, Gcid, Keyword, Model, Payload};
 
 use crate::{Answers, Dir};
 
@@ -96,7 +96,10 @@ fn a_pull_is_asked_what_lies_behind_each_answer_until_none_is_lacking() {
 
 	let built = p.build();
 	assert!(built.notice.is_none(), "built of what was answered: {:?}", built.notice);
-	assert_eq!(built.trade.expect("the sweep found a competitor").pois.len(), 1);
+	assert_eq!(built.trade.as_ref().expect("the sweep found a competitor").pois.len(), 1);
+	let opened = Model::try_new(built).expect("a page opens what was built");
+	let pressed = opened.traded().expect("on its trade").trade.pressure.iter().filter(|p| **p > 0.).count();
+	assert_eq!(pressed, opened.n(), "its one competitor reaches every cell");
 	assert!(p.dir.0.join(format!("studies/{}.json", p.def.id())).is_file(), "the definition is kept for `fit`");
 }
 

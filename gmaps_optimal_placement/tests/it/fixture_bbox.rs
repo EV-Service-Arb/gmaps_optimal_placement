@@ -98,7 +98,7 @@ fn a_location_alone_builds_off_the_archive() {
 	assert!(p.trade.is_none(), "a location carries no demand surface and no competitors");
 	assert!(p.notice.is_none(), "and lacks nothing");
 	let m = Model::try_new(p).unwrap();
-	assert!(m.traded().is_none(), "and so no view onto anything a slider moves");
+	assert!(m.traded().is_none(), "and so nothing of a trade");
 	insta::assert_snapshot!(m.layers().into_iter().map(|l| l.name).collect::<Vec<_>>().join("\n"), @"
 	Population
 	Standard of living (€/yr)

@@ -1,8 +1,7 @@
 mod fixture_bbox;
 mod pull;
 
-use std::path::PathBuf;
-use std::{cell::RefCell, collections::HashMap, rc::Rc, time::SystemTime};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, time::SystemTime};
 
 use gmaps_optimal_placement::Held;
 use gmaps_optimal_placement_core::Ask;

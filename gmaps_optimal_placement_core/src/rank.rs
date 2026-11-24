@@ -29,7 +29,7 @@ pub const DIST: usize = 4;
 /// the probe asked from a node are the only ones carrying distance. Regenerate, do not edit.
 pub const COEF: [f64; N] = [0.4536, 1.4674, 1.7023, -0.3212, -0.2838];
 /// The catchment the fitted distance term implies: `exp(COEF[DIST]·d_km) = exp(−d/λ)`, the decay
-/// `model::pressure` applies.
+/// pressure applies.
 pub const LAMBDA_M: f64 = -1000. / COEF[DIST];
 /// Only the top few slots are a decision; nobody's choice turns on rank 18 against 19. The
 /// denominator still runs over the whole returned set — the losers are what identify the
@@ -123,7 +123,7 @@ impl Rank {
 	}
 
 	/// Per business, over the study's terms: `Σ_t weight_t · exp(score_i(t))`, with the distance term
-	/// left out — `model::pressure` supplies `exp(−d/λ)` itself, and applying it twice would count
+	/// left out — pressure supplies `exp(−d/λ)` itself, and applying it twice would count
 	/// the same geometry against a competitor twice.
 	pub fn strength(&self, b: &Biz, terms: &[(String, f64)]) -> f64 {
 		self.contributions(b, terms).iter().sum()
@@ -143,8 +143,8 @@ impl Rank {
 
 /// Per tier, the median raw [`Rank::strength`] of its competitors (`tier[i]` is competitor `i`'s):
 /// what a payload's `w` is that strength divided by. `w = 1` is "a competitor as strong as the thing
-/// I am about to open" — `Model::capture_at` gives a site's own pull an implicit weight of 1.0.
-/// Per tier, because `Model::pressure` already multiplies by the tier weight: a fitted strength that
+/// I am about to open" — the capture score gives a site's own pull an implicit weight of 1.0.
+/// Per tier, because pressure already multiplies by the tier weight: a fitted strength that
 /// has learned a wash ranks below a detailer would otherwise be discounted twice. `None` for a tier
 /// nobody is in.
 pub fn divisors(tier: &[usize], raw: &[f64], tiers: usize) -> Result<Vec<Option<f64>>> {

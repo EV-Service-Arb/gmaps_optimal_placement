@@ -1,4 +1,4 @@
-//! What the browser is handed: the study, already evaluated. Everything a slider cannot move.
+//! What the browser is handed: the study, already evaluated.
 //!
 //! The shape lives here rather than beside the CLI because the map reads it back, and the map is
 //! wasm — it may not link a single line of I/O.
@@ -37,8 +37,11 @@ pub struct Notice {
 /// tool has anything to say about.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct Trade {
-	/// Catchment decay, metres: [`crate::rank::LAMBDA_M`]. The map's opening slider position.
+	/// Catchment decay, metres: [`crate::rank::LAMBDA_M`].
 	pub lambda_m: f64,
+	/// Competitor pressure, one per cell, over every competitor and every search at the tiers' own
+	/// weights: the library's, computed at build.
+	pub pressure: Vec<f64>,
 	/// None: the category says nothing about demand, and nothing that reads it is offered.
 	pub demand: Option<Demand>,
 	pub tiers: Vec<TierOut>,

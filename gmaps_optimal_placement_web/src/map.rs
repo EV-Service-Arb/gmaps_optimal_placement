@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use gmaps_optimal_placement_core::{
 	Model,
-	model::{Report, Summary, TierState, fmt},
+	model::{Report, Summary, fmt},
 };
 use gmaps_optimal_placement_overlay::Legend;
 pub use imp::{activate, close, open};
@@ -32,15 +32,13 @@ pub struct Tab {
 	/// As served: what the overlay is shown.
 	#[cfg(feature = "hydrate")]
 	pub json: Rc<str>,
-	#[cfg(feature = "hydrate")]
-	pub lambda: f64,
 	/// A `Summary.layers[].id`.
 	#[cfg(feature = "hydrate")]
 	pub layer: Option<String>,
 	#[cfg(feature = "hydrate")]
 	pub hide_imputed: bool,
 	#[cfg(feature = "hydrate")]
-	pub tiers: Vec<TierState>,
+	pub tiers: Vec<String>,
 	#[cfg(feature = "hydrate")]
 	pub pins: Vec<Pin>,
 	#[cfg(feature = "hydrate")]
@@ -63,7 +61,6 @@ pub struct State {
 	/// Which binding the settings panel is waiting on. A clicked button does not take focus in every
 	/// browser, so the next keypress is read off the document rather than off the button.
 	pub arming: RwSignal<Option<&'static str>>,
-	pub lambda: RwSignal<f64>,
 	/// Global: how you look at a map, not a property of a study.
 	pub opacity: RwSignal<f64>,
 	/// The competitor-pressure field over the heat. Global, like the opacity.
@@ -72,14 +69,12 @@ pub struct State {
 	pub dots: RwSignal<bool>,
 	pub layer: RwSignal<Option<String>>,
 	pub hide_imputed: RwSignal<bool>,
-	pub tiers: RwSignal<Vec<TierState>>,
+	/// The tiers whose marks are shown.
+	pub tiers: RwSignal<Vec<String>>,
 	/// Bumped by every study the overlay is shown, so what is pushed into it is pushed again even
 	/// where the next tab's control reads the same.
 	#[cfg(feature = "hydrate")]
 	pub shown: RwSignal<u32>,
-	/// Bumped by every recompute, so the card can depend on it without depending on λ.
-	#[cfg(feature = "hydrate")]
-	pub recomputed: RwSignal<u32>,
 	pub summary: RwSignal<Option<Summary>>,
 	pub legend: RwSignal<Option<Legend>>,
 	pub report: RwSignal<Option<Report>>,
@@ -107,7 +102,6 @@ impl State {
 			settings: RwSignal::new(false),
 			keys: RwSignal::new(Keymap::default()),
 			arming: RwSignal::new(None),
-			lambda: RwSignal::new(0.),
 			opacity: RwSignal::new(0.62),
 			field: RwSignal::new(false),
 			dots: RwSignal::new(true),
@@ -116,8 +110,6 @@ impl State {
 			tiers: RwSignal::new(Vec::new()),
 			#[cfg(feature = "hydrate")]
 			shown: RwSignal::new(0),
-			#[cfg(feature = "hydrate")]
-			recomputed: RwSignal::new(0),
 			summary: RwSignal::new(None),
 			legend: RwSignal::new(None),
 			report: RwSignal::new(None),
@@ -149,7 +141,7 @@ impl State {
 	}
 
 	fn rank(&self) {
-		let picks = self.heavy.with_value(|h| h.model.as_ref()?.traded()?.rank_sites(self.lambda.get_untracked(), &h.press, 10));
+		let picks = self.heavy.with_value(|h| h.model.as_ref()?.traded()?.rank_sites(10));
 		let Some((picked, pool)) = picks else { return };
 		self.pins.set(
 			picked
@@ -166,7 +158,7 @@ impl State {
 		self.heavy.with_value(|h| {
 			let Some(m) = &h.model else { return };
 			self.report.set(Some(Report {
-				title: format!("Top 10 sites · λ={:.1} km", self.lambda.get_untracked() / 1000.),
+				title: "Top 10 sites".to_owned(),
 				rows: picked
 					.iter()
 					.enumerate()
@@ -190,46 +182,25 @@ impl State {
 	}
 
 	#[cfg(feature = "hydrate")]
-	/// The tiers as the controls stand, over every search and every kind.
-	fn selection(&self, m: &Model) -> Option<gmaps_optimal_placement_core::model::Selection> {
-		let mut sel = m.traded()?.selection();
-		sel.tiers = self.tiers.get_untracked();
-		Some(sel)
-	}
-
-	#[cfg(feature = "hydrate")]
-	/// The selected pin's report, against the controls as they stand. Reads nothing reactively, so
-	/// the effect that keeps the card live cannot re-enter itself through `selected`.
+	/// The selected pin's report. Reads nothing reactively, so the effect that opens the card cannot
+	/// re-enter itself through `selected`.
 	pub fn refresh_card(&self) {
 		let Some(pin) = self.selected.get_untracked().and_then(|id| self.pin(&id)) else { return };
-		let label = pin.label.clone();
 		self.heavy.with_value(|h| {
 			let Some(m) = &h.model else { return };
-			self.report.set(Some(match (m.traded(), self.selection(m)) {
-				(Some(t), Some(sel)) => t.site_report(
-					pin.at,
-					label.as_deref(),
-					// a ranked pick is a cell centroid, and there is no business to score at one
-					pin.label.is_none().then_some(""),
-					self.lambda.get_untracked(),
-					&h.press,
-					&sel,
-				),
-				_ => m.cell_report(pin.at, label.as_deref()),
+			self.report.set(Some(match m.traded() {
+				// a ranked pick is a cell centroid, and there is no business to score at one
+				Some(t) => t.site_report(pin.at, pin.label.as_deref(), pin.label.is_none().then_some("")),
+				None => m.cell_report(pin.at, pin.label.as_deref()),
 			}));
 		});
 	}
 }
 
-/// The active study, and what the reports and the tooltip read of it under the controls. The overlay
-/// keeps its own copy of each: it is a renderer and hands none of them out.
+/// The active study, which the reports and the tooltip read.
 #[derive(Default)]
 pub struct Heavy {
 	pub model: Option<Rc<Model>>,
-	pub press: Vec<f64>,
-	/// `None` without a demand.
-	#[cfg(feature = "hydrate")]
-	pub unmet: Option<Vec<f64>>,
 	/// Which cells the tooltip answers for: every one, less the imputed while they are hidden.
 	#[cfg(feature = "hydrate")]
 	pub shown: Vec<u8>,
@@ -246,8 +217,7 @@ pub struct Tip {
 pub fn MapView() -> impl IntoView {
 	let s = State::new();
 	imp::wire(s);
-	// no trade under the tab: λ, the tier weights, the field and the sweeps are functions of a demand
-	// surface and an inventory, and neither is on the page
+	// no trade under the tab: the field, the dots and the sweep are its competitors' and its demand's
 	let traded = move || s.summary.with(|l| l.as_ref().is_some_and(|l| l.trade.is_some()));
 	let show_queries = RwSignal::new(false);
 	let show_categories = RwSignal::new(true);
@@ -299,24 +269,6 @@ pub fn MapView() -> impl IntoView {
 			</select>
 
 			<label>
-				"Catchment radius λ — "
-				<span>{move || format!("{:.1} km", s.lambda.get() / 1000.)}</span>
-			</label>
-			<input
-				type="range"
-				min="300"
-				max="6000"
-				step="100"
-				prop:disabled=move || !traded()
-				prop:value=move || s.lambda.get()
-				on:input=move |ev| {
-					if let Ok(v) = event_target_value(&ev).parse() {
-						s.lambda.set(v);
-					}
-				}
-			/>
-
-			<label>
 				"Overlay opacity — " <span>{move || format!("{:.0}%", s.opacity.get() * 100.)}</span>
 			</label>
 			<input
@@ -333,57 +285,36 @@ pub fn MapView() -> impl IntoView {
 			/>
 
 			{move || {
-				let counts: Vec<usize> = s
-					.summary
-					.get()?
-					.trade?
-					.tiers
-					.iter()
-					.map(|t| t.fetched_s.len())
-					.collect();
 				Some(
 					s
+						.summary
+						.get()?
+						.trade?
 						.tiers
-						.get_untracked()
 						.into_iter()
 						.enumerate()
 						.map(|(i, t)| {
-							let (name, count) = (t.name.clone(), counts[i]);
+							let (label, shown, name) = (
+								format!("{} ({})", t.name, t.fetched_s.len()),
+								t.name.clone(),
+								t.name,
+							);
 							view! {
 								<div class="row">
 									<input
 										type="checkbox"
 										id=format!("tier{i}")
-										prop:checked=move || s.tiers.with(|v| v.get(i).is_some_and(|t| t.show))
+										prop:checked=move || s.tiers.with(|v| v.contains(&shown))
 										on:change=move |ev| {
-											s.tiers.update(|v| v[i].show = event_target_checked(&ev));
+											s.tiers
+												.update(|v| match event_target_checked(&ev) {
+													true => v.push(name.clone()),
+													false => v.retain(|t| *t != name),
+												});
 										}
 									/>
-									<label for=format!("tier{i}")>{format!("{name} ({count})")}</label>
+									<label for=format!("tier{i}")>{label}</label>
 								</div>
-								<label>
-									{format!("weight of one {} — ", t.name)}
-									<span>
-										{move || {
-											s.tiers
-												.with(|v| {
-													v.get(i).map_or_else(String::new, |t| format!("{:.2}", t.weight))
-												})
-										}}
-									</span>
-								</label>
-								<input
-									type="range"
-									min="0"
-									max="200"
-									step="5"
-									value=(t.weight * 100.).round().to_string()
-									on:input=move |ev| {
-										if let Ok(v) = event_target_value(&ev).parse::<f64>() {
-											s.tiers.update(|t| t[i].weight = v / 100.);
-										}
-									}
-								/>
 							}
 						})
 						.collect_view(),
@@ -395,16 +326,16 @@ pub fn MapView() -> impl IntoView {
 			// being asked to justify itself.
 			{move || {
 				let (summary, tiers) = (s.summary.get(), s.tiers.get());
-				let rows: Vec<_> = summary?
-					.trade?
+				let trade = summary?.trade?;
+				let rows: Vec<_> = trade
 					.categories
 					.into_iter()
 					.filter_map(|c| {
 						let n: usize = c
 							.counts
 							.iter()
-							.zip(&tiers)
-							.filter(|(_, t)| t.show)
+							.zip(&trade.tiers)
+							.filter(|(_, t)| tiers.contains(&t.name))
 							.map(|(n, _)| n)
 							.sum();
 						(n > 0)
@@ -639,7 +570,7 @@ fn age_chart(ages: &gmaps_optimal_placement_core::model::Ages) -> impl IntoView 
 mod imp {
 	use super::State;
 
-	/// Server-side the island renders its empty shell; nothing recomputes until the wasm lands.
+	/// Server-side the island renders its empty shell; nothing runs until the wasm lands.
 	pub fn wire(_: State) {}
 	pub fn open(_: State, _: Option<String>, _: String) {}
 	pub fn activate(_: State, _: usize) {}
@@ -678,32 +609,6 @@ mod imp {
 		Data(serde::de::IgnoredAny),
 		Legend(Legend),
 		Notice(serde::de::IgnoredAny),
-	}
-
-	/// The island's own pressure, for the reports and the tooltip, and the same controls handed to
-	/// the overlay.
-	fn recompute(s: State) {
-		let (lambda, tiers) = (s.lambda.get_untracked(), s.tiers.get_untracked());
-		s.heavy.update_value(|h| {
-			let Some(m) = h.model.clone() else { return };
-			let (Some(t), Some(sel)) = (m.traded(), s.selection(&m)) else {
-				(h.press, h.unmet) = (Vec::new(), None);
-				return;
-			};
-			h.press = t.pressure(lambda, &sel);
-			h.unmet = t.unmet(&h.press);
-		});
-		let tune = serde_json::json!({
-			"lambda_m": lambda,
-			"tiers": tiers.iter().map(|t| (t.name.clone(), serde_json::json!({"weight": t.weight, "show": t.show}))).collect::<serde_json::Map<_, _>>(),
-		});
-		let tune = js_sys::JSON::parse(&tune.to_string()).expect("serde_json writes JSON");
-		overlay(|o| {
-			if let Err(e) = o.tune(tune) {
-				s.banner.set(Some(format!("⚠ {}", String::from(JsValue::from(e).unchecked_into::<js_sys::Error>().message()))));
-			}
-		});
-		s.recomputed.update(|n| *n += 1);
 	}
 
 	fn shown(s: State) {
@@ -757,12 +662,17 @@ mod imp {
 		document().add_event_listener_with_callback("keydown", &on_key).expect("the document takes a keydown listener");
 
 		Effect::new(move |_| {
-			s.lambda.track();
-			s.tiers.track();
+			let tiers = s.tiers.get();
 			s.shown.track();
-			if s.heavy.with_value(|h| h.model.is_some()) {
-				recompute(s);
+			if !s.heavy.with_value(|h| h.model.as_ref().is_some_and(|m| m.traded().is_some())) {
+				return;
 			}
+			let tune = js_sys::JSON::parse(&serde_json::json!({ "tiers": tiers }).to_string()).expect("serde_json writes JSON");
+			overlay(|o| {
+				if let Err(e) = o.tune(tune) {
+					s.banner.set(Some(format!("⚠ {}", String::from(JsValue::from(e).unchecked_into::<js_sys::Error>().message()))));
+				}
+			});
 		});
 
 		Effect::new(move |_| {
@@ -792,9 +702,7 @@ mod imp {
 			});
 		});
 
-		// the open card is a live view of λ, not a snapshot of when it was clicked
 		Effect::new(move |_| {
-			s.recomputed.track();
 			s.selected.track();
 			s.refresh_card();
 		});
@@ -877,7 +785,6 @@ mod imp {
 		Some(Tab {
 			at,
 			label: model.payload.name.clone(),
-			lambda: model.payload.trade.as_ref().map_or(0., |t| t.lambda_m), // inert without a trade: the slider is disabled and nothing reads it
 			layer: summary.layers.first().map(|l| l.id.clone()),
 			hide_imputed: false,
 			tiers: model.traded().map_or_else(Vec::new, |t| t.selection().tiers),
@@ -893,7 +800,6 @@ mod imp {
 		let i = s.active.get_untracked();
 		s.tabs.update(|v| {
 			let Some(t) = v.get_mut(i) else { return };
-			t.lambda = s.lambda.get_untracked();
 			t.layer = s.layer.get_untracked();
 			t.hide_imputed = s.hide_imputed.get_untracked();
 			t.tiers = s.tiers.get_untracked();
@@ -902,14 +808,12 @@ mod imp {
 		});
 	}
 
-	/// A tab, into the live signals and onto the overlay. `press` and `unmet` are never stored —
-	/// they are functions of λ and the tier weights, so `recompute` is all it takes to get them back.
+	/// A tab, into the live signals and onto the overlay.
 	fn adopt(s: State, i: usize) {
 		let t = s.tabs.with_untracked(|v| v[i].clone());
 		s.active.set(i);
 		s.heavy.update_value(|h| h.model = Some(t.model.clone()));
 		overlay(|o| o.show(Some(t.json.to_string()), false));
-		s.lambda.set(t.lambda);
 		s.layer.set(t.layer);
 		s.hide_imputed.set(t.hide_imputed);
 		s.tiers.set(t.tiers);
@@ -1105,8 +1009,7 @@ mod imp {
 			let text = s.heavy.with_value(|h| {
 				let m = h.model.as_ref()?;
 				let i = m.cell_at([lat, lng], &h.shown)?;
-				// read only under a demand, which is when it is there
-				Some(m.tooltip(i, &h.press, h.unmet.as_deref().unwrap_or(&[])))
+				Some(m.tooltip(i))
 			});
 			s.tip.set(text.map(|text| Tip { text, x, y }));
 		}));
