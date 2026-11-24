@@ -21,7 +21,7 @@ pub struct AppConfig {
 	/// A copy of prod's `panel.db`, what the conductor bought read off it: site_conductor's
 	/// `nix run .#prod-restore -- panel-data/panel.db=<this path>` takes one.
 	pub queries_cache: PathBuf,
-	/// A Google Maps JavaScript API key, for `view`'s page; `view` refuses to start without one.
+	/// A Google Maps JavaScript API key, for the GUI's map.
 	pub maps_key: Option<String>,
 }
 

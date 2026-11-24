@@ -87,27 +87,10 @@
           doCheck = false;
           auditable = false; # cargo-auditable doesn't support edition 2024
         };
-        # `view [<study>]` — a study of the work dir on a map, at 127.0.0.1:${SA_PORTS}; without one, picked with fzf
-        view = pkgs.writeShellApplication {
-          name = "view";
-          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold fzf ];
-          text = ''
-            cd "$(git rev-parse --show-toplevel)"
-            if [ $# -eq 0 ]; then
-              pick="$(cargo run -q -p gmaps_optimal_placement_cli -- view | fzf --prompt 'study> ' | cut -d' ' -f1)"
-              [ -n "$pick" ] || exit 1
-              set -- "$pick"
-            fi
-            exec cargo run -q -p gmaps_optimal_placement_cli -- view --overlay ${overlay} --port ${toString SA_PORTS} "$@"
-          '';
-        };
-
         help = pkgs.writeShellApplication {
           name = "help";
           text = ''
             cat <<'EOF'
-            nix run [-- <study>]            a study of the work dir on a map: what the conductor studied, and
-                                            each location under each of its categories; fzf picks one without
             nix run .#misc <country> <tally>  which towns in a country to write a study about at all:
                                             pool | building | parcel per --per column, --floor to skip hamlets
             nix run .#help                  this
@@ -121,8 +104,7 @@
       in
       {
         apps = {
-          default = { type = "app"; program = pkgs.lib.getExe view; };
-          view = { type = "app"; program = pkgs.lib.getExe view; };
+          default = { type = "app"; program = pkgs.lib.getExe help; };
           misc = { type = "app"; program = pkgs.lib.getExe misc; };
           help = { type = "app"; program = pkgs.lib.getExe help; };
         };
@@ -152,7 +134,6 @@
               '';
 
             packages = [
-              fzf
               mold
               openssl
               pkg-config

@@ -7,5 +7,6 @@
   };
   sweep = { depth = 3; root = 3; };
   # a copy of prod's panel.db: site_conductor's `nix run .#prod-restore -- panel-data/panel.db=<this>`
+  maps_key = { env = "GOOGLE_MAPS_KEY"; };
   queries_cache = "/home/v/.local/share/gmaps_optimal_placement/panel.db";
 }

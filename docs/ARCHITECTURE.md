@@ -44,7 +44,7 @@ documents, never to the code.
            │             site_conductor links both, one pin  │
    ┌───────┴─────────────────────────────────┐               │
    │ gmaps_optimal_placement_cli             │◀──────────────┘
-   │   view · fit · strength · misc · schema │
+   │   fit · strength · misc · schema        │
    │   Held: a copy of prod's panel.db,      │
    │   its queries cache, read-only          │
    └───────┬─────────────────────────────────┘

@@ -1,0 +1,62 @@
+html,body{margin:0;height:100%;background:#111}
+body{font:13px/1.45 system-ui,sans-serif} /* not on html: the uikit is sized in rem */
+#map{position:absolute;inset:30px 0 0}
+#tabs{position:absolute;z-index:8;inset:0 0 auto;height:30px;display:flex;align-items:stretch;
+      background:#14171c;border-bottom:1px solid #2a2f38;color:#b8c0cc;font-size:12px}
+.tab{display:flex;align-items:center;gap:6px;padding:0 8px 0 12px;max-width:230px;cursor:pointer;
+     border-right:1px solid #2a2f38;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tab:hover{background:#1b1e23}
+.tab.on{background:#232830;color:#fff;box-shadow:inset 0 -2px 0 #2f6df6}
+.tab .x{font-size:9px;color:#8892a0;opacity:0;transition:opacity .1s}
+.tab:hover .x{opacity:1}
+.tab .x:hover{color:#ff7b7b}
+.tab.add{padding:0 12px;color:#8892a0}
+#find{margin:4px 0 4px auto;width:240px;box-sizing:border-box;background:#1b1e23;color:#e8e8ea;
+      border:1px solid #2a2f38;border-radius:4px;padding:0 8px;font:inherit}
+#find:focus{outline:0;border-color:#2f6df6}
+#missed{position:absolute;top:32px;right:40px;max-width:400px;padding:4px 8px;border-radius:4px;
+        background:#4a1d1de6;color:#ffb4b4;border:1px solid #7a2b2b;white-space:pre-wrap}
+#gear{padding:0 12px;display:flex;align-items:center;cursor:pointer;color:#8892a0}
+#gear:hover{color:#e8e8ea}
+#settings{z-index:9;top:50px;left:50%;transform:translateX(-50%);width:340px}
+#settings .row{justify-content:space-between}
+#settings button.sec{width:64px;margin:0;font-variant-numeric:tabular-nums}
+.panel{position:absolute;z-index:5;background:#1b1e23ee;color:#e8e8ea;border-radius:8px;
+       padding:10px 12px;box-shadow:0 4px 18px #000a;backdrop-filter:blur(3px)}
+#ctl{top:10px;left:10px;width:266px;max-height:calc(100% - 20px);overflow:auto}
+#report{bottom:10px;left:10px;width:266px;max-height:52%;overflow:auto}
+#banner{position:absolute;z-index:7;top:40px;left:50%;transform:translateX(-50%);
+        background:#4a1d1de6;color:#ffb4b4;border:1px solid #7a2b2b;border-radius:6px;padding:6px 10px;
+        max-width:min(680px,80vw);max-height:30vh;overflow:auto;white-space:pre-wrap;line-height:1.45}
+h4{margin:0 0 6px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#8fa3c8}
+h4.fold{cursor:pointer;user-select:none;margin-top:10px}h4.fold:hover{color:#b8c8e8}
+.ages{position:relative;height:36px;margin:6px 0 16px;border-bottom:1px solid #4a5361}
+.ages>div{position:absolute;bottom:0;border-radius:2px 2px 0 0;font-size:9px;line-height:11px;text-align:center;color:#1b1f27}
+.ages>span{position:absolute;top:100%;margin-top:2px;transform:translateX(-50%);font-size:9.5px;color:#8892a0}.ages>span:last-child{transform:translateX(-100%)}
+label{display:block;margin:7px 0 2px;color:#b8c0cc;font-size:11.5px}
+select,input[type=range]{width:100%}
+select{background:#2a2f38;color:#e8e8ea;border:1px solid #3a4150;border-radius:5px;padding:4px}
+.row,.cat{display:flex;gap:8px;align-items:center;margin-top:5px}
+.row input{margin:0}.row label,.cat label{margin:0;color:#dfe4ea;font-size:12px}
+:where(.panel) button{width:100%;margin-top:9px;background:#2f6df6;color:#fff;border:0;border-radius:5px;
+       padding:7px;font-size:12px;cursor:pointer}
+:where(.panel) button:hover{background:#4b83ff}
+button.sec{background:#39404d}button.sec:hover{background:#4a5361}
+.acts{float:right;display:flex;gap:4px;margin:-2px -2px 0 6px}
+button.act{width:22px;margin:0;padding:2px 0;background:#39404d;font-size:12px;line-height:1}
+button.act:hover{background:#4a5361}
+button.act.go{background:#1e7a35}button.act.go:hover{background:#279443}
+button.act.no{background:#7a2b2b}button.act.no:hover{background:#943434}
+#bar{height:11px;border-radius:3px;margin:10px 0 3px}
+#ticks{display:flex;justify-content:space-between;font-size:10px;color:#98a2b3}
+.note{margin-top:8px;font-size:10.5px;color:#8892a0;line-height:1.4}
+table{width:100%;border-collapse:collapse;font-size:11.5px}
+td{padding:1px 0;vertical-align:top}
+td:last-child{text-align:right;color:#fff;font-variant-numeric:tabular-nums;white-space:nowrap}
+.k{color:#8fa3c8}
+#tip{position:absolute;z-index:6;pointer-events:none;background:#0e1116f2;color:#e8e8ea;
+     border:1px solid #333a47;border-radius:6px;padding:6px 8px;font-size:11.5px;white-space:pre}
+.nrev{text-shadow:0 0 3px #000,0 0 2px #000;font-variant-numeric:tabular-nums}
+.sw{display:inline-block;width:9px;height:9px;border-radius:50%;border:1px solid #fff;vertical-align:-1px}
+/* the picker is uikit's, and the page ships no preflight: this is the part of one its controls need */
+#picker :where(button,input){margin:0;padding:0;border:0 solid;background:transparent;color:inherit;font:inherit}

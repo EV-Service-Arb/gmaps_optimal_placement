@@ -3,7 +3,6 @@
 
 mod held;
 mod settings;
-mod view;
 
 use std::path::{Path, PathBuf};
 
@@ -56,20 +55,6 @@ enum Cmd {
 		/// Defaults to `<work dir>/out/<country>-<tally>-per-<column>.html`
 		#[arg(short, long)]
 		out: Option<PathBuf>,
-	},
-	/// Open a study on a map in the browser, at `127.0.0.1:<port>`, until Ctrl-C: built out of the work
-	/// dir and what the conductor bought, never buying, so a study with searches missing opens with
-	/// its notice. Without a study, the ones there are: `<id> <name>` a line
-	View {
-		/// A study's id (a prefix of it will do)
-		study: Option<String>,
-		#[command(flatten)]
-		at: Pair,
-		/// The overlay as wasm-bindgen wrote it (`nix build .#overlay`)
-		#[arg(long)]
-		overlay: Option<PathBuf>,
-		#[arg(short, long)]
-		port: Option<u16>,
 	},
 	/// Print a document's JSON schema. What the tool's own settings look like is `config schema` — a
 	/// study is the question, the settings are what asking it costs
@@ -126,32 +111,6 @@ fn main() -> Result<()> {
 			let league = League::run(&pooled(&observed)?, &orderings)?;
 			report(league.stats());
 			league.check()
-		}
-		Cmd::View { study: None, at, .. } => {
-			let mut listed: Vec<(String, Definition)> = studies(&at, &work)?
-				.into_iter()
-				.map(|(d, _)| (d.category.as_ref().map_or_else(String::new, |c| format!("{}@{}", c.trade.id, &c.id()[..8])), d))
-				.collect();
-			listed.sort_by(|a, b| a.0.cmp(&b.0));
-			for (setting, def) in listed {
-				println!("{} {} {setting}", &def.id()[..12], def.name());
-			}
-			Ok(())
-		}
-		Cmd::View { study: Some(id), at, overlay, port } => {
-			let key = cfg
-				.maps_key
-				.ok_or_else(|| eyre::eyre!("`view` draws on Google Maps, and needs the settings' `maps_key`: a Maps JavaScript API key"))?;
-			let (overlay, port) = match (overlay, port) {
-				(Some(o), Some(p)) => (o, p),
-				_ => eyre::bail!("`view <study>` needs --overlay and --port; `nix run` hands it both"),
-			};
-			let mut found = studies(&at, &work)?.into_iter().filter(|(d, _)| d.id().starts_with(&id));
-			let (Some((def, candidates)), None) = (found.next(), found.next()) else {
-				eyre::bail!("{id:?} is not the id of exactly one study; `view` with none lists them")
-			};
-			let payload = serde_json::to_vec(&gmaps_optimal_placement::load(&def, candidates)?.build(&work)?)?;
-			view::serve(payload, &overlay, &key, port)
 		}
 		Cmd::Misc { country, tally, per, floor, out } => {
 			let compiled = gmaps_optimal_placement_misc::compile(country, tally, &per, floor, &work)?;
