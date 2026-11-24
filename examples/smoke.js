@@ -13,7 +13,7 @@ const fs = require("node:fs");
 const URL_ = process.argv[2];
 assert(URL_, "usage: node smoke.js <url>");
 const CATEGORY = process.env.SMOKE_CATEGORY || "Plombier·FR";
-const LOCATION = process.env.SMOKE_LOCATION || "lyon (circle";
+const LOCATION = process.env.SMOKE_LOCATION || "lyon";
 const PORT = 9333;
 
 const chrome = spawn("chromium", [

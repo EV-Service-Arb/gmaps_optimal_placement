@@ -13,10 +13,8 @@ use std::{
 use clap::{Parser, Subcommand, ValueEnum};
 use eyre::{Result, WrapErr};
 use gmaps_optimal_placement::{Base, Work};
-use gmaps_optimal_placement_core::{Area, Candidate, Category, Definition};
+use gmaps_optimal_placement_core::{Area, Category, Definition};
 use gmaps_optimal_placement_rank::{League, Observed, Ordering, fit, pooled};
-use schemars::JsonSchema;
-use serde::Deserialize;
 use settings::{AppConfig, SettingsCommand, SettingsFlags};
 
 #[derive(Parser)]
@@ -35,14 +33,14 @@ enum Cmd {
 	/// whole product and reads whatever each pairing has already collected
 	Fit {
 		#[command(flatten)]
-		at: Pair,
+		of: Categories,
 	},
 	/// Which scoring model earns the map: every entrant cross-validated over the same orderings, held
 	/// out by the region each was asked from. Reads the work dir only, so it costs nothing. `fit`
 	/// produces the constant; this produces the argument for which constant
 	Strength {
 		#[command(flatten)]
-		at: Pair,
+		of: Categories,
 	},
 	/// Which towns in a country are worth a study: something the cadastre draws, counted per
 	/// administrative unit and divided by whatever the statistical grid publishes, as one HTML map
@@ -64,7 +62,7 @@ enum Cmd {
 	/// picked side by side in the page, on Google Maps (settings' `maps_key`), at 127.0.0.1
 	View {
 		#[command(flatten)]
-		at: Pair,
+		of: Categories,
 		#[arg(long)]
 		port: u16,
 		/// Where `wasm-bindgen` put the client, as `pkg/`
@@ -82,17 +80,13 @@ enum Cmd {
 	},
 }
 
-/// The two axes a study is a point on. The categories are the conductor's, as the definitions it
-/// handed in carry them; the locations are files.
+/// Which of the conductor's categories, as the definitions it handed in carry them.
 #[derive(Clone, clap::Args)]
-struct Pair {
+struct Categories {
 	/// A trade (`gcid:plumber`), or one setting of it (`gcid:plumber@<the first 8 of its id>`);
 	/// without it, every category a definition in the work dir carries
 	#[arg(short, long)]
 	category: Option<String>,
-	/// Where: the area and the premises in mind; a `<slug>.toml` or a directory of them
-	#[arg(short, long, default_value = "examples/locations")]
-	locations: PathBuf,
 }
 
 fn main() -> Result<()> {
@@ -113,27 +107,26 @@ fn main() -> Result<()> {
 		Cmd::Schema { doc } => {
 			let schema = match doc {
 				Doc::Base => schemars::schema_for!(Base),
-				Doc::Location => schemars::schema_for!(Location),
 			};
 			println!("{}", serde_json::to_string_pretty(&schema)?);
 			Ok(())
 		}
-		Cmd::Fit { at } => {
-			let fit: fit::Fit = harvest(&at, &work)?.iter().collect();
+		Cmd::Fit { of } => {
+			let fit: fit::Fit = harvest(&of, &work)?.iter().collect();
 			report(fit.stats());
 			fit.check()
 		}
-		Cmd::Strength { at } => {
-			let observed = harvest(&at, &work)?;
+		Cmd::Strength { of } => {
+			let observed = harvest(&of, &work)?;
 			let orderings: Vec<Ordering> = observed.iter().flat_map(Observed::orderings).collect();
 			let league = League::run(&pooled(&observed)?, &orderings)?;
 			report(league.stats());
 			league.check()
 		}
-		Cmd::View { at, port, site } => {
+		Cmd::View { of, port, site } => {
 			let key = cfg.maps_key.ok_or_else(|| eyre::eyre!("the GUI draws on Google Maps, and settings carry no `maps_key`"))?;
-			let categories = categories(&at, &work.path().join("studies"))?;
-			let locations = locations(&at, &work)?;
+			let studied = studied(&work.path().join("studies"))?;
+			let (categories, locations) = (categories(&of, &studied)?, locations(&studied));
 			gmaps_optimal_placement_web::serve(SocketAddr::from(([127, 0, 0, 1], port)), site, key, categories, locations, Arc::new(works))
 		}
 		Cmd::Misc { country, tally, per, floor, out } => {
@@ -149,154 +142,85 @@ fn main() -> Result<()> {
 enum Doc {
 	/// A country's, compiled into the library: the grid, its columns and layers.
 	Base,
-	/// `--locations`' files: an area and the premises in it.
-	Location,
-}
-
-/// An area and the premises worth asking about in it. A location may not name a trade.
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct Location {
-	area: Area,
-	/// A premises is a location's, not a trade's: the same unit is worth asking about for whichever
-	/// trade would move into it.
-	#[serde(rename = "candidate", default)]
-	candidates: Vec<Candidate>,
 }
 
 /// What every harvested study collected: every study, each once. How Google ranks is one mechanism,
 /// so every one with a category contributes.
-fn harvest(at: &Pair, work: &Work) -> Result<Vec<Observed>> {
+fn harvest(of: &Categories, work: &Work) -> Result<Vec<Observed>> {
 	let mut observed = Vec::new();
-	for (def, _) in studies(at, work)?.into_iter().filter(|(d, _)| d.category.is_some()) {
+	for def in studies(of, work)?.into_iter().filter(|d| d.category.is_some()) {
 		if let Some(e) = gmaps_optimal_placement::load(&def, Vec::new())?.observations(work)? {
 			observed.push(Observed::try_new(e.pois, e.places, &e.rankings)?);
 		}
 	}
-	eyre::ensure!(
-		!observed.is_empty(),
-		"no category over {}, nor any study the conductor defined, has ever been harvested",
-		at.locations.display()
-	);
+	eyre::ensure!(!observed.is_empty(), "no study the conductor defined has ever been harvested");
 	Ok(observed)
 }
 
-/// The two axes' product — each location with its premises, under each of the conductor's
-/// categories in its country — and every definition a host ever studied here, each once.
-fn studies(at: &Pair, work: &Work) -> Result<Vec<(Definition, Vec<Candidate>)>> {
-	let mut out: Vec<(Definition, Vec<Candidate>)> = Vec::new();
-	let categories = categories(at, &work.path().join("studies"))?;
-	for l in files(&at.locations)? {
-		let Location { area, candidates } = read_toml(&l)?;
+/// The two axes' product — each location under each category in its country — and every definition a
+/// host ever studied here, each once.
+fn studies(of: &Categories, work: &Work) -> Result<Vec<Definition>> {
+	let studied = studied(&work.path().join("studies"))?;
+	let categories = categories(of, &studied)?;
+	let mut out: Vec<Definition> = Vec::new();
+	for (_, area) in locations(&studied) {
 		for (_, category) in categories.iter().filter(|(_, c)| c.country == area.country()) {
-			let def = Definition {
+			out.push(Definition {
 				area: area.clone(),
 				category: Some(category.clone()),
-			};
-			out.push((def, candidates.clone()));
+			});
 		}
 	}
-	for def in studied(work)? {
-		if !out.iter().any(|(d, _)| d.id() == def.id()) {
-			out.push((def, Vec::new()));
+	for def in studied {
+		if !out.iter().any(|d| d.id() == def.id()) {
+			out.push(def);
 		}
 	}
 	Ok(out)
 }
 
-/// Every location file by its stem, then every area a host studied that no file has. Two areas can
-/// share a slug — a city's viewport and the conductor's circle in it — so those are told apart by
-/// their kind and the first 8 of their id.
-fn locations(at: &Pair, work: &Work) -> Result<Vec<(String, Area, Vec<Candidate>)>> {
-	let mut out = Vec::new();
-	for l in files(&at.locations)? {
-		let Location { area, candidates } = read_toml(&l)?;
-		out.push((l.file_stem().expect("a *.toml has a stem").to_string_lossy().into_owned(), area, candidates));
-	}
-	let files = out.len();
-	for def in studied(work)? {
-		if out.iter().any(|(_, a, _)| *a == def.area) {
-			continue;
+/// Every area the definitions the conductor handed in are over, each once, by its slug.
+fn locations(studied: &[Definition]) -> Vec<(String, Area)> {
+	let mut out: Vec<(String, Area)> = Vec::new();
+	for def in studied {
+		if !out.iter().any(|(_, a)| *a == def.area) {
+			out.push((def.area.slug().to_owned(), def.area.clone()));
 		}
-		let kind = match def.area {
-			Area::City { .. } => "city",
-			Area::Circle { .. } => "circle",
-		};
-		let id = Definition {
-			area: def.area.clone(),
-			category: None,
-		}
-		.id();
-		out.push((format!("{} ({kind} @{})", def.area.slug(), &id[..8]), def.area, Vec::new()));
 	}
-	out[files..].sort_by(|a, b| a.0.cmp(&b.0));
-	for (i, (l, ..)) in out.iter().enumerate() {
-		eyre::ensure!(!out[..i].iter().any(|(o, ..)| o == l), "two locations are both labelled {l:?}");
-	}
-	Ok(out)
+	out.sort_by(|a, b| a.0.cmp(&b.0));
+	out
 }
 
 /// Every definition a host studied in this work dir.
-fn studied(work: &Work) -> Result<Vec<Definition>> {
-	let dir = work.path().join("studies");
+fn studied(dir: &Path) -> Result<Vec<Definition>> {
 	// no directory is a work dir nobody has studied in yet
 	if !dir.is_dir() {
 		return Ok(Vec::new());
 	}
 	let mut out = Vec::new();
-	for e in std::fs::read_dir(&dir)? {
+	for e in std::fs::read_dir(dir)? {
 		let path = e?.path();
 		if path.extension().is_some_and(|x| x == "json") {
-			out.push(read(&path)?);
+			let text = std::fs::read_to_string(&path).wrap_err_with(|| format!("reading {}", path.display()))?;
+			out.push(serde_json::from_str(&text).wrap_err_with(|| format!("parsing {}", path.display()))?);
 		}
 	}
 	Ok(out)
-}
-
-/// Every `*.toml` directly under `path`, in file-stem order. A file is itself, so one axis of the
-/// product can be named on the command line while the other stays a directory.
-fn files(path: &Path) -> Result<Vec<PathBuf>> {
-	if path.is_file() {
-		return Ok(vec![path.to_owned()]);
-	}
-	let mut out: Vec<PathBuf> = std::fs::read_dir(path)
-		.wrap_err_with(|| format!("reading {}", path.display()))?
-		.map(|e| Ok(e?.path()))
-		.collect::<Result<Vec<_>>>()?
-		.into_iter()
-		.filter(|p| p.extension().is_some_and(|e| e == "toml"))
-		.collect();
-	out.sort();
-	eyre::ensure!(!out.is_empty(), "no *.toml under {}", path.display());
-	Ok(out)
-}
-
-fn read_toml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
-	let text = std::fs::read_to_string(path).wrap_err_with(|| format!("reading {}", path.display()))?;
-	toml::from_str(&text).wrap_err_with(|| format!("parsing {}", path.display()))
 }
 
 /// Every setting of every trade the definitions the conductor handed in carry, keyed
 /// `<trade name>·<CC> (<gcid>@<id8>)`. gop never reads the conductor, and a copy kept here would be
 /// one more place a category drifts from it.
-fn categories(at: &Pair, dir: &Path) -> Result<Vec<(String, Category)>> {
+fn categories(of: &Categories, studied: &[Definition]) -> Result<Vec<(String, Category)>> {
 	let mut keyed: Vec<(String, Category)> = Vec::new();
-	// no directory is a work dir nobody has studied in yet
-	if dir.is_dir() {
-		for e in std::fs::read_dir(dir)? {
-			let path = e?.path();
-			if path.extension().is_none_or(|x| x != "json") {
-				continue;
-			}
-			let Some(c) = read::<Definition>(&path)?.category else { continue };
-			let key = format!("{}·{} ({}@{})", c.trade.name, c.country, c.trade.id, &c.id()[..8]);
-			if !keyed.iter().any(|(o, _)| *o == key) {
-				keyed.push((key, c));
-			}
+	for c in studied.iter().filter_map(|d| d.category.as_ref()) {
+		let key = format!("{}·{} ({}@{})", c.trade.name, c.country, c.trade.id, &c.id()[..8]);
+		if !keyed.iter().any(|(o, _)| *o == key) {
+			keyed.push((key, c.clone()));
 		}
 	}
 	keyed.sort_by(|a, b| a.0.cmp(&b.0));
-	let Some(k) = &at.category else { return Ok(keyed) };
+	let Some(k) = &of.category else { return Ok(keyed) };
 	let one: Vec<_> = keyed
 		.iter()
 		.filter(|(_, c)| *k == c.trade.id || *k == format!("{}@{}", c.trade.id, &c.id()[..8]))
@@ -304,16 +228,10 @@ fn categories(at: &Pair, dir: &Path) -> Result<Vec<(String, Category)>> {
 		.collect();
 	eyre::ensure!(
 		!one.is_empty(),
-		"no definition under {} carries category {k:?}; they carry {:?}",
-		dir.display(),
+		"no definition in the work dir carries category {k:?}; they carry {:?}",
 		keyed.iter().map(|(o, _)| o).collect::<Vec<_>>()
 	);
 	Ok(one)
-}
-
-fn read<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
-	let text = std::fs::read_to_string(path).map_err(|e| eyre::eyre!("reading {}: {e}", path.display()))?;
-	serde_json::from_str(&text).map_err(|e| eyre::eyre!("parsing {}: {e}", path.display()))
 }
 
 fn write(out: PathBuf, html: &str) -> Result<()> {
@@ -374,14 +292,14 @@ mod tests {
 		for d in [setting(0.5), setting(0.7), setting(0.7)] {
 			std::fs::write(dir.join(format!("{}.json", d.id())), serde_json::to_vec(&d).unwrap()).unwrap();
 		}
-		let at = |category: Option<&str>| Pair {
-			category: category.map(str::to_owned),
-			locations: PathBuf::new(),
-		};
-		let all = categories(&at(None), &dir).unwrap();
-		let under_trade = categories(&at(Some("gcid:plumber")), &dir).unwrap();
-		let one = categories(&at(Some(all[0].0.split(['(', ')']).nth(1).unwrap())), &dir).unwrap();
+		let studied = studied(&dir).unwrap();
 		std::fs::remove_dir_all(&dir).unwrap();
+		let of = |category: Option<&str>| Categories {
+			category: category.map(str::to_owned),
+		};
+		let all = categories(&of(None), &studied).unwrap();
+		let under_trade = categories(&of(Some("gcid:plumber")), &studied).unwrap();
+		let one = categories(&of(Some(all[0].0.split(['(', ')']).nth(1).unwrap())), &studied).unwrap();
 		assert_eq!(all.len(), 2, "{all:?}");
 		assert!(all.iter().all(|(k, _)| k.starts_with("Plombier·FR (gcid:plumber@")), "{all:?}");
 		assert_eq!(under_trade.len(), 2);

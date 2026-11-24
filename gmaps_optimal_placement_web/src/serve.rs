@@ -8,7 +8,7 @@ use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use axum::{Router, extract::Path as UrlPath, http::StatusCode, routing::get};
 use eyre::{Result, WrapErr};
 use gmaps_optimal_placement::Work;
-use gmaps_optimal_placement_core::{Area, Candidate, Category, Definition};
+use gmaps_optimal_placement_core::{Area, Category, Definition};
 use leptos::prelude::*;
 
 /// A `Work` per build: the CLI's holds a read-only sqlite connection, which does not cross threads.
@@ -18,27 +18,27 @@ type Slot = Arc<tokio::sync::Mutex<Option<axum::body::Bytes>>>;
 
 /// Keyed by the two labels the picker shows. One slot per pairing, so two tabs asking at once read
 /// the 87 MB archive once between them.
-type Pool = Arc<HashMap<(Option<String>, String), (Definition, Vec<Candidate>, Slot)>>;
+type Pool = Arc<HashMap<(Option<String>, String), (Definition, Slot)>>;
 
 /// `categories` and `locations` are the two axes, each by the label the picker shows. `site` is
 /// where `wasm-bindgen` put the client, as `pkg/`.
-pub fn serve(addr: SocketAddr, site: PathBuf, maps_key: String, categories: Vec<(String, Category)>, locations: Vec<(String, Area, Vec<Candidate>)>, works: Works) -> Result<()> {
+pub fn serve(addr: SocketAddr, site: PathBuf, maps_key: String, categories: Vec<(String, Category)>, locations: Vec<(String, Area)>, works: Works) -> Result<()> {
 	let pkg = site.join("pkg");
 	let built = pkg.join("gmaps_optimal_placement_web.js");
 	eyre::ensure!(built.exists(), "no client build at {} — the flake's default app builds it", built.display());
 	eyre::ensure!(!locations.is_empty(), "no location to serve");
 
 	let mut pool = HashMap::new();
-	for (l, area, candidates) in &locations {
+	for (l, area) in &locations {
 		for (c, category) in categories.iter().map(|(k, c)| (Some(k.clone()), Some(c.clone()))).chain([(None, None)]) {
 			let def = Definition { area: area.clone(), category };
-			assert!(pool.insert((c, l.clone()), (def, candidates.clone(), Slot::default())).is_none(), "the axes' labels are unique");
+			eyre::ensure!(pool.insert((c, l.clone()), (def, Slot::default())).is_none(), "two different locations are both labelled {l:?}");
 		}
 	}
 	let pool: Pool = Arc::new(pool);
 	let axes = serde_json::json!({
 		"categories": categories.iter().map(|(k, _)| k).collect::<Vec<_>>(),
-		"locations": locations.iter().map(|(l, ..)| l).collect::<Vec<_>>(),
+		"locations": locations.iter().map(|(l, _)| l).collect::<Vec<_>>(),
 	})
 	.to_string();
 	let (traded, bare) = ((pool.clone(), works.clone()), (pool, works));
@@ -85,17 +85,17 @@ pub fn serve(addr: SocketAddr, site: PathBuf, maps_key: String, categories: Vec<
 /// Built on the first tab that asks for it, and kept. A failure is the eyre chain, which the page
 /// banners.
 async fn payload(pool: Pool, works: Works, at: (Option<String>, String)) -> Result<([(axum::http::HeaderName, &'static str); 1], axum::body::Bytes), (StatusCode, String)> {
-	let Some((def, candidates, slot)) = pool.get(&at) else {
+	let Some((def, slot)) = pool.get(&at) else {
 		return Err((StatusCode::NOT_FOUND, format!("{:?} is not a category over {:?}", at.0, at.1)));
 	};
 	let mut slot = slot.lock().await;
 	if let Some(built) = &*slot {
 		return Ok(json(built.clone()));
 	}
-	let (def, candidates) = (def.clone(), candidates.clone());
+	let def = def.clone();
 	let shown = def.name();
 	let built = tokio::task::spawn_blocking(move || -> Result<axum::body::Bytes> {
-		let payload = gmaps_optimal_placement::load(&def, candidates)?.build(&works()?)?;
+		let payload = gmaps_optimal_placement::load(&def, Vec::new())?.build(&works()?)?;
 		Ok(serde_json::to_vec(&payload)?.into())
 	})
 	.await

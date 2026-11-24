@@ -2298,7 +2298,6 @@ dependencies = [
  "serde",
  "serde_json",
  "smart-default",
- "toml",
  "v_utils",
 ]
 
