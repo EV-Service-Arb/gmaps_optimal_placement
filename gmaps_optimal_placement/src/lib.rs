@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use eyre::{Result, WrapErr, bail, ensure};
 use gmaps_optimal_placement_core::{
-	Ask, Candidate, Category, Column, Country, Definition, Expr, Layer, LayerOut, Notice, Payload, Poi, PoiOut, Scale, TierOut, payload,
+	Ask, Category, Column, Country, Definition, Expr, Layer, LayerOut, Notice, Payload, Poi, PoiOut, Scale, TierOut, payload,
 	rank::{self, Biz, Feats, Rank},
 };
 use gmaps_optimal_placement_sources::{Frame, GridSource, Ranking, Region, grid, poi, probe};
@@ -56,8 +56,6 @@ pub struct Study {
 	columns: Vec<Column>,
 	/// The base's heat layers, then the category's.
 	layers: Vec<Layer>,
-	/// Addresses the study is actually about: a location's, never a trade's.
-	candidates: Vec<Candidate>,
 }
 impl Study {
 	/// Fails on the first expression that does not hold against the source's columns, before any
@@ -208,7 +206,6 @@ impl Study {
 			imputed: cells.grid.cells.iter().map(|c| u8::from(c.imputed)).collect(),
 			place,
 			layers,
-			candidates: self.candidates.clone(),
 			trade,
 			notice,
 		})
@@ -238,9 +235,9 @@ pub struct Evidence {
 	pub rankings: Vec<Ranking>,
 }
 
-/// A definition over its country's base, the area on top, then `candidates` (a location's), then
-/// the category's demand columns and layers after the base's.
-pub fn load(def: &Definition, candidates: Vec<Candidate>) -> Result<Study> {
+/// A definition over its country's base, the area on top, then the category's demand columns and
+/// layers after the base's.
+pub fn load(def: &Definition) -> Result<Study> {
 	def.check()?;
 	let country = def.area.country();
 	let base: Base = toml::from_str(match country {
@@ -257,17 +254,12 @@ pub fn load(def: &Definition, candidates: Vec<Candidate>) -> Result<Study> {
 		columns.extend(d.columns.iter().cloned());
 		layers.extend(d.layers.iter().cloned());
 	}
-	for (i, c) in candidates.iter().enumerate() {
-		// the pin file hides by name, so a duplicate would hide two pins at once
-		ensure!(!candidates[..i].iter().any(|o| o.name == c.name), "two [[candidate]] are both named {:?}", c.name);
-	}
 	Ok(Study {
 		def: def.clone(),
 		name,
 		grid: base.grid,
 		columns,
 		layers,
-		candidates,
 	})
 }
 

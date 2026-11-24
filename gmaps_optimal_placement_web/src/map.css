@@ -40,7 +40,6 @@ button.sec{background:#39404d}button.sec:hover{background:#4a5361}
 .acts{float:right;display:flex;gap:4px;margin:-2px -2px 0 6px}
 button.act{width:22px;margin:0;padding:2px 0;background:#39404d;font-size:12px;line-height:1}
 button.act:hover{background:#4a5361}
-button.act.go{background:#1e7a35}button.act.go:hover{background:#279443}
 button.act.no{background:#7a2b2b}button.act.no:hover{background:#943434}
 #bar,#haze{height:11px;border-radius:3px;margin:10px 0 3px}
 #ticks{display:flex;justify-content:space-between;font-size:10px;color:#98a2b3}

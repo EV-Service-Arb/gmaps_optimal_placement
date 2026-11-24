@@ -143,7 +143,7 @@ impl Rank {
 
 /// Per tier, the median raw [`Rank::strength`] of its competitors (`tier[i]` is competitor `i`'s):
 /// what a payload's `w` is that strength divided by. `w = 1` is "a competitor as strong as the thing
-/// I am about to open" — `Model::capture_at` gives a candidate's own pull an implicit weight of 1.0.
+/// I am about to open" — `Model::capture_at` gives a site's own pull an implicit weight of 1.0.
 /// Per tier, because `Model::pressure` already multiplies by the tier weight: a fitted strength that
 /// has learned a wash ranks below a detailer would otherwise be discounted twice. `None` for a tier
 /// nobody is in.

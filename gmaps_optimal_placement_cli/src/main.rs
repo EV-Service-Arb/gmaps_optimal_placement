@@ -149,7 +149,7 @@ enum Doc {
 fn harvest(of: &Categories, work: &Work) -> Result<Vec<Observed>> {
 	let mut observed = Vec::new();
 	for def in studies(of, work)?.into_iter().filter(|d| d.category.is_some()) {
-		if let Some(e) = gmaps_optimal_placement::load(&def, Vec::new())?.observations(work)? {
+		if let Some(e) = gmaps_optimal_placement::load(&def)?.observations(work)? {
 			observed.push(Observed::try_new(e.pois, e.places, &e.rankings)?);
 		}
 	}

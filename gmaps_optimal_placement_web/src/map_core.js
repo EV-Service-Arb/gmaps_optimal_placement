@@ -43,8 +43,8 @@ export function recenter(el, lat, lng, zoom) {
 	s.map.setZoom(zoom);
 }
 
-/// The full pin set, replacing whatever is there. Every pin is clickable, whether or not it is
-/// lettered — an unlabelled pin you cannot select is a pin you cannot delete.
+/// The full pin set, replacing whatever is there. Every pin is clickable: one you cannot select is one
+/// you cannot delete.
 export function pins(el, json) {
 	const s = S.get(el);
 	if (!s) return;

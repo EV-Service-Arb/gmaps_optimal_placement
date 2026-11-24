@@ -15,7 +15,6 @@ pub struct Payload {
 	pub place: Vec<String>,
 	pub imputed: Vec<u8>,
 	pub layers: Vec<LayerOut>,
-	pub candidates: Vec<Candidate>,
 	/// Absent when a location was opened without one. Everything above is the location's, comes out
 	/// of the statistical archive, and costs nothing to ask for.
 	pub trade: Option<Trade>,
@@ -132,14 +131,4 @@ pub enum Scale {
 	/// Rank, not magnitude — these quantities are heavy-tailed and a linear ramp shows one hot pixel.
 	Percentile,
 	Linear,
-}
-
-/// An address the study is actually about. The usual question is "is *this* one good", not only
-/// "where is best".
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Candidate {
-	pub name: String,
-	/// [lat, lon]
-	pub at: [f64; 2],
 }

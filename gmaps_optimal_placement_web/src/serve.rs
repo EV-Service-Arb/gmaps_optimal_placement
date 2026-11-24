@@ -95,7 +95,7 @@ async fn payload(pool: Pool, works: Works, at: (Option<String>, String)) -> Resu
 	let def = def.clone();
 	let shown = def.name();
 	let built = tokio::task::spawn_blocking(move || -> Result<axum::body::Bytes> {
-		let payload = gmaps_optimal_placement::load(&def, Vec::new())?.build(&works()?)?;
+		let payload = gmaps_optimal_placement::load(&def)?.build(&works()?)?;
 		Ok(serde_json::to_vec(&payload)?.into())
 	})
 	.await

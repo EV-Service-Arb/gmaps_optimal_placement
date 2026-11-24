@@ -9,7 +9,7 @@ use eyre::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	payload::{Candidate, Payload, PoiOut, Scale, Trade},
+	payload::{Payload, PoiOut, Scale, Trade},
 	rank::{self, Biz, Feats, Rank},
 };
 
@@ -181,7 +181,6 @@ pub struct Row {
 	pub label: String,
 	/// Second line under the label: whatever the row measured against.
 	pub sub: Option<String>,
-	/// Empty makes the row a section heading.
 	pub value: String,
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -671,8 +670,8 @@ impl<'a> Traded<'a> {
 		}
 	}
 
-	/// Huff-style: a candidate captures each cell's demand in proportion to its own distance-decayed
-	/// pull against all competition already reaching that cell.
+	/// Huff-style: a site captures each cell's demand in proportion to its own distance-decayed pull
+	/// against all competition already reaching that cell.
 	pub fn capture_at(self, [mx, my]: [f64; 2], lambda: f64, press: &[f64]) -> Option<f64> {
 		let demand = self.demand()?;
 		let cut2 = (CUTOFF * lambda) * (CUTOFF * lambda);
@@ -728,23 +727,23 @@ impl<'a> Traded<'a> {
 			.count()
 	}
 
-	/// Greedy top-N sweep over cell centroids, one candidate per 400 m and picks kept 1.5 km apart.
+	/// Greedy top-N sweep over cell centroids, one tried per 400 m and picks kept 1.5 km apart.
 	/// Returns the picks and how many cells were in the running.
 	pub fn rank_sites(self, lambda: f64, press: &[f64], take: usize) -> Option<(Vec<Ranked>, usize)> {
 		let demand = self.demand()?;
-		// one candidate per 400 m: 200 m spacing buys nothing and quadruples the cost
+		// one per 400 m: 200 m spacing buys nothing and quadruples the cost
 		let mut seen = std::collections::HashSet::new();
-		let mut cand = Vec::new();
+		let mut tried = Vec::new();
 		for (i, &d) in demand.iter().enumerate() {
 			if d <= 0. {
 				continue;
 			}
 			let key = ((self.model.mx[i] / 400. + 0.5).floor() as i64, (self.model.my[i] / 400. + 0.5).floor() as i64);
 			if seen.insert(key) {
-				cand.push(i);
+				tried.push(i);
 			}
 		}
-		let mut scored: Vec<(usize, f64)> = cand
+		let mut scored: Vec<(usize, f64)> = tried
 			.iter()
 			.map(|&i| (i, self.capture_at([self.model.mx[i], self.model.my[i]], lambda, press).expect("demand was read above")))
 			.collect();
@@ -767,7 +766,7 @@ impl<'a> Traded<'a> {
 				break;
 			}
 		}
-		Some((picked, cand.len()))
+		Some((picked, tried.len()))
 	}
 
 	/// Open here, under this name, with nothing on the board yet: what would Google's own ordering
@@ -800,63 +799,7 @@ impl<'a> Traded<'a> {
 		]
 	}
 
-	pub fn compare(self, candidates: &[Candidate], lambda: f64, press: &[f64]) -> Report {
-		struct Line {
-			name: String,
-			cap: Option<f64>,
-			demand: Option<(f64, f64)>,
-			near: Option<f64>,
-			n2: usize,
-			w: f64,
-		}
-		let lines: Vec<Line> = candidates
-			.iter()
-			.map(|c| {
-				let local = self.model.to_local(c.at);
-				Line {
-					name: c.name.clone(),
-					cap: self.capture_at(local, lambda, press),
-					demand: self.demand_within(local),
-					near: self.nearest(local, None).map(|(_, d)| d),
-					n2: self.within(local, 2000., None),
-					w: self.opening_weight(&c.name, c.at),
-				}
-			})
-			.collect();
-		let mut rows = Vec::new();
-		if self.demand().is_some() {
-			let cap = |l: &Line| l.cap.expect("a trade with a demand captures some");
-			let best = lines.iter().map(cap).fold(f64::NEG_INFINITY, f64::max);
-			rows.push(heading("Capture score"));
-			rows.extend(lines.iter().map(|l| row(&l.name, format!("{} · {:.0}%", fmt(cap(l)), 100. * cap(l) / best))));
-			rows.push(heading("Demand ≤1 / ≤3 km"));
-			rows.extend(lines.iter().map(|l| {
-				let (d1, d3) = l.demand.expect("a trade with a demand has some within reach");
-				row(&l.name, format!("{} / {}", fmt(d1), fmt(d3)))
-			}));
-		}
-		rows.push(heading("Nearest competitor · ≤2 km"));
-		rows.extend(lines.iter().map(|l| {
-			row(
-				&l.name,
-				match l.near {
-					Some(d) => format!("{:.2} km · {}", d / 1000., l.n2),
-					None => format!("– · {}", l.n2),
-				},
-			)
-		}));
-		rows.push(heading("Opening weight, under this name, no reviews"));
-		rows.extend(lines.iter().map(|l| row(&l.name, format!("{:.2} of a median rival", l.w))));
-
-		Report {
-			title: format!("Candidates · λ={:.1} km", lambda / 1000.),
-			rows,
-			note: "Percentages are against the best candidate here, not against the best site in the area — use \"Rank top 10 sites\" for that. Opening weight is what Google's ordering makes of the name; reviews are associated with rank, not a lever on it.".to_owned(),
-		}
-	}
-
-	/// `label` titles the card; `name` is the trading name to score the what-if under, which is a
-	/// different string because the title carries the pin's letter and the model reads the words.
+	/// `label` titles the card; `name` is the trading name to score the what-if under.
 	pub fn site_report(self, at: [f64; 2], label: Option<&str>, name: Option<&str>, lambda: f64, press: &[f64], sel: &Selection) -> Report {
 		let [lat, lng] = at;
 		let local = self.model.to_local(at);
@@ -891,7 +834,7 @@ impl<'a> Traded<'a> {
 			title: self.model.titled(label, self.model.nearest_cell(local)),
 			rows,
 			note: match self.demand() {
-				Some(_) => "Capture = Σ demand × pull/(pull + existing pressure). Only meaningful when comparing candidates against each other; the number has no unit.",
+				Some(_) => "Capture = Σ demand × pull/(pull + existing pressure). Only meaningful when comparing sites against each other; the number has no unit.",
 				None => "The category says nothing about demand, so there is no capture score: only the competitors already on the ground.",
 			}
 			.to_owned(),
@@ -1195,13 +1138,5 @@ fn row(label: impl Into<String>, value: impl Into<String>) -> Row {
 		label: label.into(),
 		sub: None,
 		value: value.into(),
-	}
-}
-
-fn heading(label: impl Into<String>) -> Row {
-	Row {
-		label: label.into(),
-		sub: None,
-		value: String::new(),
 	}
 }

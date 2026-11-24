@@ -42,9 +42,7 @@ pub struct Tab {
 	#[cfg(feature = "hydrate")]
 	pub tiers: Vec<TierState>,
 	#[cfg(feature = "hydrate")]
-	pub core: Vec<Pin>,
-	#[cfg(feature = "hydrate")]
-	pub temp: Vec<Pin>,
+	pub pins: Vec<Pin>,
 	#[cfg(feature = "hydrate")]
 	pub selected: Option<String>,
 }
@@ -85,10 +83,9 @@ pub struct State {
 	pub summary: RwSignal<Option<Summary>>,
 	pub legend: RwSignal<Option<Legend>>,
 	pub report: RwSignal<Option<Report>>,
-	/// Which pin's card is open. `None` while a sweep or a comparison is shown.
+	/// Which pin's card is open. `None` while a sweep is shown.
 	pub selected: RwSignal<Option<String>>,
-	pub core: RwSignal<Vec<Pin>>,
-	pub temp: RwSignal<Vec<Pin>>,
+	pub pins: RwSignal<Vec<Pin>>,
 	pub tip: RwSignal<Option<Tip>>,
 	pub banner: RwSignal<Option<String>>,
 	/// Flips once `map_core` has a map instance and the overlay is on it.
@@ -125,8 +122,7 @@ impl State {
 			legend: RwSignal::new(None),
 			report: RwSignal::new(None),
 			selected: RwSignal::new(None),
-			core: RwSignal::new(Vec::new()),
-			temp: RwSignal::new(Vec::new()),
+			pins: RwSignal::new(Vec::new()),
 			tip: RwSignal::new(None),
 			banner: RwSignal::new(None),
 			#[cfg(feature = "hydrate")]
@@ -137,9 +133,7 @@ impl State {
 	}
 
 	pub fn pin(&self, id: &str) -> Option<Pin> {
-		self.core
-			.with_untracked(|v| v.iter().find(|p| p.id == id).cloned())
-			.or_else(|| self.temp.with_untracked(|v| v.iter().find(|p| p.id == id).cloned()))
+		self.pins.with_untracked(|v| v.iter().find(|p| p.id == id).cloned())
 	}
 
 	pub fn fresh_id(&self) -> String {
@@ -148,8 +142,8 @@ impl State {
 		format!("t{n}")
 	}
 
-	fn drop_temp(&self) {
-		self.temp.set(Vec::new());
+	fn drop_pins(&self) {
+		self.pins.set(Vec::new());
 		self.report.set(None);
 		self.selected.set(None);
 	}
@@ -157,17 +151,14 @@ impl State {
 	fn rank(&self) {
 		let picks = self.heavy.with_value(|h| h.model.as_ref()?.traded()?.rank_sites(self.lambda.get_untracked(), &h.press, 10));
 		let Some((picked, pool)) = picks else { return };
-		self.temp.set(
+		self.pins.set(
 			picked
 				.iter()
 				.enumerate()
 				.map(|(k, r)| Pin {
 					id: self.fresh_id(),
-					name: String::new(),
 					at: [r.lat, r.lng],
 					label: Some((k + 1).to_string()),
-					green: false,
-					from_study: false,
 				})
 				.collect(),
 		);
@@ -185,33 +176,9 @@ impl State {
 						value: fmt(r.score),
 					})
 					.collect(),
-				note: format!("Greedy pick, kept ≥1.5 km apart, from {pool} candidate cells. Click a numbered pin for its full report. These are cell centroids, not addresses."),
+				note: format!("Greedy pick, kept ≥1.5 km apart, from {pool} cells tried. Click a numbered pin for its full report. These are cell centroids, not addresses."),
 			}));
 		});
-	}
-
-	fn compare(&self) {
-		let cands: Vec<gmaps_optimal_placement_core::Candidate> = self
-			.core
-			.get_untracked()
-			.into_iter()
-			.map(|p| gmaps_optimal_placement_core::Candidate { name: p.name, at: p.at })
-			.collect();
-		if cands.is_empty() {
-			return;
-		}
-		self.selected.set(None);
-		self.heavy.with_value(|h| {
-			let Some(t) = h.model.as_ref().and_then(|m| m.traded()) else { return };
-			self.report.set(Some(t.compare(&cands, self.lambda.get_untracked(), &h.press)));
-		});
-	}
-
-	#[cfg(feature = "hydrate")]
-	/// The green set: what the study seeded, minus what was hidden, plus what was promoted. Lettered
-	/// in that order.
-	pub fn lettered(&self) -> Vec<(String, Pin)> {
-		self.core.get().into_iter().enumerate().map(|(i, p)| (letter(i), p)).collect()
 	}
 
 	#[cfg(feature = "hydrate")]
@@ -235,22 +202,15 @@ impl State {
 	/// the effect that keeps the card live cannot re-enter itself through `selected`.
 	pub fn refresh_card(&self) {
 		let Some(pin) = self.selected.get_untracked().and_then(|id| self.pin(&id)) else { return };
-		let label = self
-			.core
-			.get_untracked()
-			.iter()
-			.position(|p| p.id == pin.id)
-			.map(|i| format!("{} · {}", letter(i), pin.name))
-			.or_else(|| pin.label.clone());
+		let label = pin.label.clone();
 		self.heavy.with_value(|h| {
 			let Some(m) = &h.model else { return };
 			self.report.set(Some(match (m.traded(), self.selection(m)) {
 				(Some(t), Some(sel)) => t.site_report(
 					pin.at,
 					label.as_deref(),
-					// a ranked pick is a cell centroid with a number for a label, and there is no trading
-					// name to score
-					pin.label.is_none().then_some(pin.name.as_str()),
+					// a ranked pick is a cell centroid, and there is no business to score at one
+					pin.label.is_none().then_some(""),
 					self.lambda.get_untracked(),
 					&h.press,
 					&sel,
@@ -582,14 +542,7 @@ pub fn MapView() -> impl IntoView {
 			<button prop:disabled=move || !traded() on:click=move |_| s.rank()>
 				"Rank top 10 sites"
 			</button>
-			<button
-				style:display=move || if s.core.get().is_empty() { "none" } else { "block" }
-				prop:disabled=move || !traded()
-				on:click=move |_| s.compare()
-			>
-				"Compare candidates"
-			</button>
-			<button class="sec" on:click=move |_| s.drop_temp()>
+			<button class="sec" on:click=move |_| s.drop_pins()>
 				"Clear pins & report"
 			</button>
 
@@ -638,11 +591,6 @@ pub fn MapView() -> impl IntoView {
 
 		{move || s.report.get().map(|r| view! { <crate::pins::Card state=s report=r /> })}
 	}
-}
-
-#[cfg(feature = "hydrate")]
-fn letter(i: usize) -> String {
-	char::from_u32('A' as u32 + i as u32).map_or_else(|| (i + 1).to_string(), String::from)
 }
 
 /// The `★` is a hint in the dropdown, not part of the layer's name.
@@ -710,7 +658,6 @@ mod imp {
 	use super::{State, Tab, Tip};
 	use crate::{pins::Pin, tabs::Pool};
 
-	const GREEN: &str = "#7cff8f";
 	const YELLOW: &str = "#ffd400";
 
 	thread_local! {
@@ -853,17 +800,12 @@ mod imp {
 		});
 
 		Effect::new(move |_| {
-			let lettered = s.lettered();
-			let mut out: Vec<serde_json::Value> = lettered
+			let out: Vec<serde_json::Value> = s
+				.pins
+				.get()
 				.iter()
-				.map(|(l, p)| serde_json::json!({"id": p.id, "lat": p.at[0], "lng": p.at[1], "color": GREEN, "label": l, "title": p.name}))
+				.map(|p| serde_json::json!({"id": p.id, "lat": p.at[0], "lng": p.at[1], "color": YELLOW, "label": p.label, "title": p.label}))
 				.collect();
-			out.extend(
-				s.temp
-					.get()
-					.iter()
-					.map(|p| serde_json::json!({"id": p.id, "lat": p.at[0], "lng": p.at[1], "color": YELLOW, "label": p.label, "title": p.label})),
-			);
 			if let Some(el) = host().filter(|_| s.mounted.get()) {
 				pins_js(&el, &serde_json::to_string(&out).expect("a Vec<Value> serialises"));
 			}
@@ -931,13 +873,6 @@ mod imp {
 			}
 		};
 		s.banner.set(None);
-		let core = match crate::pins::seed(&model.payload).await {
-			Ok(core) => core,
-			Err(e) => {
-				s.banner.set(Some(format!("⚠ pins — {e}")));
-				return None;
-			}
-		};
 		let summary = Summary::of(&model);
 		Some(Tab {
 			at,
@@ -946,8 +881,7 @@ mod imp {
 			layer: summary.layers.first().map(|l| l.id.clone()),
 			hide_imputed: false,
 			tiers: model.traded().map_or_else(Vec::new, |t| t.selection().tiers),
-			core,
-			temp: Vec::new(),
+			pins: Vec::new(),
 			selected: None,
 			json,
 			model,
@@ -963,8 +897,7 @@ mod imp {
 			t.layer = s.layer.get_untracked();
 			t.hide_imputed = s.hide_imputed.get_untracked();
 			t.tiers = s.tiers.get_untracked();
-			t.core = s.core.get_untracked();
-			t.temp = s.temp.get_untracked();
+			t.pins = s.pins.get_untracked();
 			t.selected = s.selected.get_untracked();
 		});
 	}
@@ -980,8 +913,7 @@ mod imp {
 		s.layer.set(t.layer);
 		s.hide_imputed.set(t.hide_imputed);
 		s.tiers.set(t.tiers);
-		s.core.set(t.core);
-		s.temp.set(t.temp);
+		s.pins.set(t.pins);
 		s.report.set(None);
 		s.selected.set(t.selected);
 		s.summary.set(Some(Summary::of(&t.model)));
@@ -1045,26 +977,16 @@ mod imp {
 		s.legend.set(None);
 		s.report.set(None);
 		s.selected.set(None);
-		s.core.set(Vec::new());
-		s.temp.set(Vec::new());
+		s.pins.set(Vec::new());
 		s.tiers.set(Vec::new());
 		s.layer.set(None);
 		document().set_title("studies");
 	}
 
-	/// A yellow pin and its card.
+	/// A pin and its card.
 	fn click(s: State, at: [f64; 2]) {
 		let id = s.fresh_id();
-		s.temp.update(|v| {
-			v.push(Pin {
-				id: id.clone(),
-				name: String::new(),
-				at,
-				label: None,
-				green: false,
-				from_study: false,
-			})
-		});
+		s.pins.update(|v| v.push(Pin { id: id.clone(), at, label: None }));
 		s.open(&id);
 	}
 
@@ -1110,11 +1032,10 @@ mod imp {
 		{
 			return;
 		}
-		// a yellow pin is a click and nothing has been written down for it, so it undoes like one
 		if k == "Backspace" {
-			if let Some(p) = s.selected.get_untracked().and_then(|id| s.pin(&id)).filter(|p| !p.green) {
+			if let Some(id) = s.selected.get_untracked() {
 				ev.prevent_default();
-				crate::pins::forget(s, p);
+				crate::pins::forget(s, id);
 			}
 			return;
 		}

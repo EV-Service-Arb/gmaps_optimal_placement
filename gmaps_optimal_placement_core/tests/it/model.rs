@@ -114,12 +114,12 @@ fn top_ten_sites() {
 	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
 	let (picked, pool) = trade(&m).rank_sites(trade(&m).trade.lambda_m, &press, 10).expect("the fixture carries a demand");
 
-	let mut s = format!("{pool} candidate cells\n");
+	let mut s = format!("{pool} cells tried\n");
 	for (k, r) in picked.iter().enumerate() {
 		s.push_str(&format!("{:>2}. {:<28} {:>6}  {:.5}, {:.5}\n", k + 1, m.payload.place[r.cell], fmt(r.score), r.lat, r.lng));
 	}
 	insta::assert_snapshot!(s, @"
-	4617 candidate cells
+	4617 cells tried
 	 1. Châtel-Guyon                   7.7k  45.91457, 3.07977
 	 2. Saint-Bonnet-près-Riom         7.4k  45.92767, 3.11433
 	 3. Châtel-Guyon                   7.2k  45.92432, 3.06300
@@ -155,24 +155,6 @@ fn site_report_downtown() {
 	    reviews are associated with rank, not a lever on it
 	  Outranks, of the ≤2 km field 1 of 13
 	"#);
-}
-
-#[test]
-fn candidates_compare() {
-	let m = model();
-	let tiers = trade(&m).selection();
-	let press = trade(&m).pressure(trade(&m).trade.lambda_m, &tiers);
-	insta::assert_snapshot!(render(&trade(&m).compare(&m.payload.candidates, trade(&m).trade.lambda_m, &press)), @"
-	Candidates · λ=2.0 km
-	  Capture score                
-	  VifNet                       4.8k · 100%
-	  Demand ≤1 / ≤3 km            
-	  VifNet                       15k / 70k
-	  Nearest competitor · ≤2 km   
-	  VifNet                       1.01 km · 9
-	  Opening weight, under this name, no reviews 
-	  VifNet                       0.11 of a median rival
-	");
 }
 
 /// Every layer colours cells, and `hide imputed` takes exactly the imputed ones out.

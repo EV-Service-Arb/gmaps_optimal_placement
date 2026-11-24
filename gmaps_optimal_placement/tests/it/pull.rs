@@ -51,11 +51,11 @@ impl Pull {
 	}
 
 	fn asks(&self, since: Option<SystemTime>) -> Vec<Ask> {
-		gmaps_optimal_placement::load(&self.def, Vec::new()).unwrap().asks(&self.work(since)).unwrap()
+		gmaps_optimal_placement::load(&self.def).unwrap().asks(&self.work(since)).unwrap()
 	}
 
 	fn build(&self) -> Payload {
-		gmaps_optimal_placement::load(&self.def, Vec::new()).unwrap().build(&self.work(None)).unwrap()
+		gmaps_optimal_placement::load(&self.def).unwrap().build(&self.work(None)).unwrap()
 	}
 }
 

@@ -26,7 +26,7 @@ fn narrowed(category: Option<Category>) -> Study {
 		},
 		category,
 	};
-	gmaps_optimal_placement::load(&def, Vec::new()).unwrap()
+	gmaps_optimal_placement::load(&def).unwrap()
 }
 
 /// Built in `dir`, over the real work dir's archives.
