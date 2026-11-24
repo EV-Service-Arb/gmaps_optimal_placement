@@ -35,6 +35,7 @@
           enable = true;
           inherit oldestSupportedVersion; inherit newestSupportedNightly;
           jobs.default = true;
+          install.packages = [ "tailwindcss_4" ]; # the web crate's build.rs
           lfs = false;
           labels.extra = [
             { name = "reviews"; color = "0000ff"; description = "Anythin pertaining to improving review scoring"; }
