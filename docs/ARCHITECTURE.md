@@ -31,13 +31,14 @@ documents, never to the code.
    │   Reproject · CellId · Grid · Expr                        │
    │   rank — features, Plackett–Luce, COEF, divisors          │
    │   Payload — the whole thin waist                          │
-   │   model — Selection, pressure, unmet, capture, top-N      │
+   │   model — Selection, unmet, capture, share, top-N         │
    └───────┬─────────────────────────────────┬─────────────────┘
            │                                 │
    ┌───────┴────────────────────────┐  ┌─────┴──────────────────────────┐
    │ gmaps_optimal_placement        │  │ gmaps_optimal_placement_overlay│
    │   load · asks · build          │  │   Overlay · Scene · paint.js   │
-   │   bases compiled in            │  │   (wasm)                       │
+   │   pressure, at build           │  │   (wasm)                       │
+   │   bases compiled in            │  │                                │
    └───────┬──────────────┬─────────┘  └─────┬───────────────┬──────────┘
            │              └─────────┬────────┘               │
            │                        ▼                        │
@@ -75,25 +76,29 @@ identity of the pairing. `Payload::trade` is the one `Option` that says so, and 
 is everything that is billed. A city can therefore be looked at before any of the Places quota goes
 on it.
 
-The CLI's commands hold two axes, the conductor's categories and `--locations` (files): a category is
-each setting of a trade a host studied (the definitions under the work dir's `studies/`), told
-apart by `Category::id`, because the CLI never reads the conductor's catalogue, and a copy of a
-category kept here would drift from it. What a study is *called* — `<trade>·<CC>·<slug>` — is the definition's.
+The CLI's commands hold two axes, both read off the definitions under the work dir's `studies/`: a
+category is each setting of a trade a host studied, told apart by `Category::id`, and a location is
+each area a host studied, called by its slug. The CLI never reads the conductor's catalogue, and a
+copy of either kept here would drift from it. What a study is *called* — `<trade>·<CC>·<slug>` — is the definition's.
 
 ## The line between baked and live
 
-Rust evaluates everything that a slider cannot move — the demand model and every configured layer —
-into a `Payload` the browser fetches. Competitor pressure, underserved demand, the capture score and
-the top-N sweep are recomputed in the page, because they are functions of λ, the tier weights and
-which searches and kinds are selected (one `Selection`), which are live controls. Moving either side across this line costs the map its interactivity or the
-study its reproducibility.
+`build` evaluates a study into the `Payload` a page fetches: the demand model, every configured
+layer, each competitor's weight, what the probe observed of it node by node, and every cell's
+competitor pressure. The page derives the rest by arithmetic over it — underserved demand once per
+model; one competitor's share of the cells, a site's capture score and the top-N sweep when asked —
+at the payload's own λ and tier weights. What a control moves is the view: which layer is on, and
+which marks are shown (one `Selection` over tiers, searches and kinds: the dots, the counts, the
+ages).
 
-Competitor weight is baked, and deliberately: `rank` scores every competitor once in `build`, before
-the payload is serialised; the model splits that score into its per-search contributions, so the
-browser only selects among them and re-weights by tier and λ. What the probe observed of
-each competitor, node by node, is baked the same way. The one thing scored live is the what-if — one
-business, one arithmetic pass — so the scoring function reaches wasm only through that, and only a
-model that can score one hypothetical business has to.
+Pressure is one private function of the library, over the grid and the weighted competitors. The
+page reads `Trade::pressure`, and everything that needs pressure reads that one array, so a share of
+a cell is of the pressure painted on it.
+
+`rank` scores every competitor once in `build`. The scoring function reaches wasm for two passes of
+arithmetic: `Model::try_new` rescores the competitors, which checks the payload against the linked
+`rank::COEF` and splits each score by search for its mark, and the what-if scores one business that
+does not exist yet.
 
 Where a fitted model *comes from* never reaches wasm at all. `gmaps_optimal_placement_rank` holds
 the optimiser, the entrants and the cross-validation, and is linked by the CLI alone: an entrant may
@@ -162,6 +167,10 @@ that is what `fit` harvests.
   there is no demand surface, and nothing stands in for it: the demand layers are absent and what
   reads a demand value — underserved demand, capture, the site sweep, the probe's strata — is not
   offered; the competitors and their pressure still are. Population is not demand.
+- **Pressure is computed here, in the background, never in a page.** One private function of the
+  library computes it, in `build`, on its host's blocking thread; nothing wasm links can. What
+  computes it may be a model no page can afford to run, which is why placement is a library of its
+  own and not a part of the conductor.
 - **A fitted quantity is refitted, never hand-edited.** `rank::COEF` is the output of
   `gmaps_optimal_placement fit` over the orderings in the work dir, and `rank::LAMBDA_M` what it
   implies. Nudging a coefficient because the map looks wrong turns a measurement back into the
@@ -209,8 +218,7 @@ is made.
 
 These are not caveats about the implementation. They are the distance between the model and the
 decision, and they are the difference between a map that informs one and a map that launders a
-guess into authority. The worked examples are in `examples/`.
-
+guess into authority.
 - **Motorisation is estimated, not measured.** No 200 m source publishes households-with-a-car;
   INSEE has it only at IRIS level. `bases/FR.toml` infers it from the house/flat split
   (`men_mais × 1.55 + men_coll × 0.85`) as a base layer, and a detailing category's demand reads

@@ -16,8 +16,8 @@ types all of it, the events included (tsify over the Rust types, placement core'
 ```text
 show(payload | null, pulled)   the payload as placement wrote it; pulled: a pull's answer
 heat(id | null)                a `Summary.layers[].id`
-tune(Tune)                     {lambda_m, tiers: {name: {weight, show}}, terms?: [text], kinds?: [kind]};
-                               null = the payload's own; terms and kinds are one Selection with the tiers
+tune(Tune)                     {tiers?: [name], terms?: [text], kinds?: [kind]}: the marks shown — dots,
+                               counts, ages; each a list of those shown, null = every one
 pressure(on) · competitors(on) · opacity(x) · hideImputed(on) · dispose()
 
 emit  {kind: "data", detail: Summary | null}   what the shown payload is; on every show

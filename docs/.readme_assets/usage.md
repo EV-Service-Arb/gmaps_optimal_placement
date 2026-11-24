@@ -7,9 +7,9 @@
 #   maps_key = "...";
 
 # Refit the ranking model over every ordering the work dir holds.
-gmaps_optimal_placement fit -l examples/locations
+gmaps_optimal_placement fit
 
-# Show the schema of a country's base, or of a location.
+# Show the schema of a country's base.
 gmaps_optimal_placement schema base
 
 # Find the towns in a country that are worth a study. Count what a cadastre draws, per commune, and
@@ -21,7 +21,7 @@ From a checkout, the GUI on 127.0.0.1:52850: pick a category and a location side
 another as a tab, `f` to find an open one. Click the map for a pin and its report.
 
 ```sh
-nix run                                  # every location under every category the work dir carries
-nix run -- -c gcid:plumber -l examples/locations/Lyon.toml
+nix run                      # every location under every category the work dir carries
+nix run -- -c gcid:plumber
 nix run .#help
 ```

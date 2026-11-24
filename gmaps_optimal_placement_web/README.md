@@ -2,15 +2,15 @@ The local GUI: a Leptos island over the two axes the CLI hands it, and the axum 
 their product. The CLI's `view` runs it; nothing here reads settings or knows what `Held` is.
 
 ```text
-gmaps_optimal_placement view [-c ..] [-l ..] --port <p> --site <dir>
+gmaps_optimal_placement view [-c ..] --port <p> --site <dir>
         │   categories, locations, and a Work per build — the CLI's
         ▼
    serve ─┬─ GET /                            shell — the Maps bootstrap, the CSS, the island
           ├─ GET /studies.json                the two axes, by the labels the picker shows
-          ├─ GET /payload/{category}/{location}  load(def, candidates)?.build(&work), once per pairing
+          ├─ GET /payload/{category}/{location}  load(&def)?.build(&work), once per pairing
           ├─ GET /place/{location}            the same with no category: the grid alone
           ├─ GET /pkg/*                       the client wasm (`hydrate`), built apart from the server (`ssr`)
-          └─ /api/*                           server fns: pins under XDG_DATA_HOME, keys under XDG_CONFIG_HOME
+          └─ /api/*                           server fns: the keys, under XDG_CONFIG_HOME
 ```
 
 A build is the library's `load` and `build` on a blocking thread, over a fresh `Work`, exactly as
@@ -22,9 +22,8 @@ the live signals into the tab being left and reads the next one into them. There
 whole life: a switch is the overlay shown the next payload.
 
 The overlay paints the heat, the pressure field and the dots, and tells the legend; the panel is
-drawn from that and from `Summary`. The island keeps its own pressure for what the overlay does not
-do — the pin cards, the top-N sweep, the comparison, the cell tooltip — since the overlay is a
-renderer and hands none of its arrays out. `map_core.js` owns the map instance and the pins.
+drawn from that and from `Summary`. The island keeps the `Model` for what the overlay does not do: the
+pin cards, the top-N sweep and the cell tooltip. A pin lasts as long as its tab. `map_core.js` owns the map instance and the pins.
 
 Nothing throws across that boundary: under `panic=abort` a rejected promise reaching wasm kills the
 app, so `map_core.js`'s `mount` returns a banner string instead of the map.

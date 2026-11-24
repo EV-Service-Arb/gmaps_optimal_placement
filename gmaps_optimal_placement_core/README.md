@@ -6,9 +6,9 @@ filesystem; wasm-safe.
   by and `a_study_keeps_its_address` pins. [`Ask`] is a [`SEARCH_TEXT`] a study lacks; [`Country`]
   the countries a base is compiled in for.
 - [`Payload`] — the thin waist: everything a study evaluates to, for the overlay to read.
-- [`model`] — what the controls move. One [`model::Selection`] (tiers, searches, kinds) says which
-  competitors count and which of their per-search contributions do; pressure and all that reads it,
-  the marks and the age histogram are asked under it.
+- [`model`] — what a page makes of a payload: the layers, the reports and the top-N sweep, all off the
+  pressure the payload carries. One [`model::Selection`] (tiers, searches, kinds) says which marks are
+  shown — the dots, the counts, the age histogram — and moves nothing else.
 
 - [`Reproject`] — EPSG:3035 <-> WGS84. Reference points are pinned in its tests; nothing downstream
   is trustworthy without them.
