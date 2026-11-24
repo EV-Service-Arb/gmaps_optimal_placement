@@ -476,10 +476,10 @@ impl Model {
 	}
 
 	/// The cell under the cursor, on the same ~120 m tolerance the map used. `None` off the grid.
-	pub fn cell_at(&self, [lat, lng]: [f64; 2], shown: &[u8]) -> Option<usize> {
+	pub fn cell_at(&self, [lat, lng]: [f64; 2], hide_imputed: bool) -> Option<usize> {
 		let d_lat = 0.0011;
 		let d_lng = 0.0011 / lat.to_radians().cos();
-		(0..self.n()).find(|&i| shown[i] != 0 && (self.c_lat[i] - lat).abs() < d_lat && (self.c_lng[i] - lng).abs() < d_lng)
+		(0..self.n()).find(|&i| !(hide_imputed && self.payload.imputed[i] == 1) && (self.c_lat[i] - lat).abs() < d_lat && (self.c_lng[i] - lng).abs() < d_lng)
 	}
 
 	pub fn tooltip(&self, i: usize) -> String {

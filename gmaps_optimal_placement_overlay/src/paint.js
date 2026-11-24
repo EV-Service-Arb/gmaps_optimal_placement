@@ -9,8 +9,9 @@ const LINES = [[0.75, 1.2], [0.9, 1.8], [1, 2.6]];
 const STYLE = 'gop-paint-style';
 let attached = 0;
 
-/// `onView(west, south, east, north)` on every settle, and once now if the map already has bounds.
-export function attach(map, onView, onPoi) {
+/// `onView(west, south, east, north)` on every settle, and once now if the map already has bounds;
+/// `onHover(lat, lng)` answers the hint's text, or nothing; `onMark(lat, lng)` on a right click.
+export function attach(map, onView, onPoi, onHover, onMark) {
 	if (attached++ === 0) {
 		const st = document.createElement('style');
 		st.id = STYLE;
@@ -25,8 +26,12 @@ export function attach(map, onView, onPoi) {
 		map, onPoi,
 		heat: canvas(0), haze: canvas(3), lines: canvas(0),
 		ringX: null, ringY: null, colors: null, shown: null, tint: '', alpha: null, segs: null, opacity: 0.62, dead: false,
-		markers: [], iw: new google.maps.InfoWindow(),
+		markers: [], iw: new google.maps.InfoWindow(), hint: document.createElement('div'),
 	};
+	// `all` first: the host's own CSS may style a div
+	s.hint.style.cssText = 'all:initial;display:none;position:absolute;z-index:1;pointer-events:none;white-space:pre;background:#0e1116f2;color:#e8e8ea;border:1px solid #333a47;border-radius:6px;padding:6px 8px;font:11.5px/1.45 system-ui,sans-serif';
+	s.hint.className = 'gop-hint';
+	map.getDiv().appendChild(s.hint);
 	s.overlay = new google.maps.OverlayView();
 	s.overlay.onAdd = function () {
 		const pane = this.getPanes().overlayLayer;
@@ -40,7 +45,23 @@ export function attach(map, onView, onPoi) {
 		const b = !s.dead && map.getBounds();
 		if (b) onView(b.getSouthWest().lng(), b.getSouthWest().lat(), b.getNorthEast().lng(), b.getNorthEast().lat());
 	};
-	s.idle = map.addListener('idle', bounds);
+	s.on = [
+		map.addListener('idle', bounds),
+		map.addListener('mousemove', e => {
+			const text = onHover(e.latLng.lat(), e.latLng.lng());
+			if (text === undefined) return unhint(s);
+			const r = map.getDiv().getBoundingClientRect();
+			s.hint.textContent = text;
+			s.hint.style.left = `${e.domEvent.clientX - r.left + 14}px`;
+			s.hint.style.top = `${e.domEvent.clientY - r.top + 14}px`;
+			s.hint.style.display = 'block';
+		}),
+		map.addListener('mouseout', () => unhint(s)),
+		map.addListener('contextmenu', e => {
+			e.domEvent.preventDefault();
+			onMark(e.latLng.lat(), e.latLng.lng());
+		}),
+	];
 	// a map that has already settled will not say so again until it moves
 	queueMicrotask(bounds);
 	return s;
@@ -48,7 +69,8 @@ export function attach(map, onView, onPoi) {
 
 export function detach(s) {
 	s.dead = true;
-	s.idle.remove();
+	for (const l of s.on) l.remove();
+	s.hint.remove();
 	s.overlay.setMap(null);
 	for (const m of s.markers) m.setMap(null);
 	s.iw.close();
@@ -76,7 +98,12 @@ export function opacity(s, v) {
 	paint(s);
 }
 
+function unhint(s) {
+	s.hint.style.display = 'none';
+}
+
 function paint(s) {
+	unhint(s); // what is under the cursor moved, or what is said of it did
 	const proj = s.overlay.getProjection(), b = s.map.getBounds();
 	if (!proj || !b) return;
 	// scale from two known world points: robust to fractional zoom

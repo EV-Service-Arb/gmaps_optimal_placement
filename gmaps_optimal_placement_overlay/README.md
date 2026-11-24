@@ -1,5 +1,5 @@
-Placement's drawing over a host's `google.maps.Map`: the heat, the competitor-pressure field
-and the competitor dots of one payload. A renderer only: the host fetches, caches and pulls.
+Placement's drawing over a host's `google.maps.Map`: the heat, the competitor-pressure field,
+the competitor dots and the hint under the cursor, of one payload. A renderer only: the host fetches, caches and pulls.
 
 ```text
 host ──import()──▶ wasm-bindgen --target web ──▶ Overlay ──▶ Scene ──▶ paint.js
@@ -23,6 +23,7 @@ pressure(on) · competitors(on) · opacity(x) · hideImputed(on) · dispose()
 emit  {kind: "data", detail: Summary | null}   what the shown payload is; on every show
       {kind: "legend", detail: Legend}         what is drawn in view, and the shown competitors' ages
       {kind: "notice", detail: Notice}         why the map is less than asked; a null text clears it
+      {kind: "mark", detail: LatLng}           a right click on the map, whether or not a study is shown
 ```
 
 A data problem is a notice, never a throw. `Model::try_new` checks a payload's weights against the

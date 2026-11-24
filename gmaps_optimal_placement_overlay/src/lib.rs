@@ -5,7 +5,7 @@ use std::{
 };
 
 use gmaps_optimal_placement_core::{
-	Model, Payload,
+	LatLng, Model, Payload,
 	model::{Ages, HAZE, LEVELS, LayerRef, LayerSpec, Selection, Summary, TradeLayer, categories, fmt, haze, layer_id, ramp},
 	payload::Scale,
 };
@@ -18,15 +18,21 @@ use crate::scene::Scene;
 
 mod scene;
 
-type Hooks = (Closure<dyn Fn(f64, f64, f64, f64)>, Closure<dyn Fn(usize)>);
-/// What the host is told: what the shown payload is (on every `show`), what is drawn in view, and
-/// why the map is less than asked.
+type Hooks = (
+	Closure<dyn Fn(f64, f64, f64, f64)>,
+	Closure<dyn Fn(usize)>,
+	Closure<dyn Fn(f64, f64) -> Option<String>>,
+	Closure<dyn Fn(f64, f64)>,
+);
+/// What the host is told: what the shown payload is (on every `show`), what is drawn in view, why the
+/// map is less than asked, and where a mark was left, whether or not a study is shown.
 #[derive(Serialize, Tsify)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum Event {
 	Data(Option<Summary>),
 	Legend(Legend),
 	Notice(Notice),
+	Mark(LatLng),
 }
 
 /// What is drawn in view. `cells` 0, `levels` null and `in_view` 0 are each a layer that draws
@@ -89,7 +95,7 @@ impl Overlay {
 	#[wasm_bindgen(constructor)]
 	pub fn new(#[wasm_bindgen(unchecked_param_type = "google.maps.Map")] map: JsValue, #[wasm_bindgen(unchecked_param_type = "(event: Event) => void")] emit: Function) -> Overlay {
 		let inner = Rc::new_cyclic(|me: &Weak<RefCell<Inner>>| {
-			let (v, p) = (me.clone(), me.clone());
+			let (v, p, h, m) = (me.clone(), me.clone(), me.clone(), me.clone());
 			let on_view = Closure::<dyn Fn(f64, f64, f64, f64)>::new(move |w, s, e, n| {
 				let Some(inner) = v.upgrade() else { return };
 				run(&inner, |i| {
@@ -104,7 +110,21 @@ impl Overlay {
 					i.repaint()
 				});
 			});
-			let scene = Scene::attach(&map, on_view.as_ref().unchecked_ref(), on_poi.as_ref().unchecked_ref());
+			let on_hover = Closure::<dyn Fn(f64, f64) -> Option<String>>::new(move |lat, lng| {
+				let inner = h.upgrade()?;
+				inner.borrow().hint([lat, lng])
+			});
+			let on_mark = Closure::<dyn Fn(f64, f64)>::new(move |lat, lng| {
+				let Some(inner) = m.upgrade() else { return };
+				run(&inner, |_| vec![Event::Mark(LatLng { lat, lng })]);
+			});
+			let scene = Scene::attach(
+				&map,
+				on_view.as_ref().unchecked_ref(),
+				on_poi.as_ref().unchecked_ref(),
+				on_hover.as_ref().unchecked_ref(),
+				on_mark.as_ref().unchecked_ref(),
+			);
 			RefCell::new(Inner {
 				scene,
 				emit,
@@ -118,7 +138,7 @@ impl Overlay {
 				dots: false,
 				hide_imputed: false,
 				legend: None,
-				hooks: Some((on_view, on_poi)),
+				hooks: Some((on_view, on_poi, on_hover, on_mark)),
 			})
 		});
 		Overlay { inner }
@@ -258,10 +278,17 @@ struct Inner {
 	dots: bool,
 	hide_imputed: bool,
 	legend: Option<Legend>,
-	/// Kept alive while attached: `paint.js` calls them on settle and on a dot's click.
+	/// Kept alive while attached: `paint.js` calls them on settle, on a dot's click, under the cursor
+	/// and on a right click.
 	hooks: Option<Hooks>,
 }
 impl Inner {
+	/// What the cell under the cursor says; nothing off the study, or over a hidden cell.
+	fn hint(&self, at: [f64; 2]) -> Option<String> {
+		let m = self.model.as_ref()?;
+		Some(m.tooltip(m.cell_at(at, self.hide_imputed)?))
+	}
+
 	fn notice(&mut self, text: Option<&str>, missing: Option<usize>) -> Event {
 		self.noticed = text.is_some();
 		Event::Notice(Notice {

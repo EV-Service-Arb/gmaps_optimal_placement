@@ -91,11 +91,29 @@ async function main() {
   assert(s.painted > 100, "the overlay's canvas actually painted");
   assert(s.dots > 0, "the competitors are on the map");
 
-  // a click drops a pin and opens its card; the map's corner, which no competitor sits on
+  // the map's corner, which no competitor sits on
   await sleep(1000);
-  await send("Input.dispatchMouseEvent", { type: "mousePressed", x: 1300, y: 700, button: "left", buttons: 1, clickCount: 1 });
-  await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: 1300, y: 700, button: "left", buttons: 0, clickCount: 1 });
-  await until("!!document.getElementById('report')", "a card for the click", 20);
+  const at = { x: 1300, y: 700 };
+  const click = async (button, buttons) => {
+    await send("Input.dispatchMouseEvent", { type: "mousePressed", ...at, button, buttons, clickCount: 1 });
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", ...at, button, buttons: 0, clickCount: 1 });
+  };
+  // a dot eats what is under it, and the frame is wider than the study, so not every point answers
+  let hint = null;
+  for (let x = 500; x < 1200 && !hint; x += 45) {
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y: 460 });
+    await sleep(200);
+    hint = await evaluate("(h => h.style.display === 'block' ? h.textContent : null)(document.querySelector('#map .gop-hint'))");
+  }
+  log("hint:", hint);
+  assert(/pressure/.test(hint), "a cell under the cursor says what is known of it");
+  await click("left", 1);
+  await sleep(1000);
+  assert(!(await evaluate("!!document.getElementById('report')")), "a left click on the map leaves nothing");
+  await evaluate("window.addEventListener('contextmenu', e => { window.menu = e; }, true)");
+  await click("right", 2);
+  await until("!!document.getElementById('report')", "a card for the right click", 20);
+  assert(await evaluate("window.menu.defaultPrevented"), "and the browser's own menu stays shut");
   log("card:", await evaluate("document.getElementById('report').innerText.slice(0, 120)"));
 
   assert.deepEqual(errors, [], "no uncaught exceptions");

@@ -1,5 +1,5 @@
 // The map instance and gop's own pins. What is painted over the map — the heat, the pressure field,
-// the competitor dots — is `gmaps_optimal_placement_overlay`'s, the renderer the conductor's map
+// the competitor dots, the hint under the cursor — is `gmaps_optimal_placement_overlay`'s, the renderer the conductor's map
 // paints through too; `mount`'s map is what it is handed.
 //
 // Nothing throws across the boundary: under `panic=abort` a rejected promise reaching wasm kills the
@@ -10,7 +10,7 @@ const S = new WeakMap();
 /// `shell()` resolves this once the Maps bootstrap has run.
 const ready = () => window.__mapsReady ?? Promise.reject(new Error('the Maps bootstrap never ran'));
 
-export async function mount(el, lat, lng, zoom, onClick, onMove, onOut, onPin) {
+export async function mount(el, lat, lng, zoom, onPin) {
 	try {
 		if (S.has(el)) throw new Error('the map is already mounted');
 		await ready();
@@ -20,12 +20,6 @@ export async function mount(el, lat, lng, zoom, onClick, onMove, onOut, onPin) {
 			styles: [{ featureType: 'poi', elementType: 'labels', stylers: [{ visibility: 'off' }] }],
 		});
 		S.set(el, { map, onPin, pins: new Map() });
-		map.addListener('click', e => onClick(e.latLng.lat(), e.latLng.lng()));
-		map.addListener('mousemove', e => {
-			const r = el.getBoundingClientRect();
-			onMove(e.latLng.lat(), e.latLng.lng(), e.domEvent.clientX - r.left, e.domEvent.clientY - r.top);
-		});
-		map.addListener('mouseout', () => onOut());
 		return map;
 	} catch (e) {
 		return `⚠ map failed to load — ${(e && e.message) || e}`;

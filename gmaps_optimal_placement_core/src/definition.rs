@@ -287,6 +287,7 @@ pub enum Country {
 	FR,
 }
 
+#[cfg_attr(feature = "ts", derive(tsify::Tsify))]
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct LatLng {
 	pub lat: f64,

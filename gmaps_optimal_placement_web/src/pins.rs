@@ -1,4 +1,4 @@
-//! Pins — a click on the map, or a pick of the top-ten sweep — and the card that is their control
+//! Pins — a mark left on the map, or a pick of the top-ten sweep — and the card that is their control
 //! surface. A pin lasts as long as its tab.
 use gmaps_optimal_placement_core::model::Report;
 pub use imp::{copy, forget};
@@ -75,7 +75,7 @@ pub struct Pin {
 	pub id: String,
 	/// [lat, lon]
 	pub at: [f64; 2],
-	/// The sweep's rank, or nothing for a click.
+	/// The sweep's rank, or nothing for a mark.
 	pub label: Option<String>,
 }
 

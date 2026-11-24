@@ -48,7 +48,8 @@ pub struct Tab {
 /// Everything the view reads and the effects write. Copy, so a closure captures it by value.
 #[derive(Clone, Copy)]
 pub struct State {
-	pub heavy: StoredValue<Heavy, LocalStorage>,
+	/// The active study, which the reports read.
+	pub model: StoredValue<Option<Rc<Model>>, LocalStorage>,
 	/// `Model` is an `Rc`, so the tabs cannot live in a `Send` signal.
 	pub tabs: RwSignal<Vec<Tab>, LocalStorage>,
 	pub active: RwSignal<usize>,
@@ -81,7 +82,6 @@ pub struct State {
 	/// Which pin's card is open. `None` while a sweep is shown.
 	pub selected: RwSignal<Option<String>>,
 	pub pins: RwSignal<Vec<Pin>>,
-	pub tip: RwSignal<Option<Tip>>,
 	pub banner: RwSignal<Option<String>>,
 	/// Flips once `map_core` has a map instance and the overlay is on it.
 	#[cfg(feature = "hydrate")]
@@ -93,7 +93,7 @@ pub struct State {
 impl State {
 	fn new() -> Self {
 		Self {
-			heavy: StoredValue::new_local(Heavy::default()),
+			model: StoredValue::new_local(None),
 			tabs: RwSignal::new_local(Vec::new()),
 			active: RwSignal::new(0),
 			categories: RwSignal::new(Vec::new()),
@@ -115,7 +115,6 @@ impl State {
 			report: RwSignal::new(None),
 			selected: RwSignal::new(None),
 			pins: RwSignal::new(Vec::new()),
-			tip: RwSignal::new(None),
 			banner: RwSignal::new(None),
 			#[cfg(feature = "hydrate")]
 			mounted: RwSignal::new(false),
@@ -141,7 +140,7 @@ impl State {
 	}
 
 	fn rank(&self) {
-		let picks = self.heavy.with_value(|h| h.model.as_ref()?.traded()?.rank_sites(10));
+		let picks = self.model.with_value(|m| m.as_ref()?.traded()?.rank_sites(10));
 		let Some((picked, pool)) = picks else { return };
 		self.pins.set(
 			picked
@@ -155,8 +154,8 @@ impl State {
 				.collect(),
 		);
 		self.selected.set(None);
-		self.heavy.with_value(|h| {
-			let Some(m) = &h.model else { return };
+		self.model.with_value(|m| {
+			let Some(m) = m else { return };
 			self.report.set(Some(Report {
 				title: "Top 10 sites".to_owned(),
 				rows: picked
@@ -186,8 +185,8 @@ impl State {
 	/// re-enter itself through `selected`.
 	pub fn refresh_card(&self) {
 		let Some(pin) = self.selected.get_untracked().and_then(|id| self.pin(&id)) else { return };
-		self.heavy.with_value(|h| {
-			let Some(m) = &h.model else { return };
+		self.model.with_value(|m| {
+			let Some(m) = m else { return };
 			self.report.set(Some(match m.traded() {
 				// a ranked pick is a cell centroid, and there is no business to score at one
 				Some(t) => t.site_report(pin.at, pin.label.as_deref(), pin.label.is_none().then_some("")),
@@ -195,22 +194,6 @@ impl State {
 			}));
 		});
 	}
-}
-
-/// The active study, which the reports and the tooltip read.
-#[derive(Default)]
-pub struct Heavy {
-	pub model: Option<Rc<Model>>,
-	/// Which cells the tooltip answers for: every one, less the imputed while they are hidden.
-	#[cfg(feature = "hydrate")]
-	pub shown: Vec<u8>,
-}
-
-#[derive(Clone, PartialEq)]
-pub struct Tip {
-	pub text: String,
-	pub x: f64,
-	pub y: f64,
 }
 
 #[island]
@@ -228,17 +211,6 @@ pub fn MapView() -> impl IntoView {
 		<div id="map"></div>
 		{move || s.picker.get().map(|pool| view! { <crate::tabs::Picker state=s pool=pool /> })}
 		{move || s.settings.get().then(|| view! { <crate::tabs::Settings state=s /> })}
-		{move || {
-			s.tip
-				.get()
-				.map(|t| {
-					view! {
-						<div id="tip" style=format!("display:block;left:{}px;top:{}px", t.x + 14., t.y + 14.)>
-							{t.text}
-						</div>
-					}
-				})
-		}}
 		{move || s.banner.get().map(|b| view! { <div id="banner">{b}</div> })}
 
 		<div class="panel" id="ctl">
@@ -455,11 +427,9 @@ pub fn MapView() -> impl IntoView {
 
 			{move || {
 				let notice = s
-					.heavy
-					.with_value(|h| {
-						h.model.as_ref().map(|m| m.payload.notice.as_ref().map(|n| n.text.clone()))
-					});
-				let text = match (s.summary.get()?, notice.flatten()) {
+					.model
+					.with_value(|m| m.as_ref()?.payload.notice.as_ref().map(|n| n.text.clone()));
+				let text = match (s.summary.get()?, notice) {
 					(_, Some(n)) => n,
 					(l, None) if l.trade.is_none() => {
 						"No category — this is the statistical grid alone, and it cost no Places call. Open the same city under a category for demand, the competitors on it, and the sweeps."
@@ -581,18 +551,18 @@ mod imp {
 mod imp {
 	use std::rc::Rc;
 
-	use gmaps_optimal_placement_core::model::Summary;
+	use gmaps_optimal_placement_core::{LatLng, model::Summary};
 	use gmaps_optimal_placement_overlay::{Legend, Overlay};
 	use leptos::prelude::*;
 	use wasm_bindgen::{closure::WasmClosure, prelude::*};
 
-	use super::{State, Tab, Tip};
+	use super::{State, Tab};
 	use crate::{pins::Pin, tabs::Pool};
 
 	const YELLOW: &str = "#ffd400";
 
 	thread_local! {
-		/// Once the map is mounted. Not in `Heavy`: its `emit` runs inside every call made of it.
+		/// Once the map is mounted. Not in `State`: its `emit` runs inside every call made of it.
 		static OVERLAY: std::cell::OnceCell<Overlay> = const { std::cell::OnceCell::new() };
 	}
 
@@ -609,32 +579,14 @@ mod imp {
 		Data(serde::de::IgnoredAny),
 		Legend(Legend),
 		Notice(serde::de::IgnoredAny),
-	}
-
-	fn shown(s: State) {
-		let hide = s.hide_imputed.get_untracked();
-		s.heavy.update_value(|h| {
-			h.shown = h
-				.model
-				.as_ref()
-				.map_or_else(Vec::new, |m| m.payload.imputed.iter().map(|&i| u8::from(!(hide && i == 1))).collect())
-		});
+		Mark(LatLng),
 	}
 
 	#[wasm_bindgen(module = "/src/map_core.js")]
 	extern "C" {
 		/// The map, or a banner string saying why there is none.
 		#[wasm_bindgen(js_name = mount)]
-		async fn mount_js(
-			el: web_sys::HtmlElement,
-			lat: f64,
-			lng: f64,
-			zoom: u8,
-			on_click: &js_sys::Function,
-			on_move: &js_sys::Function,
-			on_out: &js_sys::Function,
-			on_pin: &js_sys::Function,
-		) -> JsValue;
+		async fn mount_js(el: web_sys::HtmlElement, lat: f64, lng: f64, zoom: u8, on_pin: &js_sys::Function) -> JsValue;
 		#[wasm_bindgen(js_name = recenter)]
 		fn recenter_js(el: &web_sys::HtmlElement, lat: f64, lng: f64, zoom: u8);
 		#[wasm_bindgen(js_name = pins)]
@@ -664,7 +616,7 @@ mod imp {
 		Effect::new(move |_| {
 			let tiers = s.tiers.get();
 			s.shown.track();
-			if !s.heavy.with_value(|h| h.model.as_ref().is_some_and(|m| m.traded().is_some())) {
+			if !s.model.with_value(|m| m.as_ref().is_some_and(|m| m.traded().is_some())) {
 				return;
 			}
 			let tune = js_sys::JSON::parse(&serde_json::json!({ "tiers": tiers }).to_string()).expect("serde_json writes JSON");
@@ -688,7 +640,6 @@ mod imp {
 		Effect::new(move |_| {
 			let on = s.hide_imputed.get();
 			s.shown.track();
-			shown(s);
 			overlay(|o| o.hide_imputed(on));
 		});
 
@@ -812,7 +763,7 @@ mod imp {
 	fn adopt(s: State, i: usize) {
 		let t = s.tabs.with_untracked(|v| v[i].clone());
 		s.active.set(i);
-		s.heavy.update_value(|h| h.model = Some(t.model.clone()));
+		s.model.set_value(Some(t.model.clone()));
 		overlay(|o| o.show(Some(t.json.to_string()), false));
 		s.layer.set(t.layer);
 		s.hide_imputed.set(t.hide_imputed);
@@ -875,7 +826,7 @@ mod imp {
 	/// No tabs: the panel, the report and the map all say so.
 	fn blank(s: State) {
 		s.active.set(0);
-		s.heavy.update_value(|h| *h = super::Heavy::default());
+		s.model.set_value(None);
 		overlay(|o| o.show(None, false));
 		s.summary.set(None);
 		s.legend.set(None);
@@ -888,7 +839,7 @@ mod imp {
 	}
 
 	/// A pin and its card.
-	fn click(s: State, at: [f64; 2]) {
+	fn mark(s: State, at: [f64; 2]) {
 		let id = s.fresh_id();
 		s.pins.update(|v| v.push(Pin { id: id.clone(), at, label: None }));
 		s.open(&id);
@@ -1004,27 +955,18 @@ mod imp {
 			s.banner.set(Some("⚠ the map host element is missing".to_owned()));
 			return false;
 		};
-		let on_click = leak(Closure::<dyn Fn(f64, f64)>::new(move |lat: f64, lng: f64| click(s, [lat, lng])));
-		let on_move = leak(Closure::<dyn Fn(f64, f64, f64, f64)>::new(move |lat: f64, lng: f64, x: f64, y: f64| {
-			let text = s.heavy.with_value(|h| {
-				let m = h.model.as_ref()?;
-				let i = m.cell_at([lat, lng], &h.shown)?;
-				Some(m.tooltip(i))
-			});
-			s.tip.set(text.map(|text| Tip { text, x, y }));
-		}));
-		let on_out = leak(Closure::<dyn Fn()>::new(move || s.tip.set(None)));
 		let on_pin = leak(Closure::<dyn Fn(String)>::new(move |id: String| s.open(&id)));
 		let emit = leak(Closure::<dyn Fn(JsValue)>::new(move |e: JsValue| {
 			let e = String::from(js_sys::JSON::stringify(&e).expect("the overlay tells plain data"));
 			match serde_json::from_str::<Told>(&e).expect("the overlay tells its own Event") {
 				Told::Legend(l) => s.legend.set(Some(l)),
+				Told::Mark(at) => mark(s, [at.lat, at.lng]),
 				Told::Data(_) | Told::Notice(_) => {}
 			}
 		}));
 
 		let (c, zoom) = (model.payload.center, model.payload.zoom);
-		let map = mount_js(el, c[0], c[1], zoom, &on_click, &on_move, &on_out, &on_pin).await;
+		let map = mount_js(el, c[0], c[1], zoom, &on_pin).await;
 		if let Some(msg) = map.as_string() {
 			s.banner.set(Some(msg));
 			return false;

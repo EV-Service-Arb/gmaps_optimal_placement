@@ -18,7 +18,7 @@ gmaps_optimal_placement misc france pool --per ind --floor 2000
 ```
 
 From a checkout, the GUI on 127.0.0.1:52850: pick a category and a location side by side, `t` for
-another as a tab, `f` to find an open one. Click the map for a pin and its report.
+another as a tab, `f` to find an open one. Right-click the map for a pin and its report.
 
 ```sh
 nix run                      # every location under every category the work dir carries

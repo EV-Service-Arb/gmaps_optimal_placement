@@ -9,7 +9,7 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(module = "/src/paint.js")]
 extern "C" {
-	fn attach(map: &JsValue, on_view: &Function, on_poi: &Function) -> JsValue;
+	fn attach(map: &JsValue, on_view: &Function, on_poi: &Function, on_hover: &Function, on_mark: &Function) -> JsValue;
 	fn detach(s: &JsValue);
 	fn geometry(s: &JsValue, ring_x: &[f64], ring_y: &[f64]);
 	fn cells(s: &JsValue, colors: &[u8], shown: &[u8]);
@@ -36,14 +36,14 @@ pub struct Scene {
 	heat: Option<(Vec<f64>, Scale)>,
 	press: Option<Vec<Vec<f64>>>,
 	hide_imputed: bool,
-	shown: Vec<u8>,
 }
 impl Scene {
 	/// `on_view(west, south, east, north)` fires whenever the map settles, and once on attach if it
-	/// already has bounds; `on_poi(i)` on a dot's click, beside its info window.
-	pub fn attach(map: &JsValue, on_view: &Function, on_poi: &Function) -> Self {
+	/// already has bounds; `on_poi(i)` on a dot's click, beside its info window; `on_hover(lat, lng)`
+	/// answers the hint under the cursor, and `on_mark(lat, lng)` fires on a right click.
+	pub fn attach(map: &JsValue, on_view: &Function, on_poi: &Function, on_hover: &Function, on_mark: &Function) -> Self {
 		Self {
-			js: attach(map, on_view, on_poi),
+			js: attach(map, on_view, on_poi, on_hover, on_mark),
 			models: Vec::new(),
 			c_lat: Vec::new(),
 			c_lng: Vec::new(),
@@ -52,7 +52,6 @@ impl Scene {
 			heat: None,
 			press: None,
 			hide_imputed: false,
-			shown: Vec::new(),
 		}
 	}
 
@@ -69,7 +68,6 @@ impl Scene {
 		self.c_lat = cat(|m| &m.c_lat);
 		self.c_lng = cat(|m| &m.c_lng);
 		self.imputed = models.iter().flat_map(|m| m.payload.imputed.iter().copied()).collect();
-		self.shown = vec![0; self.imputed.len()];
 		self.models = models;
 		self.heat = None;
 		self.press = None;
@@ -122,12 +120,10 @@ impl Scene {
 			Some((values, scale)) => {
 				let c = colorise(values, &self.imputed, self.hide_imputed, *scale, &in_view);
 				cells(&self.js, &c.colors, &c.shown);
-				self.shown = c.shown;
 				Some((c.ticks, c.count))
 			}
 			None => {
 				cells(&self.js, &[], &[]);
-				self.shown.fill(0);
 				None
 			}
 		};

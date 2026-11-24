@@ -21,9 +21,9 @@ the live signals into the tab being left and reads the next one into them. There
 `google.maps` instance and one `gmaps_optimal_placement_overlay::Overlay` on it for the page's
 whole life: a switch is the overlay shown the next payload.
 
-The overlay paints the heat, the pressure field and the dots, and tells the legend; the panel is
-drawn from that and from `Summary`. The island keeps the `Model` for what the overlay does not do: the
-pin cards, the top-N sweep and the cell tooltip. A pin lasts as long as its tab. `map_core.js` owns the map instance and the pins.
+The overlay paints the heat, the pressure field, the dots and the hint, and tells the legend and each
+mark left; the panel is drawn from that and from `Summary`. The island keeps the `Model` for what the
+overlay does not do: the pin cards and the top-N sweep. A pin lasts as long as its tab. `map_core.js` owns the map instance and the pins.
 
 Nothing throws across that boundary: under `panic=abort` a rejected promise reaching wasm kills the
 app, so `map_core.js`'s `mount` returns a banner string instead of the map.

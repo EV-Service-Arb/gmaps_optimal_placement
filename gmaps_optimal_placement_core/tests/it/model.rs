@@ -215,9 +215,11 @@ fn every_layer_colours() {
 #[test]
 fn tooltip_over_a_cell() {
 	let m = model();
-	let unmet = trade(&m).values(TradeLayer::Unmet, 0);
-	let shown = colorise(&unmet, &m.payload.imputed, false, Scale::Percentile, &everywhere(&m)).shown;
-	let hit = m.cell_at([45.7797, 3.0863], &shown).expect("the study centre is on the grid");
+	let hit = m.cell_at([45.7797, 3.0863], false).expect("the study centre is on the grid");
+	let hidden = m.payload.imputed.iter().position(|&i| i == 1).expect("the fixture carries imputed cells");
+	let over = [m.c_lat[hidden], m.c_lng[hidden]];
+	assert!(m.cell_at(over, false).is_some());
+	assert!(m.cell_at(over, true).is_none_or(|i| m.payload.imputed[i] == 0), "a hidden cell answers nothing");
 	insta::assert_snapshot!(m.tooltip(hit), @"
 	Clermont-Ferrand
 	Population 424
