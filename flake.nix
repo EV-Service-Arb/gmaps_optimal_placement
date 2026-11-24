@@ -54,7 +54,7 @@
         # Written per country and tally, so two denominators of the same tally overwrite each other.
         misc = pkgs.writeShellApplication {
           name = "misc-map";
-          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold xdg-utils ];
+          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold xdg-utils tailwindcss_4 ];
           text = ''
             [ $# -ge 2 ] || { echo "usage: nix run .#misc <country> <tally> [--per <column>] [--floor <n>]" >&2; exit 1; }
             cd "$(git rev-parse --show-toplevel)"
@@ -87,10 +87,55 @@
           doCheck = false;
           auditable = false; # cargo-auditable doesn't support edition 2024
         };
+        # The server (`ssr`, inside the CLI) and the wasm client (`hydrate`) are separate compilations;
+        # this is the one place that knows how to produce the client, under target/site/pkg.
+        client = ''
+          cargo build -p gmaps_optimal_placement_web --lib --target wasm32-unknown-unknown --no-default-features --features hydrate
+          wasm-bindgen --target web --out-dir target/site/pkg --out-name gmaps_optimal_placement_web \
+            target/wasm32-unknown-unknown/debug/gmaps_optimal_placement_web.wasm
+        '';
+        # `view [-c <category>] [-l <locations>]` — the GUI, from this checkout
+        view = pkgs.writeShellApplication {
+          name = "view";
+          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold wasm-bindgen-cli tailwindcss_4 ];
+          text = ''
+            cd "$(git rev-parse --show-toplevel)"
+            ${client}
+            exec cargo run -p gmaps_optimal_placement_cli -- view --port ${toString SA_PORTS} --site target/site "$@"
+          '';
+        };
+        # The GUI in headless Chromium: the picker, one pairing loaded, the map painted. Served on the
+        # range's second port, so a GUI already up on the first is left alone.
+        smoke = pkgs.writeShellApplication {
+          name = "smoke";
+          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold wasm-bindgen-cli tailwindcss_4 nodejs chromium curl ];
+          text = ''
+            cd "$(git rev-parse --show-toplevel)"
+            ${client}
+            cargo build -p gmaps_optimal_placement_cli # a cold compile outlasts any wait for the port
+            port=${toString (SA_PORTS + 1)}
+            cargo run -p gmaps_optimal_placement_cli -- view --port "$port" --site target/site "$@" &
+            server=$!
+            trap 'kill $server 2>/dev/null || true' EXIT
+            up=
+            for _ in $(seq 120); do
+              curl -sf -o /dev/null "http://127.0.0.1:$port/pkg/gmaps_optimal_placement_web.js" && { up=1; break; }
+              sleep 1
+            done
+            [ -n "$up" ] || { echo "server never came up" >&2; exit 1; }
+            node examples/smoke.js "http://127.0.0.1:$port/"
+          '';
+        };
         help = pkgs.writeShellApplication {
           name = "help";
           text = ''
             cat <<'EOF'
+            nix run -- [-c <category>] [-l <locations>]  the GUI on 127.0.0.1:${toString SA_PORTS}: every location
+                                            (default examples/locations, and every area a host studied) under
+                                            every category the work dir's studies carry, or on its own;
+                                            category and location are picked side by side, `t` opens another
+                                            as a tab over the same map. Buys nothing: what is not held is named
+            nix run .#smoke                 the GUI in headless Chromium: pick a pairing, see the map paint
             nix run .#misc <country> <tally>  which towns in a country to write a study about at all:
                                             pool | building | parcel per --per column, --floor to skip hamlets
             nix run .#help                  this
@@ -104,7 +149,8 @@
       in
       {
         apps = {
-          default = { type = "app"; program = pkgs.lib.getExe help; };
+          default = { type = "app"; program = pkgs.lib.getExe view; };
+          smoke = { type = "app"; program = pkgs.lib.getExe smoke; };
           misc = { type = "app"; program = pkgs.lib.getExe misc; };
           help = { type = "app"; program = pkgs.lib.getExe help; };
         };
@@ -114,7 +160,7 @@
           rustPlatform.buildRustPackage {
             inherit pname version cargoLock;
             buildInputs = with pkgs; [ openssl.dev ];
-            nativeBuildInputs = with pkgs; [ pkg-config ];
+            nativeBuildInputs = with pkgs; [ pkg-config tailwindcss_4 ]; # tailwind: the web crate's build.rs
             src = pkgs.lib.cleanSource ./.;
             cargoBuildFlags = [ "-p" "gmaps_optimal_placement_cli" ];
             doCheck = false;
@@ -140,6 +186,7 @@
               python3
               (v_flakes.qlty system)
               rust
+              tailwindcss_4
               wasm-bindgen-cli
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
