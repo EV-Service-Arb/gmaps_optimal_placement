@@ -148,6 +148,7 @@ pub(crate) fn search_text(work: &Work, body: &serde_json::Value, mask: &str, pag
 		if let Some(t) = &token {
 			body["pageToken"] = serde_json::Value::String(t.clone());
 		}
+		body.sort_all_objects(); // the cache's key is this string: a consumer's `serde_json/preserve_order` must not move it
 		let ask = Ask {
 			mask: mask.to_owned(),
 			body: serde_json::to_string(&body)?,
