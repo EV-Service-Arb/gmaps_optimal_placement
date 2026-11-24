@@ -6,7 +6,7 @@ of Google's categories, in a country — describes everything else: the Google c
 keywords its competitors are found by, what
 each keyword is worth, what is never a competitor, and how demand follows from whatever columns the
 grid publishes. The library builds the payload that answers it; the conductor links it and draws it
-on its map, and the CLI's viewer draws the same studies here.
+on its map, and the GUI here draws the same studies through the same library and overlay.
 
 The question is the input. Retargeting an area, a country or a category is an edit to one of those
 documents, never to the code.
@@ -42,9 +42,14 @@ documents, never to the code.
            │              └─────────┬────────┘               │
            │                        ▼                        │
            │             site_conductor links both, one pin  │
-   ┌───────┴─────────────────────────────────┐               │
-   │ gmaps_optimal_placement_cli             │◀──────────────┘
-   │   fit · strength · misc · schema        │
+           │   ┌──────────────────────────────────────────┐  │
+           ├──▶│ gmaps_optimal_placement_web   the GUI    │◀─┘
+           │   │   ssr: serve — the axes, one build a pair│
+           │   │   hydrate: tabs · picker · pins · panel  │
+           │   └──────────────────────┬───────────────────┘
+   ┌───────┴──────────────────────────┴──────┐
+   │ gmaps_optimal_placement_cli             │
+   │   view · fit · strength · misc · schema │
    │   Held: a copy of prod's panel.db,      │
    │   its queries cache, read-only          │
    └───────┬─────────────────────────────────┘
@@ -105,7 +110,7 @@ pin. `Model::try_new` checks a payload's weights against the `rank::COEF` it was
 that pin is what makes builder and renderer one model. Nothing placement links depends on the
 conductor; the CLI alone reads a copy of its queries cache (`sa_core::queries_cache`'s keys), and the
 conductor never links the CLI. This repo keeps what training needs — the grids, the sources,
-`probe`'s plan, `fit`, `strength` — and the viewer a fit is judged by; what it trains on is what
+`probe`'s plan, `fit`, `strength` — and the GUI a fit is judged by; what it trains on is what
 the conductor bought, never a search of its own.
 
 ## Two visual axes

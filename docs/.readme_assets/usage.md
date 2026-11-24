@@ -17,8 +17,11 @@ gmaps_optimal_placement schema base
 gmaps_optimal_placement misc france pool --per ind --floor 2000
 ```
 
-From a checkout:
+From a checkout, the GUI on 127.0.0.1:52850: pick a category and a location side by side, `t` for
+another as a tab, `f` to find an open one. Click the map for a pin and its report.
 
 ```sh
+nix run                                  # every location under every category the work dir carries
+nix run -- -c gcid:plumber -l examples/locations/Lyon.toml
 nix run .#help
 ```

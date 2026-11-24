@@ -3,7 +3,7 @@ and the competitor dots of one payload. A renderer only: the host fetches, cache
 
 ```text
 host ──import()──▶ wasm-bindgen --target web ──▶ Overlay ──▶ Scene ──▶ paint.js
-hosts: the conductor's home map (its crates/placement_overlay re-exports this), the CLI's `view`
+hosts: the conductor's home map (its crates/placement_overlay re-exports this), gmaps_optimal_placement_web's island
 ```
 
 `Scene` decides every number — the ramp over the cells in view, the haze's alpha, the iso-lines —
