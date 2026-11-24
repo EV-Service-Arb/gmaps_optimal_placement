@@ -1,13 +1,15 @@
 //! The map island. Rust owns every number and the whole control surface. `map_core.js` owns the
-//! `google.maps` instance and the pins; what is painted over it goes through
-//! `gmaps_optimal_placement_overlay::Scene`, the same path the conductor's page paints through.
+//! `google.maps` instance and the pins; what is painted over it is
+//! `gmaps_optimal_placement_overlay::Overlay`'s, the renderer the conductor's map paints through too,
+//! and the legend is what it tells.
 use std::rc::Rc;
 
 use gmaps_optimal_placement_core::{
 	Model,
-	model::{Category, HAZE, Report, TierState, fmt, haze, ramp},
+	model::{Report, Summary, TierState, fmt},
 };
-pub use imp::{activate, close, find, open, persist_keys};
+use gmaps_optimal_placement_overlay::Legend;
+pub use imp::{activate, close, open};
 use leptos::prelude::*;
 
 use crate::{
@@ -19,20 +21,31 @@ use crate::{
 /// live signals; the map instance underneath is never rebuilt.
 #[derive(Clone)]
 pub struct Tab {
-	/// The two file stems, which is what `/payload/{category}/{location}` is keyed by. No category is
-	/// a location on its own, under `/place/{location}`. What the pairing is *called* is the payload's
-	/// to say.
+	/// The two labels, which is what `/payload/{category}/{location}` is keyed by. No category is a
+	/// location on its own, under `/place/{location}`.
+	#[cfg(feature = "hydrate")]
 	pub at: (Option<String>, String),
-	/// The payload's own name once it has landed, the pairing until then.
+	/// The payload's own name.
 	pub label: String,
-	pub model: Option<Rc<Model>>,
+	#[cfg(feature = "hydrate")]
+	pub model: Rc<Model>,
+	/// As served: what the overlay is shown.
+	#[cfg(feature = "hydrate")]
+	pub json: Rc<str>,
+	#[cfg(feature = "hydrate")]
 	pub lambda: f64,
-	pub layer: usize,
-	pub focus: usize,
+	/// A `Summary.layers[].id`.
+	#[cfg(feature = "hydrate")]
+	pub layer: Option<String>,
+	#[cfg(feature = "hydrate")]
 	pub hide_imputed: bool,
+	#[cfg(feature = "hydrate")]
 	pub tiers: Vec<TierState>,
+	#[cfg(feature = "hydrate")]
 	pub core: Vec<Pin>,
+	#[cfg(feature = "hydrate")]
 	pub temp: Vec<Pin>,
+	#[cfg(feature = "hydrate")]
 	pub selected: Option<String>,
 }
 
@@ -57,18 +70,19 @@ pub struct State {
 	pub opacity: RwSignal<f64>,
 	/// The competitor-pressure field over the heat. Global, like the opacity.
 	pub field: RwSignal<bool>,
-	/// West, south, east, north, as the map last settled. Both scales are relative to it.
-	pub view: RwSignal<Option<[f64; 4]>>,
-	pub layer: RwSignal<usize>,
-	/// Which competitor the coverage layers are drawn about. Moved by clicking a marker; the
-	/// inventory is sorted by review count, so the opening one is the loudest name on the map.
-	pub focus: RwSignal<usize>,
+	/// The competitor dots. Global, like the field.
+	pub dots: RwSignal<bool>,
+	pub layer: RwSignal<Option<String>>,
 	pub hide_imputed: RwSignal<bool>,
 	pub tiers: RwSignal<Vec<TierState>>,
-	/// Bumped by every recompute, so the cheap effects can depend on it without depending on λ.
+	/// Bumped by every study the overlay is shown, so what is pushed into it is pushed again even
+	/// where the next tab's control reads the same.
+	#[cfg(feature = "hydrate")]
+	pub shown: RwSignal<u32>,
+	/// Bumped by every recompute, so the card can depend on it without depending on λ.
+	#[cfg(feature = "hydrate")]
 	pub recomputed: RwSignal<u32>,
-	/// Name, note and tier counts, settled once the payload lands.
-	pub loaded: RwSignal<Option<Loaded>>,
+	pub summary: RwSignal<Option<Summary>>,
 	pub legend: RwSignal<Option<Legend>>,
 	pub report: RwSignal<Option<Report>>,
 	/// Which pin's card is open. `None` while a sweep or a comparison is shown.
@@ -77,15 +91,12 @@ pub struct State {
 	pub temp: RwSignal<Vec<Pin>>,
 	pub tip: RwSignal<Option<Tip>>,
 	pub banner: RwSignal<Option<String>>,
-	/// Flips once `map_core` has a map instance: the effects that push arrays into it are no-ops
-	/// before that, and this is what gives them their second run.
+	/// Flips once `map_core` has a map instance and the overlay is on it.
+	#[cfg(feature = "hydrate")]
 	pub mounted: RwSignal<bool>,
 	pub next_id: StoredValue<u32>,
 	/// The `⧉` glyph, flipped for a beat by a copy that landed or one that did not.
 	pub copied: RwSignal<Option<bool>>,
-	/// Why the last place search put no pin down. Under the field rather than in the banner, so the
-	/// next keystroke takes it away.
-	pub missed: RwSignal<Option<String>>,
 }
 impl State {
 	fn new() -> Self {
@@ -99,16 +110,18 @@ impl State {
 			settings: RwSignal::new(false),
 			keys: RwSignal::new(Keymap::default()),
 			arming: RwSignal::new(None),
-			lambda: RwSignal::new(2000.),
+			lambda: RwSignal::new(0.),
 			opacity: RwSignal::new(0.62),
 			field: RwSignal::new(false),
-			view: RwSignal::new(None),
-			layer: RwSignal::new(0),
-			focus: RwSignal::new(0),
+			dots: RwSignal::new(true),
+			layer: RwSignal::new(None),
 			hide_imputed: RwSignal::new(false),
 			tiers: RwSignal::new(Vec::new()),
+			#[cfg(feature = "hydrate")]
+			shown: RwSignal::new(0),
+			#[cfg(feature = "hydrate")]
 			recomputed: RwSignal::new(0),
-			loaded: RwSignal::new(None),
+			summary: RwSignal::new(None),
 			legend: RwSignal::new(None),
 			report: RwSignal::new(None),
 			selected: RwSignal::new(None),
@@ -116,17 +129,11 @@ impl State {
 			temp: RwSignal::new(Vec::new()),
 			tip: RwSignal::new(None),
 			banner: RwSignal::new(None),
+			#[cfg(feature = "hydrate")]
 			mounted: RwSignal::new(false),
 			next_id: StoredValue::new(0),
 			copied: RwSignal::new(None),
-			missed: RwSignal::new(None),
 		}
-	}
-
-	/// The green set: what the study seeded, minus what was hidden, plus what was promoted. Lettered
-	/// in that order.
-	pub fn lettered(&self) -> Vec<(String, Pin)> {
-		self.core.get().into_iter().enumerate().map(|(i, p)| (letter(i), p)).collect()
 	}
 
 	pub fn pin(&self, id: &str) -> Option<Pin> {
@@ -141,43 +148,6 @@ impl State {
 		format!("t{n}")
 	}
 
-	/// Open a pin's card.
-	pub fn open(&self, id: &str) {
-		self.copied.set(None);
-		self.selected.set(Some(id.to_owned()));
-		self.refresh_card();
-	}
-
-	/// The selected pin's report, against the controls as they stand. Reads nothing reactively, so
-	/// the effect that keeps the card live cannot re-enter itself through `selected`.
-	pub fn refresh_card(&self) {
-		let Some(pin) = self.selected.get_untracked().and_then(|id| self.pin(&id)) else { return };
-		let label = self
-			.core
-			.get_untracked()
-			.iter()
-			.position(|p| p.id == pin.id)
-			.map(|i| format!("{} · {}", letter(i), pin.name))
-			.or_else(|| pin.label.clone())
-			.or_else(|| pin.address.clone());
-		self.heavy.with_value(|h| {
-			let Some(m) = &h.model else { return };
-			self.report.set(Some(match m.traded() {
-				Some(t) => t.site_report(
-					pin.at,
-					label.as_deref(),
-					// a ranked pick is a cell centroid with a number for a label, and there is no trading
-					// name to score
-					pin.label.is_none().then_some(pin.name.as_str()),
-					self.lambda.get_untracked(),
-					&h.press,
-					&self.tiers.get_untracked(),
-				),
-				None => m.cell_report(pin.at, label.as_deref()),
-			}));
-		});
-	}
-
 	fn drop_temp(&self) {
 		self.temp.set(Vec::new());
 		self.report.set(None);
@@ -185,7 +155,7 @@ impl State {
 	}
 
 	fn rank(&self) {
-		let picks = self.heavy.with_value(|h| Some(h.model.as_ref()?.traded()?.rank_sites(self.lambda.get_untracked(), &h.press, 10)));
+		let picks = self.heavy.with_value(|h| h.model.as_ref()?.traded()?.rank_sites(self.lambda.get_untracked(), &h.press, 10));
 		let Some((picked, pool)) = picks else { return };
 		self.temp.set(
 			picked
@@ -196,7 +166,6 @@ impl State {
 					name: String::new(),
 					at: [r.lat, r.lng],
 					label: Some((k + 1).to_string()),
-					address: None,
 					green: false,
 					from_study: false,
 				})
@@ -237,48 +206,73 @@ impl State {
 			self.report.set(Some(t.compare(&cands, self.lambda.get_untracked(), &h.press)));
 		});
 	}
+
+	#[cfg(feature = "hydrate")]
+	/// The green set: what the study seeded, minus what was hidden, plus what was promoted. Lettered
+	/// in that order.
+	pub fn lettered(&self) -> Vec<(String, Pin)> {
+		self.core.get().into_iter().enumerate().map(|(i, p)| (letter(i), p)).collect()
+	}
+
+	#[cfg(feature = "hydrate")]
+	/// Open a pin's card.
+	pub fn open(&self, id: &str) {
+		self.copied.set(None);
+		self.selected.set(Some(id.to_owned()));
+		self.refresh_card();
+	}
+
+	#[cfg(feature = "hydrate")]
+	/// The tiers as the controls stand, over every search and every kind.
+	fn selection(&self, m: &Model) -> Option<gmaps_optimal_placement_core::model::Selection> {
+		let mut sel = m.traded()?.selection();
+		sel.tiers = self.tiers.get_untracked();
+		Some(sel)
+	}
+
+	#[cfg(feature = "hydrate")]
+	/// The selected pin's report, against the controls as they stand. Reads nothing reactively, so
+	/// the effect that keeps the card live cannot re-enter itself through `selected`.
+	pub fn refresh_card(&self) {
+		let Some(pin) = self.selected.get_untracked().and_then(|id| self.pin(&id)) else { return };
+		let label = self
+			.core
+			.get_untracked()
+			.iter()
+			.position(|p| p.id == pin.id)
+			.map(|i| format!("{} · {}", letter(i), pin.name))
+			.or_else(|| pin.label.clone());
+		self.heavy.with_value(|h| {
+			let Some(m) = &h.model else { return };
+			self.report.set(Some(match (m.traded(), self.selection(m)) {
+				(Some(t), Some(sel)) => t.site_report(
+					pin.at,
+					label.as_deref(),
+					// a ranked pick is a cell centroid with a number for a label, and there is no trading
+					// name to score
+					pin.label.is_none().then_some(pin.name.as_str()),
+					self.lambda.get_untracked(),
+					&h.press,
+					&sel,
+				),
+				_ => m.cell_report(pin.at, label.as_deref()),
+			}));
+		});
+	}
 }
 
+/// The active study, and what the reports and the tooltip read of it under the controls. The overlay
+/// keeps its own copy of each: it is a renderer and hands none of them out.
 #[derive(Default)]
 pub struct Heavy {
 	pub model: Option<Rc<Model>>,
 	pub press: Vec<f64>,
-	pub unmet: Vec<f64>,
-	pub shown: Vec<u8>,
-	/// Once the map is mounted.
+	/// `None` without a demand.
 	#[cfg(feature = "hydrate")]
-	pub scene: Option<gmaps_optimal_placement_overlay::Scene>,
-}
-
-/// What the control panel shows for the active study. Rebuilt on every tab switch.
-#[derive(Clone, PartialEq)]
-pub struct Loaded {
-	pub layers: Vec<(String, String)>,
-	pub tier_counts: Vec<usize>,
-	pub categories: Vec<Category>,
-	pub imputed: usize,
-	/// Days since each competitor was last answered for, and its tier — so the chart follows the tier toggles.
-	pub ages: Vec<(f64, usize)>,
-	pub queries: Vec<(String, usize)>,
-	/// What re-asking Google for this tab costs, in Places searches. `None` without a trade.
-	pub searches: Option<usize>,
-	/// Whether this tab has a trade under it. Everything a slider moves is the trade's, so this is
-	/// what the panel greys out on.
-	pub traded: bool,
-	/// Why a trade that was asked for is not under it — the payload's own words.
-	pub notice: Option<String>,
-}
-
-#[derive(Clone, PartialEq)]
-pub struct Legend {
-	/// Over the cells in view.
-	pub ticks: [f64; 5],
-	pub count: usize,
-	pub linear: bool,
-	/// Set on the coverage layers: whose cloud is on screen.
-	pub focus: Option<String>,
-	/// Where the field's iso-lines run, while it is on and anything in view is under pressure.
-	pub levels: Option<[f64; 3]>,
+	pub unmet: Option<Vec<f64>>,
+	/// Which cells the tooltip answers for: every one, less the imputed while they are hidden.
+	#[cfg(feature = "hydrate")]
+	pub shown: Vec<u8>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -288,75 +282,13 @@ pub struct Tip {
 	pub y: f64,
 }
 
-/// Upper edges in days, each a period a person names. The last bar holds everything older.
-const AGE_EDGES: [(f64, &str); 11] = [
-	(1., "1d"),
-	(3., "3d"),
-	(7., "1w"),
-	(14., "2w"),
-	(30., "1mo"),
-	(61., "2mo"),
-	(91., "3mo"),
-	(182., "6mo"),
-	(365., "1y"),
-	(730., "2y"),
-	(1460., "4y"),
-];
-
-/// Competitors per age bucket over a logged axis, so a month does not dwarf the day before it. A
-/// bar is as wide as the period it covers, and greys as it gets older.
-fn age_chart(ages: &[f64]) -> impl IntoView + use<> {
-	let bucket = |d: f64| AGE_EDGES.iter().position(|(e, _)| d < *e).unwrap_or(AGE_EDGES.len() - 1);
-	let mut counts = vec![0usize; bucket(ages.iter().copied().fold(0., f64::max)) + 1];
-	for &d in ages {
-		counts[bucket(d)] += 1;
-	}
-	let top = AGE_EDGES[counts.len() - 1].0;
-	let x = move |d: f64| 100. * d.ln_1p() / top.ln_1p();
-	let max = *counts.iter().max().expect("at least one bucket") as f64;
-	let bars = counts
-		.iter()
-		.enumerate()
-		.filter(|(_, n)| **n > 0)
-		.map(|(i, &n)| {
-			let (lo, hi) = (if i == 0 { 0. } else { AGE_EDGES[i - 1].0 }, AGE_EDGES[i].0);
-			let chroma = 0.16 * (1. - x((lo + hi) / 2.) / 100.);
-			let span = match i {
-				0 => "under a day".to_owned(),
-				_ if i == AGE_EDGES.len() - 1 => format!("over {}", AGE_EDGES[i - 1].1),
-				_ => format!("{}–{}", AGE_EDGES[i - 1].1, AGE_EDGES[i].1),
-			};
-			view! {
-				<div
-					title=format!("{n} competitors, {span} old")
-					style=format!(
-						"left:{:.2}%;width:calc({:.2}% - 1px);height:{:.1}%;background:oklch(0.74 {chroma:.3} 235)",
-						x(lo),
-						x(hi) - x(lo),
-						100. * n as f64 / max,
-					)
-				>
-					{n}
-				</div>
-			}
-		})
-		.collect_view();
-	let ticks = AGE_EDGES[..counts.len()]
-		.iter()
-		.enumerate()
-		.filter(|(i, _)| [0, 2, 4, 8].contains(i) || *i == counts.len() - 1)
-		.map(|(_, (e, label))| view! { <span style=format!("left:{:.2}%", x(*e))>{*label}</span> })
-		.collect_view();
-	view! { <div class="ages">{bars}{ticks}</div> }
-}
-
 #[island]
 pub fn MapView() -> impl IntoView {
 	let s = State::new();
 	imp::wire(s);
-	// no trade under the tab: λ, the tier weights and both sweeps are functions of a demand surface
-	// and an inventory, and neither is on the page
-	let traded = move || s.loaded.get().is_some_and(|l| l.traded);
+	// no trade under the tab: λ, the tier weights, the field and the sweeps are functions of a demand
+	// surface and an inventory, and neither is on the page
+	let traded = move || s.summary.with(|l| l.as_ref().is_some_and(|l| l.trade.is_some()));
 	let show_queries = RwSignal::new(false);
 	let show_categories = RwSignal::new(true);
 	let show_ages = RwSignal::new(false);
@@ -382,19 +314,22 @@ pub fn MapView() -> impl IntoView {
 		<div class="panel" id="ctl">
 			<h4>"Layer"</h4>
 			<select on:change=move |ev| {
-				s.layer.set(event_target_value(&ev).parse().unwrap_or(0))
+				s.layer.set(Some(event_target_value(&ev)))
 			}>
 				{move || {
-					s.loaded
+					s.summary
 						.get()
 						.map(|l| {
 							l.layers
 								.into_iter()
-								.enumerate()
-								.map(|(i, (name, _))| {
+								.map(|row| {
+									let id = row.id.clone();
 									view! {
-										<option value=i.to_string() prop:selected=move || s.layer.get() == i>
-											{name}
+										<option
+											value=row.id
+											prop:selected=move || s.layer.with(|l| l.as_ref() == Some(&id))
+										>
+											{row.name}
 										</option>
 									}
 								})
@@ -438,62 +373,70 @@ pub fn MapView() -> impl IntoView {
 			/>
 
 			{move || {
-				s.loaded
-					.get()
-					.map(|l| {
-						s.tiers
-							.get_untracked()
-							.into_iter()
-							.enumerate()
-							.map(|(i, t)| {
-								let (name, count) = (t.name.clone(), l.tier_counts[i]);
-								view! {
-									<div class="row">
-										<input
-											type="checkbox"
-											id=format!("tier{i}")
-											prop:checked=move || s.tiers.with(|v| v.get(i).is_some_and(|t| t.show))
-											on:change=move |ev| {
-												s.tiers.update(|v| v[i].show = event_target_checked(&ev));
-											}
-										/>
-										<label for=format!("tier{i}")>{format!("{name} ({count})")}</label>
-									</div>
-									<label>
-										{format!("weight of one {} — ", t.name)}
-										<span>
-											{move || {
-												s.tiers
-													.with(|v| {
-														v.get(i).map_or_else(String::new, |t| format!("{:.2}", t.weight))
-													})
-											}}
-										</span>
-									</label>
+				let counts: Vec<usize> = s
+					.summary
+					.get()?
+					.trade?
+					.tiers
+					.iter()
+					.map(|t| t.fetched_s.len())
+					.collect();
+				Some(
+					s
+						.tiers
+						.get_untracked()
+						.into_iter()
+						.enumerate()
+						.map(|(i, t)| {
+							let (name, count) = (t.name.clone(), counts[i]);
+							view! {
+								<div class="row">
 									<input
-										type="range"
-										min="0"
-										max="200"
-										step="5"
-										value=(t.weight * 100.).round().to_string()
-										on:input=move |ev| {
-											if let Ok(v) = event_target_value(&ev).parse::<f64>() {
-												s.tiers.update(|t| t[i].weight = v / 100.);
-											}
+										type="checkbox"
+										id=format!("tier{i}")
+										prop:checked=move || s.tiers.with(|v| v.get(i).is_some_and(|t| t.show))
+										on:change=move |ev| {
+											s.tiers.update(|v| v[i].show = event_target_checked(&ev));
 										}
 									/>
-								}
-							})
-							.collect_view()
-					})
+									<label for=format!("tier{i}")>{format!("{name} ({count})")}</label>
+								</div>
+								<label>
+									{format!("weight of one {} — ", t.name)}
+									<span>
+										{move || {
+											s.tiers
+												.with(|v| {
+													v.get(i).map_or_else(String::new, |t| format!("{:.2}", t.weight))
+												})
+										}}
+									</span>
+								</label>
+								<input
+									type="range"
+									min="0"
+									max="200"
+									step="5"
+									value=(t.weight * 100.).round().to_string()
+									on:input=move |ev| {
+										if let Ok(v) = event_target_value(&ev).parse::<f64>() {
+											s.tiers.update(|t| t[i].weight = v / 100.);
+										}
+									}
+								/>
+							}
+						})
+						.collect_view(),
+				)
 			}}
 
-			// what Google filed each one as, which is what the markers are coloured by. The tiers above
+			// what Google filed each one as, which is what the dots are coloured by. The tiers above
 			// are the study's reading of these, and a category split across two of them is the study
 			// being asked to justify itself.
 			{move || {
-				let (loaded, tiers) = (s.loaded.get(), s.tiers.get());
-				let rows: Vec<_> = loaded?
+				let (summary, tiers) = (s.summary.get(), s.tiers.get());
+				let rows: Vec<_> = summary?
+					.trade?
 					.categories
 					.into_iter()
 					.filter_map(|c| {
@@ -529,39 +472,15 @@ pub fn MapView() -> impl IntoView {
 			}}
 
 			{move || {
-				let (loaded, tiers) = (s.loaded.get()?, s.tiers.get());
-				let ages: Vec<f64> = loaded
-					.ages
-					.into_iter()
-					.filter(|(_, t)| tiers.get(*t).is_some_and(|t| t.show))
-					.map(|(d, _)| d)
-					.collect();
-				let oldest = ages.iter().copied().reduce(f64::max)?;
-				let searches = loaded
-					.searches
-					.expect("competitors to date come with the trade that swept them");
+				let ages = s.legend.get()?.ages?;
 				let open = show_ages.get();
 				Some(
 					view! {
 						<h4 class="fold" on:click=move |_| show_ages.update(|v| *v = !*v)>
 							{if open { "▾ " } else { "▸ " }}
-							{format!("Data age · oldest {oldest:.0} d")}
+							{format!("Data age · oldest {:.0} d", ages.oldest_days)}
 						</h4>
-						{open
-							.then(move || {
-								view! {
-									{age_chart(&ages)}
-									<button
-										class="sec"
-										title=format!(
-											"re-asks Google the {searches} Places searches this map was built from, more where a tile has filled since",
-										)
-										on:click=move |_| imp::reload(s)
-									>
-										{format!("⚠ Pull latest · {searches} searches")}
-									</button>
-								}
-							})}
+						{open.then(|| age_chart(&ages))}
 					},
 				)
 			}}
@@ -574,7 +493,22 @@ pub fn MapView() -> impl IntoView {
 					on:change=move |ev| s.hide_imputed.set(event_target_checked(&ev))
 				/>
 				<label for="hideImp">
-					"Hide imputed cells (" {move || s.loaded.get().map(|l| l.imputed.to_string())} ")"
+					"Hide imputed cells (" {move || s.summary.get().map(|l| l.imputed.to_string())} ")"
+				</label>
+			</div>
+			<div class="row">
+				<input
+					type="checkbox"
+					id="dots"
+					prop:disabled=move || !traded()
+					prop:checked=move || s.dots.get()
+					on:change=move |ev| s.dots.set(event_target_checked(&ev))
+				/>
+				<label for="dots">
+					"Competitors"
+					{move || {
+						s.legend.get().and_then(|l| l.competitors).map(|c| format!(" ({} in view)", c.in_view))
+					}}
 				</label>
 			</div>
 			<div class="row">
@@ -591,7 +525,16 @@ pub fn MapView() -> impl IntoView {
 			<button
 				class="sec"
 				style:display=move || {
-					if s.loaded.get().is_some_and(|l| !l.queries.is_empty()) { "block" } else { "none" }
+					if s
+						.summary
+						.with(|l| {
+							l.as_ref().and_then(|l| l.trade.as_ref()).is_some_and(|t| !t.queries.is_empty())
+						})
+					{
+						"block"
+					} else {
+						"none"
+					}
 				}
 				on:click=move |_| show_queries.update(|v| *v = !*v)
 			>
@@ -601,15 +544,16 @@ pub fn MapView() -> impl IntoView {
 				show_queries
 					.get()
 					.then(|| {
-						s.loaded
+						s.summary
 							.get()
-							.map(|l| {
-								l.queries
+							.and_then(|l| l.trade)
+							.map(|t| {
+								t.queries
 									.into_iter()
-									.map(|(text, hits)| {
+									.map(|q| {
 										view! {
 											<div class="cat">
-												<label>{format!("{text} ({hits})")}</label>
+												<label>{format!("{} ({})", q.text, q.hits)}</label>
 											</div>
 										}
 									})
@@ -619,14 +563,18 @@ pub fn MapView() -> impl IntoView {
 			}}
 
 			{move || {
-				let l = s.loaded.get()?;
-				let text = match (l.notice, l.traded) {
-					(Some(n), _) => n,
-					(None, false) => {
+				let notice = s
+					.heavy
+					.with_value(|h| {
+						h.model.as_ref().map(|m| m.payload.notice.as_ref().map(|n| n.text.clone()))
+					});
+				let text = match (s.summary.get()?, notice.flatten()) {
+					(_, Some(n)) => n,
+					(l, None) if l.trade.is_none() => {
 						"No category — this is the statistical grid alone, and it cost no Places call. Open the same city under a category for demand, the competitors on it, and the sweeps."
 							.to_owned()
 					}
-					(None, true) => return None,
+					_ => return None,
 				};
 				Some(view! { <p class="note">{text}</p> })
 			}}
@@ -645,43 +593,43 @@ pub fn MapView() -> impl IntoView {
 				"Clear pins & report"
 			</button>
 
-			<div id="bar" style=gradient()></div>
-			<div id="ticks">
-				{move || {
-					s.legend.get().map(|l| l.ticks.map(|t| view! { <span>{fmt(t)}</span> }).collect_view())
-				}}
-			</div>
-			<div class="note">
-				{move || {
-					let (spec, legend) = (s.loaded.get(), s.legend.get());
-					let (Some(spec), Some(legend)) = (spec, legend) else { return None };
-					let (name, note) = spec.layers.get(s.layer.get()).cloned()?;
-					Some(
-						view! {
-							<b>{plain(&name)}</b>
-							{legend.focus.map(|f| view! { <span class="k">{format!(" — {f}")}</span> })}
+			{move || {
+				let heat = s.legend.get()?.heat?;
+				Some(
+					view! {
+						<div id="bar" style=gradient(&heat.stops)></div>
+						<div id="ticks">
+							{heat.ticks.into_iter().flatten().map(|t| view! { <span>{t}</span> }).collect_view()}
+						</div>
+						<div class="note">
+							<b>{plain(&heat.name)}</b>
+							{heat.focus.map(|f| view! { <span class="k">{format!(" — {f}")}</span> })}
 							<br />
-							{note}
+							{heat.note}
 							<br />
 							<span class="k">
 								{format!(
 									"{} cells in view · colour = {}",
-									legend.count,
-									if legend.linear { "linear" } else { "percentile" },
+									heat.cells,
+									match heat.scale {
+										gmaps_optimal_placement_core::Scale::Linear => "linear",
+										gmaps_optimal_placement_core::Scale::Percentile => "percentile",
+									},
 								)}
 							</span>
-						},
-					)
-				}}
-			</div>
+						</div>
+					},
+				)
+			}}
 			{move || {
-				let levels = s.legend.get()?.levels?;
+				let p = s.legend.get()?.pressure?;
+				let levels = p.levels?;
 				Some(
 					view! {
-						<div id="haze" style=haze_gradient()></div>
+						<div id="haze" style=gradient(&p.stops)></div>
 						<div class="note">
-							"Blue = competitor pressure, Σ weight × exp(−distance/λ), as a percentile among the cells in view. Lines at the 50th, 75th, 90th: "
-							{levels.map(fmt).join(" · ")}
+							{p.note} " Lines at the 50th, 75th, 90th: "
+							{levels.into_iter().map(|l| l.value).collect::<Vec<_>>().join(" · ")}
 						</div>
 					},
 				)
@@ -691,6 +639,8 @@ pub fn MapView() -> impl IntoView {
 		{move || s.report.get().map(|r| view! { <crate::pins::Card state=s report=r /> })}
 	}
 }
+
+#[cfg(feature = "hydrate")]
 fn letter(i: usize) -> String {
 	char::from_u32('A' as u32 + i as u32).map_or_else(|| (i + 1).to_string(), String::from)
 }
@@ -700,21 +650,41 @@ fn plain(name: &str) -> String {
 	name.replace(" ★", "").trim().to_owned()
 }
 
-fn haze_gradient() -> String {
-	let stops: Vec<String> = (0..=4)
-		.map(|q| format!("rgba({},{},{},{:.3}) {}%", HAZE[0], HAZE[1], HAZE[2], haze(q as f64 / 4.), q * 25))
-		.collect();
+fn gradient(stops: &[String]) -> String {
+	assert!(stops.len() > 1, "a ramp has two ends");
+	let at = |i: usize| 100. * i as f64 / (stops.len() - 1) as f64;
+	let stops: Vec<String> = stops.iter().enumerate().map(|(i, c)| format!("{c} {:.0}%", at(i))).collect();
 	format!("background:linear-gradient(90deg,{})", stops.join(","))
 }
 
-fn gradient() -> String {
-	let stops: Vec<String> = (0..=10)
-		.map(|q| {
-			let c = ramp(q as f64 / 10.);
-			format!("rgb({},{},{}) {}%", c[0].round(), c[1].round(), c[2].round(), q * 10)
+/// Competitors per age bucket, as the overlay laid the bars out.
+fn age_chart(ages: &gmaps_optimal_placement_core::model::Ages) -> impl IntoView + use<> {
+	let bars = ages
+		.bars
+		.iter()
+		.map(|b| {
+			view! {
+				<div
+					title=format!("{} competitors, {} old", b.count, b.span)
+					style=format!(
+						"left:{:.2}%;width:calc({:.2}% - 1px);height:{:.1}%;background:oklch(0.74 {:.3} 235)",
+						b.left,
+						b.width,
+						b.height,
+						0.16 * b.fresh,
+					)
+				>
+					{b.count}
+				</div>
+			}
 		})
-		.collect();
-	format!("background:linear-gradient(90deg,{})", stops.join(","))
+		.collect_view();
+	let ticks = ages
+		.ticks
+		.iter()
+		.map(|t| view! { <span style=format!("left:{:.2}%", t.left)>{t.label.clone()}</span> })
+		.collect_view();
+	view! { <div class="ages">{bars}{ticks}</div> }
 }
 
 #[cfg(not(feature = "hydrate"))]
@@ -726,80 +696,77 @@ mod imp {
 	pub fn open(_: State, _: Option<String>, _: String) {}
 	pub fn activate(_: State, _: usize) {}
 	pub fn close(_: State, _: usize) {}
-	pub fn persist_keys(_: State) {}
-	pub fn find(_: State, _: String) {}
-	pub fn reload(_: State) {}
 }
 
 #[cfg(feature = "hydrate")]
 mod imp {
-	use gmaps_optimal_placement_core::model::{LayerRef, LayerSpec, Summary, TradeLayer, categories};
-	use gmaps_optimal_placement_overlay::Scene;
+	use std::rc::Rc;
+
+	use gmaps_optimal_placement_core::model::Summary;
+	use gmaps_optimal_placement_overlay::{Legend, Overlay};
 	use leptos::prelude::*;
 	use wasm_bindgen::{closure::WasmClosure, prelude::*};
 
-	use super::{Legend, State, Tab, Tip};
+	use super::{State, Tab, Tip};
 	use crate::{pins::Pin, tabs::Pool};
 
 	const GREEN: &str = "#7cff8f";
 	const YELLOW: &str = "#ffd400";
 
-	/// What a redraw needs, once the controls have moved. Split from the payload so the cheap effects
-	/// never pay for a pressure sweep.
+	thread_local! {
+		/// Once the map is mounted. Not in `Heavy`: its `emit` runs inside every call made of it.
+		static OVERLAY: std::cell::OnceCell<Overlay> = const { std::cell::OnceCell::new() };
+	}
+
+	/// Whatever is on the map, once it is.
+	fn overlay(f: impl FnOnce(&Overlay)) {
+		OVERLAY.with(|o| o.get().map(f));
+	}
+
+	/// What the overlay tells. What the shown payload is and why it is short are the payload's, which
+	/// the island holds already.
+	#[derive(serde::Deserialize)]
+	#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
+	enum Told {
+		Data(serde::de::IgnoredAny),
+		Legend(Legend),
+		Notice(serde::de::IgnoredAny),
+	}
+
+	/// The island's own pressure, for the reports and the tooltip, and the same controls handed to
+	/// the overlay.
 	fn recompute(s: State) {
+		let (lambda, tiers) = (s.lambda.get_untracked(), s.tiers.get_untracked());
 		s.heavy.update_value(|h| {
-			// a tab with no trade leaves nothing of the last one's sweep behind: the arrays are the
-			// active study's or they are empty
 			let Some(m) = h.model.clone() else { return };
-			let Some(t) = m.traded() else {
-				(h.press, h.unmet) = (Vec::new(), Vec::new());
+			let (Some(t), Some(sel)) = (m.traded(), s.selection(&m)) else {
+				(h.press, h.unmet) = (Vec::new(), None);
 				return;
 			};
-			h.press = t.pressure(s.lambda.get_untracked(), &s.tiers.get_untracked());
+			h.press = t.pressure(lambda, &sel);
 			h.unmet = t.unmet(&h.press);
+		});
+		let tune = serde_json::json!({
+			"lambda_m": lambda,
+			"tiers": tiers.iter().map(|t| (t.name.clone(), serde_json::json!({"weight": t.weight, "show": t.show}))).collect::<serde_json::Map<_, _>>(),
+		});
+		let tune = js_sys::JSON::parse(&tune.to_string()).expect("serde_json writes JSON");
+		overlay(|o| {
+			if let Err(e) = o.tune(tune) {
+				s.banner.set(Some(format!("⚠ {}", String::from(JsValue::from(e).unchecked_into::<js_sys::Error>().message()))));
+			}
 		});
 		s.recomputed.update(|n| *n += 1);
 	}
 
-	/// The active layer and, when it is on, the field, through the scene and against the view.
-	fn colours(s: State) -> Option<Legend> {
-		let layers: Vec<LayerSpec> = s.heavy.with_value(|h| h.model.as_ref().map(|m| m.layers()))?;
-		let spec = layers.get(s.layer.get_untracked())?;
-		let of = s.focus.get_untracked();
-		let view = s.view.get_untracked()?;
-		s.heavy
-			.try_update_value(|h| {
-				let super::Heavy { model, press, unmet, shown, scene } = h;
-				let m = model.as_ref()?;
-				let scene = scene.as_mut()?;
-				// `layers()` only offers a trade layer where there is a trade, so the miss below is that
-				// agreement having been broken rather than a state to draw something for
-				let (v, focus) = match spec.source {
-					LayerRef::Study(i) => (std::borrow::Cow::Borrowed(m.layer(i)), None),
-					LayerRef::Trade(t) => {
-						let traded = m.traded()?;
-						(
-							traded.values(t, of, s.lambda.get_untracked(), &s.tiers.get_untracked(), unmet),
-							matches!(t, TradeLayer::Share | TradeLayer::Seen).then(|| traded.trade.pois[of].poi.name.clone()),
-						)
-					}
-				};
-				scene.view(view);
-				scene.hide_imputed(s.hide_imputed.get_untracked());
-				scene.heat(Some((&[&v], spec.linear)));
-				scene.field((s.field.get_untracked() && m.traded().is_some()).then_some(&[press.as_slice()]));
-				let drawn = scene.draw().expect("a view was handed over above");
-				*shown = scene.shown().to_vec();
-				let (ticks, count) = drawn.heat.expect("a heat was handed over above");
-				Some(Legend {
-					ticks,
-					count,
-					linear: spec.linear,
-					focus,
-					levels: drawn.levels,
-				})
-			})
-			.flatten()
+	fn shown(s: State) {
+		let hide = s.hide_imputed.get_untracked();
+		s.heavy.update_value(|h| {
+			h.shown = h
+				.model
+				.as_ref()
+				.map_or_else(Vec::new, |m| m.payload.imputed.iter().map(|&i| u8::from(!(hide && i == 1))).collect())
+		});
 	}
 
 	#[wasm_bindgen(module = "/src/map_core.js")]
@@ -820,8 +787,6 @@ mod imp {
 		fn recenter_js(el: &web_sys::HtmlElement, lat: f64, lng: f64, zoom: u8);
 		#[wasm_bindgen(js_name = pins)]
 		fn pins_js(el: &web_sys::HtmlElement, json: &str);
-		#[wasm_bindgen(js_name = pan)]
-		fn pan_js(el: &web_sys::HtmlElement, lat: f64, lng: f64);
 	}
 
 	fn host() -> Option<web_sys::HtmlElement> {
@@ -847,24 +812,37 @@ mod imp {
 		Effect::new(move |_| {
 			s.lambda.track();
 			s.tiers.track();
+			s.shown.track();
 			if s.heavy.with_value(|h| h.model.is_some()) {
 				recompute(s);
 			}
 		});
 
 		Effect::new(move |_| {
-			s.recomputed.track();
-			s.layer.track();
-			s.focus.track();
-			s.hide_imputed.track();
-			s.field.track();
-			s.view.track();
-			if !s.mounted.get() {
-				return;
-			}
-			if let Some(legend) = colours(s) {
-				s.legend.set(Some(legend));
-			}
+			let layer = s.layer.get();
+			s.shown.track();
+			overlay(|o| {
+				if let Err(e) = o.heat(layer) {
+					s.banner.set(Some(format!("⚠ {}", String::from(JsValue::from(e).unchecked_into::<js_sys::Error>().message()))));
+				}
+			});
+		});
+
+		Effect::new(move |_| {
+			let on = s.hide_imputed.get();
+			s.shown.track();
+			shown(s);
+			overlay(|o| o.hide_imputed(on));
+		});
+
+		Effect::new(move |_| {
+			let (field, dots, opacity) = (s.field.get(), s.dots.get(), s.opacity.get());
+			s.mounted.track();
+			overlay(|o| {
+				o.pressure(field);
+				o.competitors(dots);
+				o.opacity(opacity);
+			});
 		});
 
 		// the open card is a live view of λ, not a snapshot of when it was clicked
@@ -872,18 +850,6 @@ mod imp {
 			s.recomputed.track();
 			s.selected.track();
 			s.refresh_card();
-		});
-
-		Effect::new(move |_| {
-			let v = s.opacity.get();
-			s.mounted.track();
-			s.heavy.with_value(|h| h.scene.as_ref().map(|sc| sc.opacity(v)));
-		});
-
-		Effect::new(move |_| {
-			let flags: Vec<u8> = s.tiers.get().iter().map(|t| u8::from(t.show)).collect();
-			s.mounted.track();
-			s.heavy.with_value(|h| h.scene.as_ref().map(|sc| sc.tiers(&flags)));
 		});
 
 		Effect::new(move |_| {
@@ -896,7 +862,7 @@ mod imp {
 				s.temp
 					.get()
 					.iter()
-					.map(|p| serde_json::json!({"id": p.id, "lat": p.at[0], "lng": p.at[1], "color": YELLOW, "label": p.label, "title": p.label.as_ref().or(p.address.as_ref())})),
+					.map(|p| serde_json::json!({"id": p.id, "lat": p.at[0], "lng": p.at[1], "color": YELLOW, "label": p.label, "title": p.label})),
 			);
 			if let Some(el) = host().filter(|_| s.mounted.get()) {
 				pins_js(&el, &serde_json::to_string(&out).expect("a Vec<Value> serialises"));
@@ -904,47 +870,33 @@ mod imp {
 		});
 	}
 
-	/// The two axes the CLI was given, and whatever pairing it already built.
+	/// The two axes the CLI was given.
 	#[derive(serde::Deserialize)]
-	struct Studies {
+	struct Axes {
 		categories: Vec<String>,
-		locations: Vec<Location>,
-		open: Vec<(Option<String>, String)>,
+		locations: Vec<String>,
 	}
 
-	#[derive(serde::Deserialize)]
-	struct Location {
-		name: String,
-	}
-
-	/// The product, the saved keys, and a tab per pairing the CLI named.
+	/// The axes and the saved keys; the first study is picked the way every later one is.
 	async fn boot(s: State) {
-		let served = match get::<Studies>("/studies.json").await {
+		let served = match get::<Axes>("/studies.json").await {
 			Ok(d) => d,
 			Err(e) => return s.banner.set(Some(format!("⚠ what is served never arrived — {e}"))),
 		};
 		s.categories.set(served.categories);
-		s.locations.set(served.locations.into_iter().map(|l| l.name).collect());
+		s.locations.set(served.locations);
 		match crate::tabs::load_keys().await {
 			Ok(Some(k)) => s.keys.set(k),
 			Ok(None) => {}
 			Err(e) => s.banner.set(Some(format!("⚠ keys — {e}"))),
 		}
-		for at in served.open {
-			add(s, at).await;
-		}
-		// a product was served rather than one pairing, so the first choice is made the same way every
-		// later one is
-		match s.tabs.with_untracked(Vec::is_empty) {
-			true => s.picker.set(Some(Pool::Study)),
-			false => adopt(s, 0),
-		}
+		s.picker.set(Some(Pool::Study));
 	}
 
 	/// Fetch a study, build its `Model`, and give it a tab. Mounts the map on the first one.
 	async fn add(s: State, at: (Option<String>, String)) -> Option<usize> {
-		let tab = fetch(s, at, false).await?;
-		let model = tab.model.clone().expect("fetched with its model");
+		let tab = fetch(s, at).await?;
+		let model = tab.model.clone();
 		s.tabs.update(|v| v.push(tab));
 		if !s.mounted.get_untracked() && !mount(s, &model).await {
 			return None;
@@ -952,71 +904,53 @@ mod imp {
 		Some(s.tabs.with_untracked(Vec::len) - 1)
 	}
 
-	/// The active tab's pairing, every answer under it asked of Google again. A refresh the day's quota
-	/// stopped leaves the tab on what it had, and says so.
-	pub fn reload(s: State) {
-		wasm_bindgen_futures::spawn_local(async move {
-			let i = s.active.get_untracked();
-			let Some(at) = s.tabs.with_untracked(|v| v.get(i).map(|t| t.at.clone())) else { return };
-			let Some(tab) = fetch(s, at, true).await else { return };
-			if let Some(n) = tab.model.as_ref().and_then(|m| m.payload.notice.clone()) {
-				return s.banner.set(Some(format!("⚠ nothing was replaced — {}", n.text)));
-			}
-			s.tabs.update(|v| v[i] = tab);
-			s.active.set(usize::MAX); // `adopt` is unconditional; `activate` would see `i` as current
-			adopt(s, i);
-		});
-	}
-
 	/// A study, as a tab that is not open yet.
-	async fn fetch(s: State, at: (Option<String>, String), refresh: bool) -> Option<Tab> {
+	async fn fetch(s: State, at: (Option<String>, String)) -> Option<Tab> {
 		// a pairing the server has not built yet reads the grid archive and every POI page, which is
 		// tens of seconds of nothing to look at
 		let shown = match &at.0 {
 			Some(t) => format!("{t} in {}", at.1),
 			None => at.1.clone(),
 		};
-		s.banner.set(Some(format!("{} {shown} …", if refresh { "re-asking Google for" } else { "building" })));
+		s.banner.set(Some(format!("building {shown} …")));
 		let location = js_sys::encode_uri_component(&at.1);
-		let req = match &at.0 {
-			Some(t) => {
-				let url = format!("/payload/{}/{location}", js_sys::encode_uri_component(t));
-				if refresh { gloo_net::http::Request::post(&url) } else { gloo_net::http::Request::get(&url) }
-			}
-			None => gloo_net::http::Request::get(&format!("/place/{location}")),
+		let url = match &at.0 {
+			Some(t) => format!("/payload/{}/{location}", js_sys::encode_uri_component(t)),
+			None => format!("/place/{location}"),
 		};
-		let payload = match send::<gmaps_optimal_placement_core::Payload>(req).await {
-			Ok(p) => p,
-			Err(e) => {
-				s.banner.set(Some(format!("⚠ {shown} — {e}")));
-				return None;
-			}
-		};
-		let model = match gmaps_optimal_placement_core::Model::try_new(payload) {
-			Ok(m) => std::rc::Rc::new(m),
+		let built = text(&url).await.and_then(|json| {
+			let payload = serde_json::from_str(&json).map_err(|e| format!("it did not parse — {e}"))?;
+			let model = gmaps_optimal_placement_core::Model::try_new(payload).map_err(|e| format!("{e:#}"))?;
+			Ok((Rc::<str>::from(json), Rc::new(model)))
+		});
+		let (json, model) = match built {
+			Ok(b) => b,
 			Err(e) => {
 				s.banner.set(Some(format!("⚠ {shown} — {e}")));
 				return None;
 			}
 		};
 		s.banner.set(None);
-		let core = crate::pins::seed(&model.payload).await.unwrap_or_else(|e| {
-			s.banner.set(Some(format!("⚠ pins — {e}")));
-			Vec::new()
-		});
+		let core = match crate::pins::seed(&model.payload).await {
+			Ok(core) => core,
+			Err(e) => {
+				s.banner.set(Some(format!("⚠ pins — {e}")));
+				return None;
+			}
+		};
+		let summary = Summary::of(&model);
 		Some(Tab {
 			at,
 			label: model.payload.name.clone(),
-			// inert without a trade: the slider is disabled and nothing reads the number
-			lambda: model.payload.trade.as_ref().map_or(2000., |t| t.lambda_m),
-			layer: 0,
-			focus: 0,
+			lambda: model.payload.trade.as_ref().map_or(0., |t| t.lambda_m), // inert without a trade: the slider is disabled and nothing reads it
+			layer: summary.layers.first().map(|l| l.id.clone()),
 			hide_imputed: false,
-			tiers: model.tier_states(),
+			tiers: model.traded().map_or_else(Vec::new, |t| t.selection().tiers),
 			core,
 			temp: Vec::new(),
 			selected: None,
-			model: Some(model),
+			json,
+			model,
 		})
 	}
 
@@ -1027,7 +961,6 @@ mod imp {
 			let Some(t) = v.get_mut(i) else { return };
 			t.lambda = s.lambda.get_untracked();
 			t.layer = s.layer.get_untracked();
-			t.focus = s.focus.get_untracked();
 			t.hide_imputed = s.hide_imputed.get_untracked();
 			t.tiers = s.tiers.get_untracked();
 			t.core = s.core.get_untracked();
@@ -1036,61 +969,29 @@ mod imp {
 		});
 	}
 
-	/// A tab, into the live signals. `press` and `unmet` are never stored — they are functions of λ
-	/// and the tier weights, so `recompute` is all it takes to get them back.
+	/// A tab, into the live signals and onto the overlay. `press` and `unmet` are never stored —
+	/// they are functions of λ and the tier weights, so `recompute` is all it takes to get them back.
 	fn adopt(s: State, i: usize) {
-		let Some(t) = s.tabs.with_untracked(|v| v.get(i).cloned()) else { return };
-		let Some(m) = t.model else { return };
+		let t = s.tabs.with_untracked(|v| v[i].clone());
 		s.active.set(i);
-		s.heavy.update_value(|h| {
-			h.model = Some(m.clone());
-			h.shown = vec![0; m.n()];
-			if let Some(scene) = &mut h.scene {
-				scene.show(vec![m.clone()]);
-				let cats = m.payload.trade.iter().flat_map(categories).collect::<Vec<_>>();
-				scene.dots(&gmaps_optimal_placement_overlay::dots(&[&m], |_, p, _| {
-					cats.iter().find(|c| c.kind == p.poi.kind).expect("the list was built from these same pois").color.clone()
-				}));
-			}
-		});
+		s.heavy.update_value(|h| h.model = Some(t.model.clone()));
+		overlay(|o| o.show(Some(t.json.to_string()), false));
 		s.lambda.set(t.lambda);
 		s.layer.set(t.layer);
-		s.focus.set(t.focus);
 		s.hide_imputed.set(t.hide_imputed);
 		s.tiers.set(t.tiers);
 		s.core.set(t.core);
 		s.temp.set(t.temp);
 		s.report.set(None);
 		s.selected.set(t.selected);
-		let summary = Summary::of(&m);
-		let now = js_sys::Date::now() / 1000.;
-		let trade = summary.trade.as_ref();
-		s.loaded.set(Some(super::Loaded {
-			layers: summary.layers.iter().map(|l| (l.name.clone(), l.note.clone())).collect(),
-			tier_counts: trade.iter().flat_map(|t| t.tiers.iter().map(|x| x.fetched_s.len())).collect(),
-			categories: trade.iter().flat_map(|t| t.categories.iter().cloned()).collect(),
-			imputed: summary.imputed,
-			searches: trade.map(|t| t.searches),
-			ages: trade
-				.iter()
-				.flat_map(|t| {
-					t.tiers.iter().enumerate().flat_map(move |(tier, x)| {
-						// an answer dated ahead of this clock is a clock that moved, and the answer is still not old
-						x.fetched_s.iter().map(move |&f| (((now - f as f64) / 86_400.).max(0.), tier))
-					})
-				})
-				.collect(),
-			queries: trade.iter().flat_map(|t| t.queries.iter().map(|q| (q.text.clone(), q.hits))).collect(),
-			traded: m.traded().is_some(),
-			notice: m.payload.notice.as_ref().map(|n| n.text.clone()),
-		}));
+		s.summary.set(Some(Summary::of(&t.model)));
+		s.shown.update(|n| *n += 1);
 		// a tab carries its own, so switching away from a refusal does not leave it over the next map
-		s.banner.set(m.payload.notice.as_ref().map(|n| format!("⚠ {}", n.text)));
-		document().set_title(&m.payload.name);
+		s.banner.set(t.model.payload.notice.as_ref().map(|n| format!("⚠ {}", n.text)));
+		document().set_title(&t.model.payload.name);
 		if let Some(el) = host().filter(|_| s.mounted.get_untracked()) {
-			recenter_js(&el, m.payload.center[0], m.payload.center[1], m.payload.zoom);
+			recenter_js(&el, t.model.payload.center[0], t.model.payload.center[1], t.model.payload.zoom);
 		}
-		recompute(s);
 	}
 
 	pub fn activate(s: State, i: usize) {
@@ -1132,61 +1033,27 @@ mod imp {
 			return blank(s);
 		}
 		let next = if i < active { active - 1 } else { active.min(left - 1) };
-		s.active.set(usize::MAX); // `adopt` is unconditional; `activate` would see `next` as current
 		adopt(s, next);
 	}
 
 	/// No tabs: the panel, the report and the map all say so.
 	fn blank(s: State) {
 		s.active.set(0);
-		s.heavy.update_value(|h| h.model = None);
-		s.loaded.set(None);
+		s.heavy.update_value(|h| *h = super::Heavy::default());
+		overlay(|o| o.show(None, false));
+		s.summary.set(None);
 		s.legend.set(None);
 		s.report.set(None);
 		s.selected.set(None);
 		s.core.set(Vec::new());
 		s.temp.set(Vec::new());
 		s.tiers.set(Vec::new());
+		s.layer.set(None);
 		document().set_title("studies");
-		s.heavy.update_value(|h| {
-			if let Some(scene) = &mut h.scene {
-				scene.show(Vec::new());
-				scene.dots("[]");
-				scene.draw();
-			}
-		});
 	}
 
-	#[derive(serde::Deserialize)]
-	struct Found {
-		at: [f64; 2],
-		address: String,
-	}
-
-	/// Asked of the server, because what a search may spend is `--spend-real-quota-i-am-certain`'s to say. Searched in
-	/// the open tab's frame, which is also what keeps the answer's cache key the same next time.
-	pub fn find(s: State, q: String) {
-		let Some(location) = s.tabs.with_untracked(|t| t.get(s.active.get_untracked()).map(|t| t.at.1.clone())) else {
-			return s.missed.set(Some("open a location to search in first".to_owned()));
-		};
-		let url = format!("/find/{location}?q={}", js_sys::encode_uri_component(&q));
-		leptos::task::spawn_local(async move {
-			match get::<Option<Found>>(&url).await {
-				Err(e) => s.missed.set(Some(e)),
-				Ok(None) => s.missed.set(Some(format!("no place found for {q:?}"))),
-				Ok(Some(f)) => {
-					s.missed.set(None);
-					if let Some(el) = host().filter(|_| s.mounted.get_untracked()) {
-						pan_js(&el, f.at[0], f.at[1]);
-					}
-					click(s, f.at, Some(f.address));
-				}
-			}
-		});
-	}
-
-	/// A yellow pin and its card. `address` is Google's, when a search rather than a click put it there.
-	fn click(s: State, at: [f64; 2], address: Option<String>) {
+	/// A yellow pin and its card.
+	fn click(s: State, at: [f64; 2]) {
 		let id = s.fresh_id();
 		s.temp.update(|v| {
 			v.push(Pin {
@@ -1194,7 +1061,6 @@ mod imp {
 				name: String::new(),
 				at,
 				label: None,
-				address,
 				green: false,
 				from_study: false,
 			})
@@ -1202,12 +1068,7 @@ mod imp {
 		s.open(&id);
 	}
 
-	fn focus_find() {
-		let el: web_sys::HtmlElement = document().get_element_by_id("find").expect("the tab bar renders it").unchecked_into();
-		el.focus().expect("the place field takes focus");
-	}
-
-	pub fn persist_keys(s: State) {
+	fn persist_keys(s: State) {
 		let keys = s.keys.get_untracked();
 		leptos::task::spawn_local(async move {
 			if let Err(e) = crate::tabs::save_keys(keys).await {
@@ -1220,10 +1081,6 @@ mod imp {
 	/// input means the key was not meant for the map.
 	fn key(s: State, ev: &web_sys::KeyboardEvent) {
 		let k = ev.key();
-		if ev.ctrl_key() && !ev.meta_key() && !ev.alt_key() && k == "k" && s.picker.get_untracked().is_none() && !s.settings.get_untracked() {
-			ev.prevent_default();
-			return focus_find();
-		}
 		if ev.ctrl_key() || ev.meta_key() || ev.alt_key() {
 			return;
 		}
@@ -1281,10 +1138,6 @@ mod imp {
 				s.picker.set(Some(Pool::Open));
 				true
 			}
-			_ if k == m.place || k == "/" => {
-				focus_find();
-				true
-			}
 			_ if n == 0 => false,
 			_ if k == m.prev => {
 				activate(s, (at + n - 1) % n);
@@ -1308,45 +1161,43 @@ mod imp {
 	}
 
 	async fn get<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
-		send(gloo_net::http::Request::get(url)).await
+		serde_json::from_str(&text(url).await?).map_err(|e| format!("it did not parse — {e}"))
 	}
 
-	async fn send<T: serde::de::DeserializeOwned>(req: gloo_net::http::RequestBuilder) -> Result<T, String> {
-		match req.send().await {
+	async fn text(url: &str) -> Result<String, String> {
+		match gloo_net::http::Request::get(url).send().await {
 			Err(e) => Err(e.to_string()),
 			Ok(r) if !r.ok() => Err(r.text().await.unwrap_or_else(|_| r.status_text())),
-			Ok(r) => r.json::<T>().await.map_err(|e| format!("it did not parse — {e}")),
+			Ok(r) => r.text().await.map_err(|e| format!("it never arrived whole — {e}")),
 		}
 	}
 
-	/// The one `google.maps` instance, on the first study to arrive. Its callbacks read the live
-	/// signals, so they outlive every tab switch.
+	/// The one `google.maps` instance and the overlay on it, on the first study to arrive. Their
+	/// callbacks read the live signals, so they outlive every tab switch.
 	async fn mount(s: State, model: &gmaps_optimal_placement_core::Model) -> bool {
 		let Some(el) = host() else {
 			s.banner.set(Some("⚠ the map host element is missing".to_owned()));
 			return false;
 		};
-		let on_click = leak(Closure::<dyn Fn(f64, f64)>::new(move |lat: f64, lng: f64| click(s, [lat, lng], None)));
+		let on_click = leak(Closure::<dyn Fn(f64, f64)>::new(move |lat: f64, lng: f64| click(s, [lat, lng])));
 		let on_move = leak(Closure::<dyn Fn(f64, f64, f64, f64)>::new(move |lat: f64, lng: f64, x: f64, y: f64| {
 			let text = s.heavy.with_value(|h| {
 				let m = h.model.as_ref()?;
-				let i = m.cell_at(lat, lng, &h.shown)?;
-				Some(m.tooltip(i, &h.press, &h.unmet))
+				let i = m.cell_at([lat, lng], &h.shown)?;
+				// read only under a demand, which is when it is there
+				Some(m.tooltip(i, &h.press, h.unmet.as_deref().unwrap_or(&[])))
 			});
 			s.tip.set(text.map(|text| Tip { text, x, y }));
 		}));
 		let on_out = leak(Closure::<dyn Fn()>::new(move || s.tip.set(None)));
 		let on_pin = leak(Closure::<dyn Fn(String)>::new(move |id: String| s.open(&id)));
-		// the marker order is the payload's own, so the index needs no lookup
-		let on_poi = leak(Closure::<dyn Fn(usize)>::new(move |i: usize| s.focus.set(i)));
-		// a marker eats the map's `mousemove`, so without this the tooltip a cell was showing simply
-		// stops on whatever it last said
-		let on_over = leak(Closure::<dyn Fn(usize, f64, f64)>::new(move |i: usize, x: f64, y: f64| {
-			let text = s.heavy.with_value(|h| Some(h.model.as_ref()?.payload.trade.as_ref()?.pois[i].poi.name.clone()));
-			s.tip.set(text.map(|text| Tip { text, x, y }));
+		let emit = leak(Closure::<dyn Fn(JsValue)>::new(move |e: JsValue| {
+			let e = String::from(js_sys::JSON::stringify(&e).expect("the overlay tells plain data"));
+			match serde_json::from_str::<Told>(&e).expect("the overlay tells its own Event") {
+				Told::Legend(l) => s.legend.set(Some(l)),
+				Told::Data(_) | Told::Notice(_) => {}
+			}
 		}));
-
-		let on_view = leak(Closure::<dyn Fn(f64, f64, f64, f64)>::new(move |w: f64, so: f64, e: f64, n: f64| s.view.set(Some([w, so, e, n]))));
 
 		let (c, zoom) = (model.payload.center, model.payload.zoom);
 		let map = mount_js(el, c[0], c[1], zoom, &on_click, &on_move, &on_out, &on_pin).await;
@@ -1354,9 +1205,7 @@ mod imp {
 			s.banner.set(Some(msg));
 			return false;
 		}
-		let scene = Scene::attach(&map, &on_view, Some(on_poi), Some(on_over), Some(on_out.clone()));
-		scene.opacity(s.opacity.get_untracked());
-		s.heavy.update_value(|h| h.scene = Some(scene));
+		OVERLAY.with(|o| assert!(o.set(Overlay::new(map, emit)).is_ok(), "mounted once"));
 		s.mounted.set(true);
 		true
 	}

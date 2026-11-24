@@ -4,7 +4,11 @@
 mod held;
 mod settings;
 
-use std::path::{Path, PathBuf};
+use std::{
+	net::SocketAddr,
+	path::{Path, PathBuf},
+	sync::Arc,
+};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use eyre::{Result, WrapErr};
@@ -56,6 +60,17 @@ enum Cmd {
 		#[arg(short, long)]
 		out: Option<PathBuf>,
 	},
+	/// The GUI: every location under every category in its country, and each location on its own,
+	/// picked side by side in the page, on Google Maps (settings' `maps_key`), at 127.0.0.1
+	View {
+		#[command(flatten)]
+		at: Pair,
+		#[arg(long)]
+		port: u16,
+		/// Where `wasm-bindgen` put the client, as `pkg/`
+		#[arg(long)]
+		site: PathBuf,
+	},
 	/// Print a document's JSON schema. What the tool's own settings look like is `config schema` — a
 	/// study is the question, the settings are what asking it costs
 	Schema { doc: Doc },
@@ -88,8 +103,11 @@ fn main() -> Result<()> {
 		AppConfig::handle_settings_command(cmd, cli.settings);
 	}
 	let cfg = AppConfig::try_build(cli.settings)?;
-	let dir = v_utils::xdg_cache_dir!("");
-	let work = Work::at(&dir, Box::new(held::Copy::open(&cfg.queries_cache)?)).policy((&cfg.age).into(), (&cfg.sweep).into());
+	let works = {
+		let (dir, cfg) = (v_utils::xdg_cache_dir!(""), cfg.clone());
+		move || -> Result<Work> { Ok(Work::at(&dir, Box::new(held::Copy::open(&cfg.queries_cache)?)).policy((&cfg.age).into(), (&cfg.sweep).into())) }
+	};
+	let work = works()?;
 	match cli.cmd {
 		Cmd::Config { .. } => unreachable!("handled above, and `handle_settings_command` exits"),
 		Cmd::Schema { doc } => {
@@ -111,6 +129,12 @@ fn main() -> Result<()> {
 			let league = League::run(&pooled(&observed)?, &orderings)?;
 			report(league.stats());
 			league.check()
+		}
+		Cmd::View { at, port, site } => {
+			let key = cfg.maps_key.ok_or_else(|| eyre::eyre!("the GUI draws on Google Maps, and settings carry no `maps_key`"))?;
+			let categories = categories(&at, &work.path().join("studies"))?;
+			let locations = locations(&at, &work)?;
+			gmaps_optimal_placement_web::serve(SocketAddr::from(([127, 0, 0, 1], port)), site, key, categories, locations, Arc::new(works))
 		}
 		Cmd::Misc { country, tally, per, floor, out } => {
 			let compiled = gmaps_optimal_placement_misc::compile(country, tally, &per, floor, &work)?;
@@ -176,6 +200,38 @@ fn studies(at: &Pair, work: &Work) -> Result<Vec<(Definition, Vec<Candidate>)>> 
 		if !out.iter().any(|(d, _)| d.id() == def.id()) {
 			out.push((def, Vec::new()));
 		}
+	}
+	Ok(out)
+}
+
+/// Every location file by its stem, then every area a host studied that no file has. Two areas can
+/// share a slug — a city's viewport and the conductor's circle in it — so those are told apart by
+/// their kind and the first 8 of their id.
+fn locations(at: &Pair, work: &Work) -> Result<Vec<(String, Area, Vec<Candidate>)>> {
+	let mut out = Vec::new();
+	for l in files(&at.locations)? {
+		let Location { area, candidates } = read_toml(&l)?;
+		out.push((l.file_stem().expect("a *.toml has a stem").to_string_lossy().into_owned(), area, candidates));
+	}
+	let files = out.len();
+	for def in studied(work)? {
+		if out.iter().any(|(_, a, _)| *a == def.area) {
+			continue;
+		}
+		let kind = match def.area {
+			Area::City { .. } => "city",
+			Area::Circle { .. } => "circle",
+		};
+		let id = Definition {
+			area: def.area.clone(),
+			category: None,
+		}
+		.id();
+		out.push((format!("{} ({kind} @{})", def.area.slug(), &id[..8]), def.area, Vec::new()));
+	}
+	out[files..].sort_by(|a, b| a.0.cmp(&b.0));
+	for (i, (l, ..)) in out.iter().enumerate() {
+		eyre::ensure!(!out[..i].iter().any(|(o, ..)| o == l), "two locations are both labelled {l:?}");
 	}
 	Ok(out)
 }

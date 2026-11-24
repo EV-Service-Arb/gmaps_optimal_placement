@@ -1,42 +1,30 @@
-# gmaps_optimal_placement_web
-
-The map. A Leptos island over a set of trades and a set of locations, and the axum server that feeds
-their product.
+The local GUI: a Leptos island over the two axes the CLI hands it, and the axum server that feeds
+their product. The CLI's `view` runs it; nothing here reads settings or knows what `Held` is.
 
 ```text
-gmaps_optimal_placement serve trades/ locations/
-        │
-        ├─ GET /              shell — the Maps bootstrap, the CSS, the island marker
-        ├─ GET /studies.json  the two axes, and the pairings the CLI prebuilt
-        ├─ GET /payload/{trade}/{location}  the evaluated study, multi-MB, built once per pairing
-        ├─ GET /place/{location}            the same city with no trade over it: the statistical
-        │                                   archive alone, and not one billed call
-        ├─ GET /find/{location}?q=          the one place a search names in that city's frame, as
-        │                                   cached and as refused without `--spend-real-quota-i-am-certain` as any
-        │                                   Places answer
-        ├─ GET /pkg/*         the client wasm
-        ├─ GET /mfe/*         the overlay module a host page imports
-        └─ /api/*             server fns: the pin file under XDG_DATA_HOME,
-                              the key bindings under XDG_CONFIG_HOME
+gmaps_optimal_placement view [-c ..] [-l ..] --port <p> --site <dir>
+        │   categories, locations, and a Work per build — the CLI's
+        ▼
+   serve ─┬─ GET /                            shell — the Maps bootstrap, the CSS, the island
+          ├─ GET /studies.json                the two axes, by the labels the picker shows
+          ├─ GET /payload/{category}/{location}  load(def, candidates)?.build(&work), once per pairing
+          ├─ GET /place/{location}            the same with no category: the grid alone
+          ├─ GET /pkg/*                       the client wasm (`hydrate`), built apart from the server (`ssr`)
+          └─ /api/*                           server fns: pins under XDG_DATA_HOME, keys under XDG_CONFIG_HOME
 ```
 
-`--behind-conductor` drops `/`, `/pkg` and `/api`; everything left but `/mfe/*` needs the
-conductor's assertion.
-
-The trade field ends in one row the server has no file for: taking it opens the location by itself.
-λ, the tier weights and both sweeps are then disabled rather than hidden — the panel is what says
-what a trade would buy.
+A build is the library's `load` and `build` on a blocking thread, over a fresh `Work`, exactly as
+the conductor builds its own: nothing is bought, and what is not held is the payload's notice.
 
 A tab is one study's `Model` plus the controls as they stood when it was last left. Switching writes
-the live signals into the tab being left and reads the next one into them; `press` and `unmet` are
-recomputed rather than stored, because they are functions of λ and the tier weights. There is one
-`google.maps` instance for the page's whole life — the scene and the pins each replace what is
-there, so a switch needs no teardown.
+the live signals into the tab being left and reads the next one into them. There is one
+`google.maps` instance and one `gmaps_optimal_placement_overlay::Overlay` on it for the page's
+whole life: a switch is the overlay shown the next payload.
 
-Rust owns every number: recompute, colourise, the capture score, the top-N sweep, every report row
-and the whole control panel. `map_core.js` owns the map instance and the pins; the heat, the
-pressure field and the competitor dots go through `gmaps_optimal_placement_overlay::Scene`, the path
-the conductor's page paints through too.
+The overlay paints the heat, the pressure field and the dots, and tells the legend; the panel is
+drawn from that and from `Summary`. The island keeps its own pressure for what the overlay does not
+do — the pin cards, the top-N sweep, the comparison, the cell tooltip — since the overlay is a
+renderer and hands none of its arrays out. `map_core.js` owns the map instance and the pins.
 
 Nothing throws across that boundary: under `panic=abort` a rejected promise reaching wasm kills the
 app, so `map_core.js`'s `mount` returns a banner string instead of the map.

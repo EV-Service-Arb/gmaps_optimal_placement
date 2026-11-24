@@ -1,6 +1,6 @@
 // The map instance and gop's own pins. What is painted over the map — the heat, the pressure field,
-// the competitor dots — is `gmaps_optimal_placement_overlay`'s, the same code the conductor loads;
-// `mount` hands it the map.
+// the competitor dots — is `gmaps_optimal_placement_overlay`'s, the renderer the conductor's map
+// paints through too; `mount`'s map is what it is handed.
 //
 // Nothing throws across the boundary: under `panic=abort` a rejected promise reaching wasm kills the
 // app, so `mount` returns a banner string instead of the map when it fails.
@@ -41,13 +41,6 @@ export function recenter(el, lat, lng, zoom) {
 	if (s.map.getZoom() === zoom && c && Math.abs(c.lat() - lat) < 1e-9 && Math.abs(c.lng() - lng) < 1e-9) return;
 	s.map.setCenter({ lat, lng });
 	s.map.setZoom(zoom);
-}
-
-/// Where a found place is, at the zoom already chosen.
-export function pan(el, lat, lng) {
-	const s = S.get(el);
-	if (!s) return;
-	s.map.panTo({ lat, lng });
 }
 
 /// The full pin set, replacing whatever is there. Every pin is clickable, whether or not it is

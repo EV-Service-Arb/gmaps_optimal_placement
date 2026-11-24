@@ -1,12 +1,10 @@
 //! Pins, their lifecycle, and the card that is now their control surface.
 //!
 //! Two lifetimes, kept apart: `core` is green, lettered and outlives the session; `temp` is yellow
-//! and does not. The one `pins[]` array the old page had mixed them, which is why "clear pins" took
-//! the study's own candidates with it, and why a free-click pin was unreachable the moment the card
-//! moved on.
+//! and does not, so clearing the sweep never takes a candidate with it.
 //!
 //! ```text
-//!   study.nix   candidate = [ … ]         ← committed, arguable, in git
+//!   locations/<l>.toml  [[candidate]]     ← committed, arguable, in git
 //!        │
 //!        │   $XDG_DATA_HOME/gmaps_optimal_placement/pins-<study>.json
 //!        ├── minus  hidden   ← ✕ on a config pin
@@ -15,14 +13,14 @@
 //!   effective green set → lettered A,B,C…
 //! ```
 //!
-//! The study file stays the committed seed and the XDG file is a diff over it: candidates are part
+//! The location file stays the committed seed and the XDG file is a diff over it: candidates are part
 //! of the study's question, so they do not move out wholesale — but every one is removable and every
 //! promotion lands outside the study file. Data, not cache: a promoted candidate is a decision, and
 //! cache is what cleaners delete.
 #[cfg(feature = "ssr")]
 use std::path::PathBuf;
 
-use gmaps_optimal_placement_core::{Candidate, Payload, model::Report};
+use gmaps_optimal_placement_core::{Candidate, model::Report};
 pub use imp::{copy, forget, keep};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -124,7 +122,8 @@ pub async fn load_pins(study: String) -> Result<Option<PinFile>, ServerFnError> 
 }
 
 /// The green set the map opens with: the study's seed, minus `hidden`, plus `added`.
-pub async fn seed(payload: &Payload) -> Result<Vec<Pin>, String> {
+#[cfg(feature = "hydrate")]
+pub async fn seed(payload: &gmaps_optimal_placement_core::Payload) -> Result<Vec<Pin>, String> {
 	let diff = load_pins(payload.name.clone()).await.map_err(|e| e.to_string())?.unwrap_or_default();
 	let mut out: Vec<Pin> = payload.candidates.iter().filter(|c| !diff.hidden.contains(&c.name)).map(|c| green(c, true)).collect();
 	out.extend(diff.added.iter().map(|c| green(c, false)));
@@ -149,20 +148,17 @@ pub struct Pin {
 	pub at: [f64; 2],
 	/// Yellow only: the sweep's rank, or nothing for a free click.
 	pub label: Option<String>,
-	/// Yellow only: Google's address for a pin a place search put down. Not `name`, which is the
-	/// trading name the what-if is scored under.
-	pub address: Option<String>,
 	pub green: bool,
 	/// Named by the study file, rather than promoted here. Only these need confirming before a `✕`.
 	pub from_study: bool,
 }
+#[cfg(feature = "hydrate")]
 fn green(c: &Candidate, from_study: bool) -> Pin {
 	Pin {
 		id: c.name.clone(),
 		name: c.name.clone(),
 		at: c.at,
 		label: None,
-		address: None,
 		green: true,
 		from_study,
 	}
@@ -215,15 +211,12 @@ mod imp {
 		});
 	}
 
-	/// Yellow to green. The default name is the address a search found it at, or else whatever the
-	/// grid calls the cell it landed in — the one label the map already has for the place.
+	/// Yellow to green. The default name is whatever the grid calls the cell it landed in — the one
+	/// label the map already has for the place.
 	pub fn keep(state: State, pin: Pin) {
-		let default = pin.address.clone().or_else(|| {
-			state.heavy.with_value(|h| {
-				let m = h.model.as_ref()?;
-				let (mx, my) = m.to_local(pin.at[0], pin.at[1]);
-				Some(m.payload.place[m.nearest_cell(mx, my)].clone())
-			})
+		let default = state.heavy.with_value(|h| {
+			let m = h.model.as_ref()?;
+			Some(m.payload.place[m.nearest_cell(m.to_local(pin.at))].clone())
 		});
 		let Ok(Some(name)) = window().prompt_with_message_and_default("Name this candidate", &default.unwrap_or_default()) else {
 			return;
@@ -242,7 +235,6 @@ mod imp {
 				name,
 				at: pin.at,
 				label: None,
-				address: None,
 				green: true,
 				from_study: false,
 			})

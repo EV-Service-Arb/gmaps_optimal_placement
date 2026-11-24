@@ -7,6 +7,7 @@ members = [
     "gmaps_optimal_placement_overlay",
     "gmaps_optimal_placement_rank",
     "gmaps_optimal_placement_sources",
+    "gmaps_optimal_placement_web",
 ]
 resolver = "3"
 
@@ -33,8 +34,6 @@ non_kebab_case_bins = "allow"
 
 [workspace.dependencies]
 
-axum = "0.8.9"
-
 clap = "4.6.9"
 color-eyre = "0.6.5"
 csv = "1.4.0"
@@ -44,8 +43,10 @@ flate2 = "1.1.11"
 gmaps_optimal_placement = { path = "gmaps_optimal_placement", version = "0.1.0" }
 gmaps_optimal_placement_core = { path = "gmaps_optimal_placement_core", version = "0.1.0" }
 gmaps_optimal_placement_misc = { path = "gmaps_optimal_placement_misc", version = "0.1.0" }
+gmaps_optimal_placement_overlay = { path = "gmaps_optimal_placement_overlay", version = "0.1.0" }
 gmaps_optimal_placement_rank = { path = "gmaps_optimal_placement_rank", version = "0.1.0" }
 gmaps_optimal_placement_sources = { path = "gmaps_optimal_placement_sources", version = "0.1.0" }
+gmaps_optimal_placement_web = { path = "gmaps_optimal_placement_web", version = "0.1.0" }
 indexmap = { version = "2.14.2", features = ["serde"] }
 insta = "1.49.0"
 js-sys = "0.3.106"
@@ -70,3 +71,18 @@ ureq = "3.5.2"
 v_utils = { version = "=2.18.0", default-features = false, features = ["cli", "macros"] }
 wasm-bindgen = "=0.2.129"
 zip = "9.8.1"
+
+# the GUI (gmaps_optimal_placement_web): a Leptos island over the overlay, served by the CLI's `view`
+any_spawner = "0.3.0"
+axum = "0.8.9"
+console_error_panic_hook = "0.1.7"
+# `uikit_leptos` for the picker; the web crate's build script reads its class inventory and tokens
+ev_lib = { version = "0.34.2", default-features = false }
+ev_lib_classes = "0.20.0"
+gloo-net = { version = "0.6.0", features = ["http"] }
+leptos = { version = "0.8.22", features = ["islands"] }
+leptos_axum = "0.8.10"
+tower-http = { version = "0.7.1", features = ["fs", "compression-gzip"] }
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", features = ["Clipboard", "Document", "Element", "EventTarget", "HtmlElement", "HtmlInputElement", "KeyboardEvent", "Navigator", "Window"] }
+xdg = "3.0.0"
