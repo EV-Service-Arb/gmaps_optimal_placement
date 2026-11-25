@@ -52,7 +52,9 @@ documents, never to the code.
    │ gmaps_optimal_placement_cli             │
    │   view · fit · strength · misc · schema │
    │   Held: a copy of prod's panel.db,      │
-   │   its queries cache, read-only          │
+   │   its queries cache                     │
+  │   run: the conductor's pull, then those │
+  │   answers into the copy                 │
    └───────┬─────────────────────────────────┘
    ┌───────┴──────────────────────────┐
    │ gmaps_optimal_placement_rank     │
@@ -143,6 +145,9 @@ A pull is its host's. It calls `asks` — the first unanswered page of each sear
 asks again, since whether another page is behind one is known only once it is answered; once none is
 lacking it calls `build`. Placement never counts a purchase.
 
+A study run in the CLI's GUI is the conductor's pull of its whole `Definition`, at the tokens of
+whoever signed this machine in to it; the conductor need keep neither the area nor the category.
+
 `Work::since` is the pull's: an answer fetched before it is lacking. The host keeps when the first
 pull since the study's last whole one began, and forgets it once one ends whole, so what a stopped
 pull paid for is served to its retry and a refunded failure is never bought twice.
@@ -189,8 +194,8 @@ format, whole and named as passed over, from a corrupt one, an error.
 - **A billed answer is bought once, wherever it is read.** Places answers are kept in the conductor's
   queries cache (site_conductor's docs/ARCHITECTURE.md, Queries cache), prod's the one authority,
   which its `Held` reads in process; the CLI's reads a copy of prod's `panel.db` (site_conductor's
-  `prod-restore`), read-only: what the copy lacks is lacking, and the study names it. Bulk archives
-  are free and cache in the work dir alone — the INSEE
+  `prod-restore`), written only with what prod holds: what the copy lacks is lacking, and the study
+  names it. Bulk archives are free and cache in the work dir alone — the INSEE
   archive is ~87 MB. A 200 that is a refusal is never kept: it would answer for its request everywhere.
 - **Nothing in that cache expires.** An answer older than its kind's configured age is served anyway,
   and its age rides onto the map beside the imputed flag. Google's daily search quota is the scarce

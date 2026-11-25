@@ -5,16 +5,55 @@
  * gmaps_optimal_placement_core`'s.
  *
  * The pairing is one the work dir and the copy of prod's panel.db hold competitors for, picked by
- * the start of its labels: SMOKE_CATEGORY, SMOKE_LOCATION. */
+ * the start of its labels: SMOKE_CATEGORY, SMOKE_LOCATION. A run of it is bought of a conductor played
+ * here, on SMOKE_CONDUCTOR_PORT: what the server was given as `--conductor`. */
 const { spawn } = require("node:child_process");
 const assert = require("node:assert");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
+const http = require("node:http");
 
 const URL_ = process.argv[2];
 assert(URL_, "usage: node smoke.js <url>");
 const CATEGORY = process.env.SMOKE_CATEGORY || "Plombier·FR";
 const LOCATION = process.env.SMOKE_LOCATION || "lyon";
 const PORT = 9333;
+
+const conductor = { pulls: [], challenge: null };
+http.createServer(async (req, res) => {
+  const at = new URL(req.url, "http://conductor");
+  let body = "";
+  for await (const chunk of req) body += chunk;
+  const answer = (status, v, headers = {}) => { res.writeHead(status, { "content-type": "application/json", ...headers }); res.end(JSON.stringify(v)); };
+  const signedIn = req.headers.authorization === "Bearer smoke";
+  switch (req.method + " " + at.pathname.replace(/[0-9a-f]{64}$/, "KEY")) {
+    case "POST /mcp/register": return answer(201, { client_id: "smoke-client" });
+    case "GET /mcp/authorize": {
+      conductor.challenge = at.searchParams.get("code_challenge");
+      const back = new URL(at.searchParams.get("redirect_uri"));
+      back.search = new URLSearchParams({ code: "smoke-code", state: at.searchParams.get("state") });
+      return answer(303, {}, { location: back.href });
+    }
+    case "POST /mcp/token": {
+      const verifier = new URLSearchParams(body).get("code_verifier");
+      const held = crypto.createHash("sha256").update(verifier).digest("base64url") === conductor.challenge;
+      return held ? answer(200, { access_token: "smoke" }) : answer(400, { error: "invalid_grant" });
+    }
+    case "GET /api/v1/tokens": return signedIn ? answer(200, { balance: 100000, prices: { "placement.search": 8 } }) : answer(401, { error: "sign in" });
+    case "POST /api/v1/placement/pull": {
+      if (!signedIn) return answer(401, { error: "sign in" });
+      conductor.pulls.push(JSON.parse(body));
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      return res.end(":\n\nevent: pulled\ndata: {}\n\n");
+    }
+    case "GET /api/queries_cache/gop/KEY": {
+      const { lat, lng } = conductor.pulls.at(-1).area.center;
+      const places = [{ id: "smoke", displayName: { text: "Plomberie de la fumée" }, location: { latitude: lat, longitude: lng }, rating: 4.5, userRatingCount: 10 }];
+      return answer(200, { answer: { places }, fetched_at: new Date().toISOString() });
+    }
+    default: return answer(404, { error: "no such route" });
+  }
+}).listen(Number(process.env.SMOKE_CONDUCTOR_PORT), "127.0.0.1");
 
 const chrome = spawn("chromium", [
   "--headless=new", "--disable-gpu", "--no-sandbox", "--window-size=1400,900",
@@ -115,6 +154,32 @@ async function main() {
   await until("!!document.getElementById('report')", "a card for the right click", 20);
   assert(await evaluate("window.menu.defaultPrevented"), "and the browser's own menu stays shut");
   log("card:", await evaluate("document.getElementById('report').innerText.slice(0, 120)"));
+
+  // what is open is what the picker opens on
+  const run = async () => {
+    await send("Input.dispatchKeyEvent", { type: "keyDown", key: "t", text: "t" });
+    await until("!!document.querySelector('#picker')", "the picker again", 20);
+    await evaluate("[...document.querySelectorAll('#picker [data-slot=button]')].find(b => b.textContent === 'Run').click()");
+    await until("!!document.querySelector('#confirm [role=alertdialog]')", "the confirmation", 120);
+  };
+  const decide = slot => evaluate("document.querySelector('#confirm [data-slot=" + slot + "]').click()");
+  await run();
+  const asked = await evaluate("document.querySelector('#confirm [role=alertdialog]').innerText");
+  log("asked:", asked);
+  assert(/at least \d+ searches/.test(asked) && /oldest \d+ d/.test(asked) && /100000/.test(asked), "what a run buys, what it is in place of, and of what balance");
+  await decide("alert-dialog-cancel");
+  await sleep(1000);
+  assert.equal(conductor.pulls.length, 0, "a run not confirmed buys nothing");
+  await run();
+  await decide("alert-dialog-action");
+  await until("/oldest 0 d/i.test(document.querySelector('#ctl').innerText)", "a map as of the run");
+  assert.equal(conductor.pulls.length, 1, "a run is one pull");
+  assert.equal(conductor.pulls[0].category.trade.name, CATEGORY.split("·")[0], "of the pairing picked");
+  assert.equal(await evaluate("document.querySelectorAll('#tabs .tab:not(.add)').length"), 1, "in the tab it was open in");
+  assert.equal(await evaluate("document.querySelector('#banner')?.innerText ?? null"), null, "and whole");
+
+  const forged = await fetch(new URL("run/" + encodeURIComponent(CATEGORY) + "/" + LOCATION, URL_), { method: "POST", headers: { origin: "http://evil.example" } });
+  assert.equal(forged.status, 403, "another site's page runs nothing");
 
   assert.deepEqual(errors, [], "no uncaught exceptions");
   log("\nOK — all assertions passed");

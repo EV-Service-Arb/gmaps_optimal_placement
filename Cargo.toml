@@ -34,6 +34,7 @@ non_kebab_case_bins = "allow"
 
 [workspace.dependencies]
 
+base64 = "0.23.1"
 clap = "4.6.9"
 color-eyre = "0.6.5"
 csv = "1.4.0"

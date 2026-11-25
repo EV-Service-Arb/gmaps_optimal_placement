@@ -3,19 +3,22 @@ their product. The CLI's `view` runs it; nothing here reads settings or knows wh
 
 ```text
 gmaps_optimal_placement view [-c ..] --port <p> --site <dir> [--open]
-        │   categories, locations, and a Work per build — the CLI's
+        │   categories, locations, a Work per build, and who buys a run — the CLI's
         ▼
    serve ─┬─ GET /                            shell — the Maps bootstrap, the CSS, the island
           ├─ GET /studies.json                the two axes, by the labels the picker shows
           ├─ GET /payload/{category}/{location}  load(&def)?.build(&work), once per pairing
           ├─ GET /place/{location}            the same with no category: the grid alone
+          ├─ POST /quote/{category}/{location}   what a run buys at least, to be confirmed; from this page alone
+          ├─ POST /run/{category}/{location}     bought (`Buyer`), and built again; from this page alone
           ├─ GET /page                        --open: held by every page while it is open; an event closes it
           ├─ GET /pkg/*                       the client wasm (`hydrate`), built apart from the server (`ssr`)
           └─ /api/*                           server fns: the keys, under XDG_CONFIG_HOME
 ```
 
 A build is the library's `load` and `build` on a blocking thread, over a fresh `Work`, exactly as
-the conductor builds its own: nothing is bought, and what is not held is the payload's notice.
+the conductor builds its own, and what is not held is the payload's notice. A run is the `Buyer`'s and
+goes on without the page that asked for it; every payload built before it is built again when asked for.
 
 A tab is one study's `Model` plus the controls as they stood when it was last left. Switching writes
 the live signals into the tab being left and reads the next one into them. There is one

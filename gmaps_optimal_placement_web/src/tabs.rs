@@ -18,7 +18,7 @@
 //! Both fields are live at once, so a pairing is two choices in either order — which is what a step
 //! sequence could not do, having already spent the first choice by the time the second is on
 //! screen. Neither field loads anything on its own; Load spends the pair, and marks whichever
-//! field is still empty.
+//! field is still empty. Run buys the pair (`run`), then loads it. Both open on the active tab's.
 //!
 //! [`NO_TRADE`] sits at the end of the category field rather than at its head: a city on its own is the
 //! cheap question, not the usual one, and the highlight opens on whatever a field's first row is.
@@ -29,7 +29,7 @@
 #[cfg(feature = "ssr")]
 use std::path::PathBuf;
 
-use ev_lib::uikit_leptos::{Button, Command, CommandEmpty, CommandInput, CommandItem, CommandList};
+use ev_lib::uikit_leptos::{Button, ButtonVariant, Command, CommandEmpty, CommandInput, CommandItem, CommandList};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -193,13 +193,20 @@ pub fn Picker(state: State, pool: Pool) -> impl IntoView {
 	match pool {
 		Pool::Study => {
 			// the outer `None` is no pick; the inner one is NO_TRADE, the row the server has no file for
-			let trade = RwSignal::new(None::<Option<String>>);
-			let location = RwSignal::new(None::<String>);
+			let (t, l) = crate::map::at(state).unzip();
+			let (trade, location) = (RwSignal::new(t), RwSignal::new(l));
 			let tried = RwSignal::new(false);
 			let load = move |_| match (trade.get_untracked(), location.get_untracked()) {
 				(Some(trade), Some(location)) => {
 					state.picker.set(None);
 					crate::map::open(state, trade, location);
+				}
+				_ => tried.set(true),
+			};
+			let run = move |_| match (trade.get_untracked(), location.get_untracked()) {
+				(Some(trade), Some(location)) => {
+					state.picker.set(None);
+					crate::map::quote(state, (trade, location));
 				}
 				_ => tried.set(true),
 			};
@@ -264,6 +271,14 @@ pub fn Picker(state: State, pool: Pool) -> impl IntoView {
 						</CommandList>
 					</Command>
 					<Button on_click=Callback::new(load)>"Load"</Button>
+					<Button
+						variant=ButtonVariant::Outline
+						title="buy what this study is built from: a new one, or again over answers that aged"
+						disabled=Signal::derive(move || trade.with(|t| matches!(t, Some(None))))
+						on_click=Callback::new(run)
+					>
+						"Run"
+					</Button>
 				</div>
 			}
 			.into_any()

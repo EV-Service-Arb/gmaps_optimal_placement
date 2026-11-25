@@ -95,7 +95,7 @@
           wasm-bindgen --target web --out-dir ${site}/pkg --out-name gmaps_optimal_placement_web \
             target/wasm32-unknown-unknown/debug/gmaps_optimal_placement_web.wasm
         '';
-        # `dev [-c <category>] [-o]` — the GUI, from this checkout
+        # `dev [-c <category>] [-o] [--spend-real-quota-i-am-certain]` — the GUI, from this checkout
         dev = pkgs.writeShellApplication {
           name = "dev";
           runtimeInputs = with pkgs; [ rust git pkg-config openssl mold wasm-bindgen-cli tailwindcss_4 xdg-utils ];
@@ -115,9 +115,19 @@
             ${client "target/smoke"}
             cargo build -p gmaps_optimal_placement_cli # a cold compile outlasts any wait for the port
             port=${toString (SA_PORTS + 1)}
-            cargo run -p gmaps_optimal_placement_cli -- view --port "$port" --site target/smoke "$@" &
+            # a run is bought of the conductor smoke.js plays, signed in to by the opened link alone, and
+            # what it bought goes into a copy of the copy
+            own=$(mktemp -d)
+            export SMOKE_CONDUCTOR_PORT=$((port + 2))
+            cp "''${SMOKE_QUERIES_CACHE:-''${XDG_DATA_HOME:-$HOME/.local/share}/gmaps_optimal_placement/panel.db}" "$own/panel.db"
+            # shellcheck disable=SC2016
+            printf '#!/bin/sh\nexec curl -sfL -o /dev/null "$1"\n' > "$own/xdg-open"
+            chmod +x "$own/xdg-open"
+            PATH="$own:$PATH" XDG_STATE_HOME="$own" cargo run -p gmaps_optimal_placement_cli -- \
+              --queries-cache "$own/panel.db" --conductor "http://127.0.0.1:$SMOKE_CONDUCTOR_PORT" \
+              view --port "$port" --site target/smoke "$@" &
             server=$!
-            trap 'kill $server 2>/dev/null || true' EXIT
+            trap 'kill $server 2>/dev/null || true; rm -rf "$own"' EXIT
             up=
             for _ in $(seq 120); do
               curl -sf -o /dev/null "http://127.0.0.1:$port/pkg/gmaps_optimal_placement_web.js" && { up=1; break; }
@@ -132,11 +142,12 @@
           name = "help";
           text = ''
             cat <<'EOF'
-            nix run .#dev -- [-c <category>] [-o | --open]
+            nix run .#dev -- [-c <category>] [-o | --open] [--spend-real-quota-i-am-certain]
                                             the GUI on 127.0.0.1:${toString SA_PORTS}: every area the work dir's
                                             studies are over, under every category they carry, or on its own;
                                             category and location are picked side by side, `t` opens another
-                                            as a tab over the same map. Buys nothing: what is not held is named.
+                                            as a tab over the same map. What is not held is named; Run has the
+                                            conductor buy it, confirmed first unless --spend-real-quota-i-am-certain.
                                             --open: in the default browser; closing it there ends the server,
                                             ^C closes it there
             nix run .#smoke                 the GUI in headless Chromium: pick a pairing, see the map paint;

@@ -875,6 +875,7 @@ dependencies = [
  "cookie",
  "document-features",
  "idna",
+ "indexmap",
  "log",
  "publicsuffix",
  "serde",
@@ -2282,6 +2283,7 @@ dependencies = [
 name = "gmaps_optimal_placement_cli"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "clap",
  "color-eyre",
  "eyre",
@@ -2299,6 +2301,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "smart-default",
+ "ureq",
  "v_utils",
 ]
 
@@ -5626,11 +5629,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ac5cecf619ca81f66a96482db09687c9f7465af65f4300a8c30cca05bd5a59d"
 dependencies = [
  "base64 0.23.1",
+ "cookie_store",
  "flate2",
  "log",
  "percent-encoding",
  "rustls",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "ureq-proto",
  "utf8-zero",
  "webpki-roots",

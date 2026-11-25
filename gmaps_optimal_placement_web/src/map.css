@@ -49,5 +49,6 @@ td{padding:1px 0;vertical-align:top}
 td:last-child{text-align:right;color:#fff;font-variant-numeric:tabular-nums;white-space:nowrap}
 .k{color:#8fa3c8}
 .sw{display:inline-block;width:9px;height:9px;border-radius:50%;border:1px solid #fff;vertical-align:-1px}
-/* the picker is uikit's, and the page ships no preflight: this is the part of one its controls need */
-#picker :where(button,input){margin:0;padding:0;border:0 solid;background:transparent;color:inherit;font:inherit}
+/* the picker and the confirmation are uikit's, and the page ships no preflight: this is the part of one their controls need */
+#confirm :where(h2,p){margin:0}
+:is(#picker,#confirm) :where(button,input){margin:0;padding:0;border:0 solid;background:transparent;color:inherit;font:inherit}

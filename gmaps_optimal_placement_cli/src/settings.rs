@@ -21,6 +21,8 @@ pub struct AppConfig {
 	pub queries_cache: PathBuf,
 	/// A Google Maps JavaScript API key, for the GUI's map.
 	pub maps_key: Option<String>,
+	/// The conductor's origin, which buys a study run in the GUI.
+	pub conductor: Option<String>,
 }
 
 /// How old an answer may get before the map says so. Nothing is evicted and nothing is refetched:

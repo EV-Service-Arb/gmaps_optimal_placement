@@ -5,6 +5,7 @@
     inventory = "1w";
     ordering = "1y";
   };
+  conductor = "https://sa.evinvest.ltd"; # buys a study run in the GUI
   maps_key = { env = "GOOGLE_MAPS_KEY"; };
   # a copy of prod's panel.db: site_conductor's `nix run .#prod-restore -- panel-data/panel.db=<this>`
   queries_cache = "/home/v/.local/share/gmaps_optimal_placement/panel.db";

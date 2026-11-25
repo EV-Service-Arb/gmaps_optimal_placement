@@ -9,13 +9,17 @@ use gmaps_optimal_placement_core::{
 	model::{Report, Summary, fmt},
 };
 use gmaps_optimal_placement_overlay::Legend;
-pub use imp::{activate, close, open};
+pub use imp::{activate, at, close, open, quote, run};
 use leptos::prelude::*;
 
 use crate::{
 	pins::Pin,
+	run::Quote,
 	tabs::{Keymap, Pool},
 };
+
+/// A pairing, by its labels; no category is the location on its own.
+type At = (Option<String>, String);
 
 /// One study, as the controls stood when its tab was last left. `activate` swaps this against the
 /// live signals; the map instance underneath is never rebuilt.
@@ -57,6 +61,11 @@ pub struct State {
 	pub categories: RwSignal<Vec<String>>,
 	pub locations: RwSignal<Vec<String>>,
 	pub picker: RwSignal<Option<Pool>>,
+	/// A run and what it buys, until it is confirmed or not.
+	pub confirm: RwSignal<Option<(At, Quote)>>,
+	/// The server was told a run needs no confirming.
+	#[cfg(feature = "hydrate")]
+	pub certain: RwSignal<bool>,
 	pub settings: RwSignal<bool>,
 	pub keys: RwSignal<Keymap>,
 	/// Which binding the settings panel is waiting on. A clicked button does not take focus in every
@@ -99,6 +108,9 @@ impl State {
 			categories: RwSignal::new(Vec::new()),
 			locations: RwSignal::new(Vec::new()),
 			picker: RwSignal::new(None),
+			confirm: RwSignal::new(None),
+			#[cfg(feature = "hydrate")]
+			certain: RwSignal::new(false),
 			settings: RwSignal::new(false),
 			keys: RwSignal::new(Keymap::default()),
 			arming: RwSignal::new(None),
@@ -211,6 +223,9 @@ pub fn MapView() -> impl IntoView {
 		<div id="map"></div>
 		{move || s.picker.get().map(|pool| view! { <crate::tabs::Picker state=s pool=pool /> })}
 		{move || s.settings.get().then(|| view! { <crate::tabs::Settings state=s /> })}
+		{move || {
+			s.confirm.get().map(|(at, quote)| view! { <crate::run::Confirm state=s at=at quote=quote /> })
+		}}
 		{move || s.banner.get().map(|b| view! { <div id="banner">{b}</div> })}
 
 		<div class="panel" id="ctl">
@@ -543,6 +558,11 @@ mod imp {
 	/// Server-side the island renders its empty shell; nothing runs until the wasm lands.
 	pub fn wire(_: State) {}
 	pub fn open(_: State, _: Option<String>, _: String) {}
+	pub fn at(_: State) -> Option<(Option<String>, String)> {
+		None
+	}
+	pub fn quote(_: State, _: (Option<String>, String)) {}
+	pub fn run(_: State, _: (Option<String>, String)) {}
 	pub fn activate(_: State, _: usize) {}
 	pub fn close(_: State, _: usize) {}
 }
@@ -557,7 +577,7 @@ mod imp {
 	use wasm_bindgen::{closure::WasmClosure, prelude::*};
 
 	use super::{State, Tab};
-	use crate::{pins::Pin, tabs::Pool};
+	use crate::{pins::Pin, run::Quote, tabs::Pool};
 
 	const YELLOW: &str = "#ffd400";
 
@@ -676,6 +696,7 @@ mod imp {
 	struct Axes {
 		categories: Vec<String>,
 		locations: Vec<String>,
+		certain: bool,
 	}
 
 	/// The axes and the saved keys; the first study is picked the way every later one is.
@@ -686,6 +707,7 @@ mod imp {
 		};
 		s.categories.set(served.categories);
 		s.locations.set(served.locations);
+		s.certain.set(served.certain);
 		match crate::tabs::load_keys().await {
 			Ok(Some(k)) => s.keys.set(k),
 			Ok(None) => {}
@@ -694,9 +716,8 @@ mod imp {
 		s.picker.set(Some(Pool::Study));
 	}
 
-	/// Fetch a study, build its `Model`, and give it a tab. Mounts the map on the first one.
-	async fn add(s: State, at: (Option<String>, String)) -> Option<usize> {
-		let tab = fetch(s, at).await?;
+	/// Open a study's tab. Mounts the map on the first one.
+	async fn add(s: State, tab: Tab) -> Option<usize> {
 		let model = tab.model.clone();
 		s.tabs.update(|v| v.push(tab));
 		if !s.mounted.get_untracked() && !mount(s, &model).await {
@@ -709,17 +730,28 @@ mod imp {
 	async fn fetch(s: State, at: (Option<String>, String)) -> Option<Tab> {
 		// a pairing the server has not built yet reads the grid archive and every POI page, which is
 		// tens of seconds of nothing to look at
-		let shown = match &at.0 {
-			Some(t) => format!("{t} in {}", at.1),
-			None => at.1.clone(),
-		};
-		s.banner.set(Some(format!("building {shown} …")));
-		let location = js_sys::encode_uri_component(&at.1);
+		s.banner.set(Some(format!("building {} …", named(&at))));
 		let url = match &at.0 {
-			Some(t) => format!("/payload/{}/{location}", js_sys::encode_uri_component(t)),
-			None => format!("/place/{location}"),
+			Some(t) => pair("payload", t, &at.1),
+			None => format!("/place/{}", js_sys::encode_uri_component(&at.1)),
 		};
-		let built = text(&url).await.and_then(|json| {
+		built(s, at, text(gloo_net::http::Request::get(&url)).await)
+	}
+
+	fn named((trade, location): &(Option<String>, String)) -> String {
+		match trade {
+			Some(t) => format!("{t} in {location}"),
+			None => location.clone(),
+		}
+	}
+
+	fn pair(route: &str, trade: &str, location: &str) -> String {
+		format!("/{route}/{}/{}", js_sys::encode_uri_component(trade), js_sys::encode_uri_component(location))
+	}
+
+	/// The tab of what the server answered for `at`; the banner, where that is none.
+	fn built(s: State, at: (Option<String>, String), answer: Result<String, String>) -> Option<Tab> {
+		let built = answer.and_then(|json| {
 			let payload = serde_json::from_str(&json).map_err(|e| format!("it did not parse — {e}"))?;
 			let model = gmaps_optimal_placement_core::Model::try_new(payload).map_err(|e| format!("{e:#}"))?;
 			Ok((Rc::<str>::from(json), Rc::new(model)))
@@ -727,7 +759,7 @@ mod imp {
 		let (json, model) = match built {
 			Ok(b) => b,
 			Err(e) => {
-				s.banner.set(Some(format!("⚠ {shown} — {e}")));
+				s.banner.set(Some(format!("⚠ {} — {e}", named(&at))));
 				return None;
 			}
 		};
@@ -800,7 +832,56 @@ mod imp {
 				return activate(s, i);
 			}
 			stash(s);
-			if let Some(i) = add(s, at).await {
+			let Some(tab) = fetch(s, at).await else { return };
+			if let Some(i) = add(s, tab).await {
+				adopt(s, i);
+			}
+		});
+	}
+
+	/// The active tab's pairing.
+	pub fn at(s: State) -> Option<(Option<String>, String)> {
+		s.tabs.with_untracked(|v| Some(v.get(s.active.get_untracked())?.at.clone()))
+	}
+
+	/// What a run of `at` buys, to be confirmed; run at once where the server was told it is certain.
+	pub fn quote(s: State, at: (Option<String>, String)) {
+		wasm_bindgen_futures::spawn_local(async move {
+			let trade = at.0.clone().expect("Run is disabled without a category");
+			s.banner.set(Some(format!("pricing {} …", named(&at))));
+			let quote = text(gloo_net::http::Request::post(&pair("quote", &trade, &at.1)))
+				.await
+				.and_then(|json| serde_json::from_str::<Quote>(&json).map_err(|e| format!("it did not parse — {e}")));
+			match quote {
+				Err(e) => s.banner.set(Some(format!("⚠ {} — {e}", named(&at)))),
+				Ok(_) if s.certain.get_untracked() => run(s, at),
+				Ok(quote) => {
+					s.banner.set(None);
+					s.confirm.set(Some((at, quote)));
+				}
+			}
+		});
+	}
+
+	/// `at` bought, into its tab.
+	pub fn run(s: State, at: (Option<String>, String)) {
+		wasm_bindgen_futures::spawn_local(async move {
+			let trade = at.0.clone().expect("Run is disabled without a category");
+			s.banner.set(Some(format!("running {}: the conductor buys it, which takes minutes …", named(&at))));
+			let answer = text(gloo_net::http::Request::post(&pair("run", &trade, &at.1))).await;
+			let Some(tab) = built(s, at.clone(), answer) else { return };
+			stash(s);
+			let i = match s.tabs.with_untracked(|v| v.iter().position(|t| t.at == at)) {
+				Some(i) => {
+					s.tabs.update(|v| {
+						let (pins, hide_imputed) = (std::mem::take(&mut v[i].pins), v[i].hide_imputed);
+						v[i] = Tab { pins, hide_imputed, ..tab };
+					});
+					Some(i)
+				}
+				None => add(s, tab).await,
+			};
+			if let Some(i) = i {
 				adopt(s, i);
 			}
 		});
@@ -864,6 +945,7 @@ mod imp {
 		if k == "Escape" {
 			s.arming.set(None);
 			s.picker.set(None);
+			s.confirm.set(None);
 			s.settings.set(false);
 			return;
 		}
@@ -877,7 +959,7 @@ mod imp {
 			}
 			return;
 		}
-		if s.picker.get_untracked().is_some() {
+		if s.picker.get_untracked().is_some() || s.confirm.get_untracked().is_some() {
 			return;
 		}
 		if ev
@@ -937,11 +1019,11 @@ mod imp {
 	}
 
 	async fn get<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
-		serde_json::from_str(&text(url).await?).map_err(|e| format!("it did not parse — {e}"))
+		serde_json::from_str(&text(gloo_net::http::Request::get(url)).await?).map_err(|e| format!("it did not parse — {e}"))
 	}
 
-	async fn text(url: &str) -> Result<String, String> {
-		match gloo_net::http::Request::get(url).send().await {
+	async fn text(req: gloo_net::http::RequestBuilder) -> Result<String, String> {
+		match req.send().await {
 			Err(e) => Err(e.to_string()),
 			Ok(r) if !r.ok() => Err(r.text().await.unwrap_or_else(|_| r.status_text())),
 			Ok(r) => r.text().await.map_err(|e| format!("it never arrived whole — {e}")),

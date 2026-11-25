@@ -1,6 +1,6 @@
 //! What the CLI holds of the billed answers: a copy of prod's `panel.db`, the conductor's queries
-//! cache (`sa_core::queries_cache`), opened read-only. Taken by site_conductor's `prod-restore`; the
-//! CLI buys nothing, so it has nothing to give back.
+//! cache (`sa_core::queries_cache`), opened read-only. Taken by site_conductor's `prod-restore`, and
+//! given, whole and at once, what a run had the conductor buy ([`keep`]).
 use std::{
 	path::Path,
 	time::{Duration, SystemTime},
@@ -20,7 +20,7 @@ impl Copy {
 			"no copy of prod's panel.db at {} (site_conductor's `nix run .#prod-restore` takes one)",
 			path.display()
 		);
-		// immutable: a copy nobody writes, so no lock and no WAL index is asked of its directory
+		// immutable: a file nobody writes, so no lock and no WAL index is asked of its directory
 		let uri = format!(
 			"file:{}?mode=ro&immutable=1",
 			path.display().to_string().replace('%', "%25").replace('?', "%3f").replace('#', "%23")
@@ -28,6 +28,31 @@ impl Copy {
 		let db = Connection::open_with_flags(uri, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI).wrap_err_with(|| format!("opening {}", path.display()))?;
 		Ok(Self(db))
 	}
+}
+
+/// An answer of the conductor's.
+pub struct Answer {
+	pub request: String,
+	pub answer: String,
+	pub fetched_us: i64,
+}
+
+/// `answers` into the copy at `path`, by a new file in its place: one open on the old reads it whole.
+pub fn keep(path: &Path, answers: &[Answer]) -> Result<()> {
+	let part = path.with_extension("part");
+	std::fs::copy(path, &part).wrap_err_with(|| format!("copying {}", path.display()))?;
+	let mut db = Connection::open(&part).wrap_err_with(|| format!("opening {}", part.display()))?;
+	let tx = db.transaction()?;
+	for a in answers {
+		tx.execute(
+			"INSERT OR REPLACE INTO queries_cache (scheme, key, answer, request, fetched_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+			(Scheme::Gop.as_str(), &Key::of(&a.request).0[..], &a.answer, &a.request, a.fetched_us),
+		)
+		.wrap_err_with(|| format!("keeping an answer in {}", part.display()))?;
+	}
+	tx.commit()?;
+	db.close().map_err(|(_, e)| e).wrap_err_with(|| format!("closing {}", part.display()))?;
+	std::fs::rename(&part, path).wrap_err_with(|| format!("renaming {} into place", part.display()))
 }
 
 impl Held for Copy {
@@ -82,7 +107,23 @@ mod tests {
 		let held = Copy::open(&path).unwrap();
 		assert_eq!(held.held(&ask("kept")).unwrap(), Some((serde_json::json!({"places": []}), fetched)));
 		assert_eq!(held.held(&ask("missing")).unwrap(), None);
-		drop(held);
+		keep(
+			&path,
+			&[Answer {
+				request: gop(SEARCH_TEXT, &ask("missing").body),
+				answer: "{}".into(),
+				fetched_us: 1,
+			}],
+		)
+		.unwrap();
+		let kept = Copy::open(&path).unwrap();
+		assert_eq!(
+			kept.held(&ask("missing")).unwrap(),
+			Some((serde_json::json!({}), SystemTime::UNIX_EPOCH + Duration::from_micros(1)))
+		);
+		assert_eq!(kept.held(&ask("kept")).unwrap(), Some((serde_json::json!({"places": []}), fetched)));
+		assert_eq!(held.held(&ask("missing")).unwrap(), None, "open on the file it was");
+		drop((held, kept));
 		for suffix in ["", "-wal", "-shm"] {
 			match std::fs::remove_file(format!("{}{suffix}", path.display())) {
 				Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("removing the test's copy: {e}"),

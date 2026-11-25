@@ -1,13 +1,14 @@
 #![feature(default_field_values)]
 #![doc = include_str!("../README.md")]
 
+mod conductor;
 mod held;
 mod settings;
 
 use std::{
 	net::SocketAddr,
 	path::{Path, PathBuf},
-	sync::Arc,
+	sync::{Arc, Mutex},
 };
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -72,6 +73,9 @@ enum Cmd {
 		/// Open it in the default browser; closing it there ends this, and SIGINT closes it there
 		#[arg(short, long)]
 		open: bool,
+		/// Run a study without asking first what it buys
+		#[arg(long)]
+		spend_real_quota_i_am_certain: bool,
 	},
 	/// Print a document's JSON schema. What the tool's own settings look like is `config schema` — a
 	/// study is the question, the settings are what asking it costs
@@ -127,11 +131,26 @@ fn main() -> Result<()> {
 			report(league.stats());
 			league.check()
 		}
-		Cmd::View { of, port, site, open } => {
+		Cmd::View {
+			of,
+			port,
+			site,
+			open,
+			spend_real_quota_i_am_certain: certain,
+		} => {
 			let key = cfg.maps_key.ok_or_else(|| eyre::eyre!("the GUI draws on Google Maps, and settings carry no `maps_key`"))?;
 			let studied = studied(&work.path().join("studies"))?;
 			let (categories, locations) = (categories(&of, &studied)?, locations(&studied));
-			gmaps_optimal_placement_web::serve(SocketAddr::from(([127, 0, 0, 1], port)), site, key, categories, locations, Arc::new(works), open)
+			let works: gmaps_optimal_placement_web::Works = Arc::new(works);
+			let buyer = Arc::new(conductor::Conductor {
+				origin: cfg.conductor,
+				session: v_utils::xdg_state_file!("conductor_session"),
+				copy: cfg.queries_cache,
+				dir: work.path().to_owned(),
+				works: works.clone(),
+				turn: Mutex::default(),
+			});
+			gmaps_optimal_placement_web::serve(SocketAddr::from(([127, 0, 0, 1], port)), site, key, categories, locations, works, buyer, certain, open)
 		}
 		Cmd::Misc { country, tally, per, floor, out } => {
 			let compiled = gmaps_optimal_placement_misc::compile(country, tally, &per, floor, &work)?;
