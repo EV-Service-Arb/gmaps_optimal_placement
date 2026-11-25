@@ -95,10 +95,10 @@
           wasm-bindgen --target web --out-dir ${site}/pkg --out-name gmaps_optimal_placement_web \
             target/wasm32-unknown-unknown/debug/gmaps_optimal_placement_web.wasm
         '';
-        # `view [-c <category>]` — the GUI, from this checkout
-        view = pkgs.writeShellApplication {
-          name = "view";
-          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold wasm-bindgen-cli tailwindcss_4 ];
+        # `dev [-c <category>] [-o]` — the GUI, from this checkout
+        dev = pkgs.writeShellApplication {
+          name = "dev";
+          runtimeInputs = with pkgs; [ rust git pkg-config openssl mold wasm-bindgen-cli tailwindcss_4 xdg-utils ];
           text = ''
             cd "$(git rev-parse --show-toplevel)"
             ${client "target/site"}
@@ -125,17 +125,22 @@
             done
             [ -n "$up" ] || { echo "server never came up" >&2; exit 1; }
             node examples/smoke.js "http://127.0.0.1:$port/"
+            node examples/smoke_open.js target/debug/gmaps_optimal_placement view --port "$((port + 1))" --site target/smoke "$@"
           '';
         };
         help = pkgs.writeShellApplication {
           name = "help";
           text = ''
             cat <<'EOF'
-            nix run -- [-c <category>]      the GUI on 127.0.0.1:${toString SA_PORTS}: every area the work dir's
+            nix run .#dev -- [-c <category>] [-o | --open]
+                                            the GUI on 127.0.0.1:${toString SA_PORTS}: every area the work dir's
                                             studies are over, under every category they carry, or on its own;
                                             category and location are picked side by side, `t` opens another
-                                            as a tab over the same map. Buys nothing: what is not held is named
-            nix run .#smoke                 the GUI in headless Chromium: pick a pairing, see the map paint
+                                            as a tab over the same map. Buys nothing: what is not held is named.
+                                            --open: in the default browser; closing it there ends the server,
+                                            ^C closes it there
+            nix run .#smoke                 the GUI in headless Chromium: pick a pairing, see the map paint;
+                                            what --open ties together
             nix run .#misc <country> <tally>  which towns in a country to write a study about at all:
                                             pool | building | parcel per --per column, --floor to skip hamlets
             nix run .#help                  this
@@ -148,7 +153,7 @@
       in
       {
         apps = {
-          default = { type = "app"; program = pkgs.lib.getExe view; };
+          dev = { type = "app"; program = pkgs.lib.getExe dev; };
           smoke = { type = "app"; program = pkgs.lib.getExe smoke; };
           misc = { type = "app"; program = pkgs.lib.getExe misc; };
           help = { type = "app"; program = pkgs.lib.getExe help; };

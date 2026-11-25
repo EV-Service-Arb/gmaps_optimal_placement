@@ -21,7 +21,8 @@ From a checkout, the GUI on 127.0.0.1:52850: pick a category and a location side
 another as a tab, `f` to find an open one. Right-click the map for a pin and its report.
 
 ```sh
-nix run                      # every location under every category the work dir carries
-nix run -- -c gcid:plumber
+nix run .#dev                # every location under every category the work dir carries
+nix run .#dev -- -c gcid:plumber
+nix run .#dev -- --open      # in the browser: closing it there ends the server, ^C closes it there
 nix run .#help
 ```

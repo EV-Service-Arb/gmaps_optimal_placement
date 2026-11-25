@@ -5,7 +5,7 @@ panel-data/panel.db=<path>` takes it), opened read-only: it reads what the condu
 when each was fetched, and buys nothing.
 
 ```sh
-gmaps_optimal_placement view     [-c <category>] --port <p> --site <dir> # the GUI
+gmaps_optimal_placement view     [-c <category>] --port <p> --site <dir> [-o] # the GUI
 gmaps_optimal_placement fit      [-c <category>]                         # refit rank::COEF
 gmaps_optimal_placement strength [-c <category>]                         # cross-validate the entrants
 gmaps_optimal_placement misc <country> <tally>                           # which towns are worth a study

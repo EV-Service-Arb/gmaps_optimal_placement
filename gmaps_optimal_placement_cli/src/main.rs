@@ -69,6 +69,9 @@ enum Cmd {
 		/// Where `wasm-bindgen` put the client, as `pkg/`
 		#[arg(long)]
 		site: PathBuf,
+		/// Open it in the default browser; closing it there ends this, and SIGINT closes it there
+		#[arg(short, long)]
+		open: bool,
 	},
 	/// Print a document's JSON schema. What the tool's own settings look like is `config schema` — a
 	/// study is the question, the settings are what asking it costs
@@ -124,11 +127,11 @@ fn main() -> Result<()> {
 			report(league.stats());
 			league.check()
 		}
-		Cmd::View { of, port, site } => {
+		Cmd::View { of, port, site, open } => {
 			let key = cfg.maps_key.ok_or_else(|| eyre::eyre!("the GUI draws on Google Maps, and settings carry no `maps_key`"))?;
 			let studied = studied(&work.path().join("studies"))?;
 			let (categories, locations) = (categories(&of, &studied)?, locations(&studied));
-			gmaps_optimal_placement_web::serve(SocketAddr::from(([127, 0, 0, 1], port)), site, key, categories, locations, Arc::new(works))
+			gmaps_optimal_placement_web::serve(SocketAddr::from(([127, 0, 0, 1], port)), site, key, categories, locations, Arc::new(works), open)
 		}
 		Cmd::Misc { country, tally, per, floor, out } => {
 			let compiled = gmaps_optimal_placement_misc::compile(country, tally, &per, floor, &work)?;

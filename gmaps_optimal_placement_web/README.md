@@ -2,13 +2,14 @@ The local GUI: a Leptos island over the two axes the CLI hands it, and the axum 
 their product. The CLI's `view` runs it; nothing here reads settings or knows what `Held` is.
 
 ```text
-gmaps_optimal_placement view [-c ..] --port <p> --site <dir>
+gmaps_optimal_placement view [-c ..] --port <p> --site <dir> [--open]
         │   categories, locations, and a Work per build — the CLI's
         ▼
    serve ─┬─ GET /                            shell — the Maps bootstrap, the CSS, the island
           ├─ GET /studies.json                the two axes, by the labels the picker shows
           ├─ GET /payload/{category}/{location}  load(&def)?.build(&work), once per pairing
           ├─ GET /place/{location}            the same with no category: the grid alone
+          ├─ GET /page                        --open: held by every page while it is open; an event closes it
           ├─ GET /pkg/*                       the client wasm (`hydrate`), built apart from the server (`ssr`)
           └─ /api/*                           server fns: the keys, under XDG_CONFIG_HOME
 ```

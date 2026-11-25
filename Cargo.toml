@@ -40,6 +40,7 @@ csv = "1.4.0"
 evalexpr = "13.1.0"
 eyre = "0.6.14"
 flate2 = "1.1.11"
+futures-util = { version = "0.3.34", default-features = false }
 gmaps_optimal_placement = { path = "gmaps_optimal_placement", version = "0.1.0" }
 gmaps_optimal_placement_core = { path = "gmaps_optimal_placement_core", version = "0.1.0" }
 gmaps_optimal_placement_misc = { path = "gmaps_optimal_placement_misc", version = "0.1.0" }
@@ -61,7 +62,7 @@ serde_json = "1.0.154"
 sha2 = "0.11.1"
 smart-default = "0.7.1"
 strum = { version = "0.28.0", features = ["derive"] }
-tokio = { version = "1.54.1", features = ["net", "rt-multi-thread", "sync"] }
+tokio = { version = "1.54.1", features = ["macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "1.2.1"
 # core's types in the overlay's .d.ts
 tsify = "0.5.8"

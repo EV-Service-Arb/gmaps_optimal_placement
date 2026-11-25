@@ -3,13 +3,24 @@
 //!
 //! `LeptosOptions` is built here rather than read from `Cargo.toml`: this ships inside the CLI,
 //! which runs from wherever it is, and its `--port` has to win over a manifest it may never see.
-use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, convert::Infallible, net::SocketAddr, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
 
-use axum::{Router, extract::Path as UrlPath, http::StatusCode, routing::get};
+use axum::{
+	Router,
+	extract::Path as UrlPath,
+	http::StatusCode,
+	response::sse::{Event, Sse},
+	routing::get,
+};
 use eyre::{Result, WrapErr};
+use futures_util::{Stream, stream};
 use gmaps_optimal_placement::Work;
 use gmaps_optimal_placement_core::{Area, Category, Definition};
 use leptos::prelude::*;
+use tokio::{
+	sync::{Notify, watch},
+	time::{sleep, timeout},
+};
 
 /// A `Work` per build: the CLI's holds a read-only sqlite connection, which does not cross threads.
 pub type Works = Arc<dyn Fn() -> Result<Work> + Send + Sync>;
@@ -21,11 +32,12 @@ type Slot = Arc<tokio::sync::Mutex<Option<axum::body::Bytes>>>;
 type Pool = Arc<HashMap<(Option<String>, String), (Definition, Slot)>>;
 
 /// `categories` and `locations` are the two axes, each by the label the picker shows. `site` is
-/// where `wasm-bindgen` put the client, as `pkg/`.
-pub fn serve(addr: SocketAddr, site: PathBuf, maps_key: String, categories: Vec<(String, Category)>, locations: Vec<(String, Area)>, works: Works) -> Result<()> {
+/// where `wasm-bindgen` put the client, as `pkg/`. `open` opens the page in the default browser, and
+/// the server and the pages on it then end together.
+pub fn serve(addr: SocketAddr, site: PathBuf, maps_key: String, categories: Vec<(String, Category)>, locations: Vec<(String, Area)>, works: Works, open: bool) -> Result<()> {
 	let pkg = site.join("pkg");
 	let built = pkg.join("gmaps_optimal_placement_web.js");
-	eyre::ensure!(built.exists(), "no client build at {} — the flake's default app builds it", built.display());
+	eyre::ensure!(built.exists(), "no client build at {} — the flake's `dev` app builds it", built.display());
 	eyre::ensure!(!locations.is_empty(), "no location to serve");
 
 	let mut pool = HashMap::new();
@@ -42,13 +54,17 @@ pub fn serve(addr: SocketAddr, site: PathBuf, maps_key: String, categories: Vec<
 	})
 	.to_string();
 	let (traded, bare) = ((pool.clone(), works.clone()), (pool, works));
-	let api = Router::new()
+	let pages = open.then(Pages::default);
+	let mut api = Router::new()
 		.route("/studies.json", get(move || std::future::ready(json(axes.clone()))))
 		.route(
 			"/payload/{category}/{location}",
 			get(move |UrlPath((c, l)): UrlPath<(String, String)>| payload(traded.0.clone(), traded.1.clone(), (Some(c), l))),
 		)
 		.route("/place/{location}", get(move |UrlPath(l): UrlPath<String>| payload(bare.0.clone(), bare.1.clone(), (None, l))));
+	if let Some(pages) = pages.clone() {
+		api = api.route("/page", get(move || std::future::ready(pages.held())));
+	}
 
 	// leptos spawns the SSR stream through `any_spawner`, which has no executor until it is told
 	any_spawner::Executor::init_tokio().map_err(|e| eyre::eyre!("{e}"))?;
@@ -59,7 +75,7 @@ pub fn serve(addr: SocketAddr, site: PathBuf, maps_key: String, categories: Vec<
 		.build();
 	let shell = {
 		let options = options.clone();
-		move || shell(options.clone(), maps_key.clone())
+		move || shell(options.clone(), maps_key.clone(), open)
 	};
 	let mut page = Router::new().nest_service("/pkg", tower_http::services::ServeDir::new(pkg));
 	for (path, method) in leptos::server_fn::axum::server_fn_paths() {
@@ -75,11 +91,84 @@ pub fn serve(addr: SocketAddr, site: PathBuf, maps_key: String, categories: Vec<
 	let app = api.merge(page).layer(tower_http::compression::CompressionLayer::new());
 
 	let rt = tokio::runtime::Runtime::new().wrap_err("starting the server runtime")?;
-	rt.block_on(async move {
+	let ended = rt.block_on(async move {
 		let listener = tokio::net::TcpListener::bind(&addr).await.wrap_err_with(|| format!("binding {addr}"))?;
-		eprintln!("{} categories over {} locations are at http://{}", categories.len(), locations.len(), listener.local_addr()?);
-		axum::serve(listener, app.into_make_service()).await.wrap_err("serving")
-	})
+		let url = format!("http://{}", listener.local_addr()?);
+		eprintln!("{} categories over {} locations are at {url}", categories.len(), locations.len());
+		let served = async { axum::serve(listener, app.into_make_service()).await.wrap_err("serving") };
+		match pages {
+			None => served.await,
+			Some(pages) => tokio::select! {
+				r = served => r,
+				r = pages.ended(&url) => r,
+			},
+		}
+	});
+	rt.shutdown_background(); // dropping it would wait for a build under way
+	ended
+}
+
+/// The pages open on a server that opened the first of them, each one a receiver.
+#[derive(Clone, Default)]
+struct Pages {
+	close: watch::Sender<()>,
+	opened: Arc<Notify>,
+}
+
+impl Pages {
+	/// How long a reload may leave the server with no page.
+	const RELOAD: Duration = Duration::from_secs(3);
+
+	/// Held by a page for as long as it is open; an event on it is the word to close.
+	fn held(&self) -> Sse<impl Stream<Item = Result<Event, Infallible>> + use<>> {
+		let page = self.close.subscribe();
+		self.opened.notify_one();
+		Sse::new(stream::unfold(page, |mut page| async {
+			page.changed().await.expect("the route holds a sender");
+			Some((Ok(Event::default().data("close")), page))
+		}))
+	}
+
+	/// Opens `url`, and returns once every page is closed, by the user or on SIGINT.
+	async fn ended(&self, url: &str) -> Result<()> {
+		let mut opener = tokio::process::Command::new("xdg-open")
+			.arg(url)
+			.stdin(Stdio::null())
+			.process_group(0) // it may become the browser itself, which the terminal's SIGINT would end whole
+			.spawn()
+			.wrap_err("running xdg-open")?;
+		let unopened = async {
+			let status = opener.wait().await.wrap_err("waiting for xdg-open")?;
+			eyre::ensure!(status.success(), "xdg-open {url}: {status}");
+			std::future::pending().await
+		};
+		let left = async {
+			self.opened.notified().await;
+			loop {
+				self.close.closed().await;
+				sleep(Self::RELOAD).await;
+				if self.close.receiver_count() == 0 {
+					break;
+				}
+			}
+		};
+		tokio::select! {
+			r = unopened => r,
+			() = left => {
+				eprintln!("closed in the browser");
+				Ok(())
+			}
+			r = tokio::signal::ctrl_c() => {
+				r.wrap_err("listening for SIGINT")?;
+				self.close.send_replace(());
+				// a browser lets a script close only a page with nothing behind it in its history
+				if timeout(Duration::from_secs(2), self.close.closed()).await.is_err() {
+					eprintln!("the browser keeps a page open");
+				}
+				Ok(())
+			}
+		}
+	}
 }
 
 /// Built on the first tab that asks for it, and kept. A failure is the eyre chain, which the page
@@ -115,7 +204,7 @@ fn json<T>(body: T) -> ([(axum::http::HeaderName, &'static str); 1], T) {
 
 /// `map_core.js` awaits `__mapsReady` before it touches `google.maps`, so the callback the Maps
 /// bootstrap fires is a promise resolver rather than an entry point — nothing races the wasm.
-fn shell(options: LeptosOptions, key: String) -> impl IntoView {
+fn shell(options: LeptosOptions, key: String, open: bool) -> impl IntoView {
 	let maps = format!("https://maps.googleapis.com/maps/api/js?key={key}&callback=__gmapsCb&loading=async");
 	view! {
 		<!DOCTYPE html>
@@ -127,6 +216,11 @@ fn shell(options: LeptosOptions, key: String) -> impl IntoView {
 				{leptos::html::style().inner_html(include_str!(concat!(env!("OUT_DIR"), "/style.css")))}
 				{leptos::html::script()
 					.inner_html("window.__mapsReady = new Promise(r => { window.__gmapsCb = r; });")}
+				{open
+					.then(|| {
+						leptos::html::script()
+							.inner_html("new EventSource('/page').onmessage = () => window.close();")
+					})}
 				{leptos::html::script().attr("async", "").attr("src", maps)}
 				<HydrationScripts options islands=true />
 			</head>

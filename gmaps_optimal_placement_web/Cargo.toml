@@ -26,6 +26,7 @@ ssr = [
     "dep:any_spawner",
     "dep:axum",
     "dep:eyre",
+    "dep:futures-util",
     "dep:gmaps_optimal_placement",
     "dep:leptos_axum",
     "dep:tokio",
@@ -43,6 +44,7 @@ axum = { workspace = true, optional = true }
 console_error_panic_hook = { workspace = true, optional = true }
 ev_lib = { workspace = true, features = ["uikit_leptos"] }
 eyre = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 gloo-net = { workspace = true, optional = true }
 gmaps_optimal_placement = { workspace = true, optional = true }
 gmaps_optimal_placement_core.workspace = true
