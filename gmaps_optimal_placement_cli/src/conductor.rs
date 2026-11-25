@@ -52,60 +52,6 @@ pub struct Conductor {
 	/// One at a time: two would each write the copy the other read.
 	pub turn: Mutex<()>,
 }
-
-impl Buyer for Conductor {
-	fn quote(&self, def: &Definition) -> Result<Quote> {
-		let study = gmaps_optimal_placement::load(def)?;
-		let held = (self.works)()?;
-		study.asks(&held)?;
-		let searches = study.asks(&(self.works)()?.since(Some(SystemTime::now())))?.len();
-		let tokens: Tokens = serde_json::from_str(&self.api("/api/v1/tokens", None)?).wrap_err("the conductor's word on the tokens held")?;
-		Ok(Quote {
-			searches,
-			price: tokens.prices.placement_search,
-			balance: tokens.balance,
-			oldest_days: held.age(Kind::Inventory).map(|a| a.oldest.as_secs_f64() / 86_400.),
-		})
-	}
-
-	fn run(&self, def: &Definition) -> Result<()> {
-		let turn = self.turn.lock().map_err(|_| eyre!("an earlier run panicked: what it left of the copy is not known"))?;
-		let ended = self.api("/api/v1/placement/pull", Some(def))?;
-		let said = |field: &str| ended.lines().find_map(|l| l.strip_prefix(field));
-		match said("event: ") {
-			Some("pulled") => {}
-			Some("refused") => bail!("the conductor refused to run {}: {}", def.name(), said("data: ").unwrap_or_default()),
-			_ => bail!("the conductor's pull of {} ended without a word; run again, it buys what this did not", def.name()),
-		}
-		let got = Rc::<RefCell<Vec<Answer>>>::default();
-		let work = Work::at(
-			&self.dir,
-			Box::new(Bought {
-				origin: self.origin()?.to_owned(),
-				got: got.clone(),
-			}),
-		);
-		let taken = gmaps_optimal_placement::load(def)?.asks(&work);
-		// what did arrive is kept, whether the rest did or not
-		held::keep(&self.copy, &got.borrow())?;
-		drop(turn);
-		let lacking = taken
-			.wrap_err_with(|| {
-				format!(
-					"{} is bought and the conductor's; a restore of its copy ({}) brings what did not arrive",
-					def.name(),
-					self.copy.display()
-				)
-			})?
-			.len();
-		ensure!(
-			lacking == 0,
-			"the conductor bought {}, and {lacking} of the searches it is built from here are not among what it holds: it runs another sweep than this build",
-			def.name()
-		);
-		Ok(())
-	}
-}
 impl Conductor {
 	fn origin(&self) -> Result<&str> {
 		self.origin
@@ -191,6 +137,60 @@ impl Conductor {
 			.and_then(|mut f| f.write_all(access_token.as_bytes()))
 			.wrap_err_with(|| format!("writing {}", self.session.display()))?;
 		Ok(access_token)
+	}
+}
+
+impl Buyer for Conductor {
+	fn quote(&self, def: &Definition) -> Result<Quote> {
+		let study = gmaps_optimal_placement::load(def)?;
+		let held = (self.works)()?;
+		study.asks(&held)?;
+		let searches = study.asks(&(self.works)()?.since(Some(SystemTime::now())))?.len();
+		let tokens: Tokens = serde_json::from_str(&self.api("/api/v1/tokens", None)?).wrap_err("the conductor's word on the tokens held")?;
+		Ok(Quote {
+			searches,
+			price: tokens.prices.placement_search,
+			balance: tokens.balance,
+			oldest_days: held.age(Kind::Inventory).map(|a| a.oldest.as_secs_f64() / 86_400.),
+		})
+	}
+
+	fn run(&self, def: &Definition) -> Result<()> {
+		let turn = self.turn.lock().map_err(|_| eyre!("an earlier run panicked: what it left of the copy is not known"))?;
+		let ended = self.api("/api/v1/placement/pull", Some(def))?;
+		let said = |field: &str| ended.lines().find_map(|l| l.strip_prefix(field));
+		match said("event: ") {
+			Some("pulled") => {}
+			Some("refused") => bail!("the conductor refused to run {}: {}", def.name(), said("data: ").unwrap_or_default()),
+			_ => bail!("the conductor's pull of {} ended without a word; run again, it buys what this did not", def.name()),
+		}
+		let got = Rc::<RefCell<Vec<Answer>>>::default();
+		let work = Work::at(
+			&self.dir,
+			Box::new(Bought {
+				origin: self.origin()?.to_owned(),
+				got: got.clone(),
+			}),
+		);
+		let taken = gmaps_optimal_placement::load(def)?.asks(&work);
+		// what did arrive is kept, whether the rest did or not
+		held::keep(&self.copy, &got.borrow())?;
+		drop(turn);
+		let lacking = taken
+			.wrap_err_with(|| {
+				format!(
+					"{} is bought and the conductor's; a restore of its copy ({}) brings what did not arrive",
+					def.name(),
+					self.copy.display()
+				)
+			})?
+			.len();
+		ensure!(
+			lacking == 0,
+			"the conductor bought {}, and {lacking} of the searches it is built from here are not among what it holds: it runs another sweep than this build",
+			def.name()
+		);
+		Ok(())
 	}
 }
 
