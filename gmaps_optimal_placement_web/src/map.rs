@@ -63,9 +63,12 @@ pub struct State {
 	pub picker: RwSignal<Option<Pool>>,
 	/// A run and what it buys, until it is confirmed or not.
 	pub confirm: RwSignal<Option<(At, Quote)>>,
-	/// The server was told a run needs no confirming.
-	#[cfg(feature = "hydrate")]
+	/// The server was told a run needs no confirming, and that the panel may pull.
 	pub certain: RwSignal<bool>,
+	/// A run is under way.
+	pub running: RwSignal<bool>,
+	/// How far back is old, as typed: a `Timeframe`, when it parses. Global, like the opacity.
+	pub older: RwSignal<String>,
 	pub settings: RwSignal<bool>,
 	pub keys: RwSignal<Keymap>,
 	/// Which binding the settings panel is waiting on. A clicked button does not take focus in every
@@ -109,8 +112,9 @@ impl State {
 			locations: RwSignal::new(Vec::new()),
 			picker: RwSignal::new(None),
 			confirm: RwSignal::new(None),
-			#[cfg(feature = "hydrate")]
 			certain: RwSignal::new(false),
+			running: RwSignal::new(false),
+			older: RwSignal::new(String::new()), // the server says
 			settings: RwSignal::new(false),
 			keys: RwSignal::new(Keymap::default()),
 			arming: RwSignal::new(None),
@@ -503,6 +507,7 @@ pub fn MapView() -> impl IntoView {
 					},
 				)
 			}}
+			<crate::run::Pull state=s />
 		</div>
 
 		{move || s.report.get().map(|r| view! { <crate::pins::Card state=s report=r /> })}
@@ -554,6 +559,7 @@ fn age_chart(ages: &gmaps_optimal_placement_core::model::Ages) -> impl IntoView 
 #[cfg(not(feature = "hydrate"))]
 mod imp {
 	use super::State;
+	use crate::run::Again;
 
 	/// Server-side the island renders its empty shell; nothing runs until the wasm lands.
 	pub fn wire(_: State) {}
@@ -562,7 +568,7 @@ mod imp {
 		None
 	}
 	pub fn quote(_: State, _: (Option<String>, String)) {}
-	pub fn run(_: State, _: (Option<String>, String)) {}
+	pub fn run(_: State, _: (Option<String>, String), _: Again) {}
 	pub fn activate(_: State, _: usize) {}
 	pub fn close(_: State, _: usize) {}
 }
@@ -577,7 +583,11 @@ mod imp {
 	use wasm_bindgen::{closure::WasmClosure, prelude::*};
 
 	use super::{State, Tab};
-	use crate::{pins::Pin, run::Quote, tabs::Pool};
+	use crate::{
+		pins::Pin,
+		run::{Again, Quote},
+		tabs::Pool,
+	};
 
 	const YELLOW: &str = "#ffd400";
 
@@ -697,6 +707,7 @@ mod imp {
 		categories: Vec<String>,
 		locations: Vec<String>,
 		certain: bool,
+		old: String,
 	}
 
 	/// The axes and the saved keys; the first study is picked the way every later one is.
@@ -708,6 +719,7 @@ mod imp {
 		s.categories.set(served.categories);
 		s.locations.set(served.locations);
 		s.certain.set(served.certain);
+		s.older.set(served.old);
 		match crate::tabs::load_keys().await {
 			Ok(Some(k)) => s.keys.set(k),
 			Ok(None) => {}
@@ -735,7 +747,7 @@ mod imp {
 			Some(t) => pair("payload", t, &at.1),
 			None => format!("/place/{}", js_sys::encode_uri_component(&at.1)),
 		};
-		built(s, at, text(gloo_net::http::Request::get(&url)).await)
+		built(s, at, text(gloo_net::http::Request::get(&url).build()).await)
 	}
 
 	fn named((trade, location): &(Option<String>, String)) -> String {
@@ -849,12 +861,12 @@ mod imp {
 		wasm_bindgen_futures::spawn_local(async move {
 			let trade = at.0.clone().expect("Run is disabled without a category");
 			s.banner.set(Some(format!("pricing {} …", named(&at))));
-			let quote = text(gloo_net::http::Request::post(&pair("quote", &trade, &at.1)))
+			let quote = text(gloo_net::http::Request::post(&pair("quote", &trade, &at.1)).build())
 				.await
 				.and_then(|json| serde_json::from_str::<Quote>(&json).map_err(|e| format!("it did not parse — {e}")));
 			match quote {
 				Err(e) => s.banner.set(Some(format!("⚠ {} — {e}", named(&at)))),
-				Ok(_) if s.certain.get_untracked() => run(s, at),
+				Ok(_) if s.certain.get_untracked() => run(s, at, Again::Every),
 				Ok(quote) => {
 					s.banner.set(None);
 					s.confirm.set(Some((at, quote)));
@@ -863,12 +875,14 @@ mod imp {
 		});
 	}
 
-	/// `at` bought, into its tab.
-	pub fn run(s: State, at: (Option<String>, String)) {
+	/// `at` bought, and `again` of what is held of it, into its tab.
+	pub fn run(s: State, at: (Option<String>, String), again: Again) {
 		wasm_bindgen_futures::spawn_local(async move {
 			let trade = at.0.clone().expect("Run is disabled without a category");
 			s.banner.set(Some(format!("running {}: the conductor buys it, which takes minutes …", named(&at))));
-			let answer = text(gloo_net::http::Request::post(&pair("run", &trade, &at.1))).await;
+			s.running.set(true);
+			let answer = text(gloo_net::http::Request::post(&pair("run", &trade, &at.1)).json(&again)).await;
+			s.running.set(false);
 			let Some(tab) = built(s, at.clone(), answer) else { return };
 			stash(s);
 			let i = match s.tabs.with_untracked(|v| v.iter().position(|t| t.at == at)) {
@@ -1019,11 +1033,11 @@ mod imp {
 	}
 
 	async fn get<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
-		serde_json::from_str(&text(gloo_net::http::Request::get(url)).await?).map_err(|e| format!("it did not parse — {e}"))
+		serde_json::from_str(&text(gloo_net::http::Request::get(url).build()).await?).map_err(|e| format!("it did not parse — {e}"))
 	}
 
-	async fn text(req: gloo_net::http::RequestBuilder) -> Result<String, String> {
-		match req.send().await {
+	async fn text(req: Result<gloo_net::http::Request, gloo_net::Error>) -> Result<String, String> {
+		match req.map_err(|e| e.to_string())?.send().await {
 			Err(e) => Err(e.to_string()),
 			Ok(r) if !r.ok() => Err(r.text().await.unwrap_or_else(|_| r.status_text())),
 			Ok(r) => r.text().await.map_err(|e| format!("it never arrived whole — {e}")),

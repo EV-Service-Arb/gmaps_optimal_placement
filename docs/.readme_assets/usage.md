@@ -26,7 +26,7 @@ another as a tab, `f` to find an open one; Run buys the pair, or updates it. Rig
 ```sh
 nix run .#dev                # every location under every category the work dir carries
 nix run .#dev -- -c gcid:plumber
-nix run .#dev -- --spend-real-quota-i-am-certain # Run asks nothing first
+nix run .#dev -- --spend-real-quota-i-am-certain # Run asks nothing first; the panel pulls what is lacking, refreshes what is old
 nix run .#dev -- --open      # in the browser: closing it there ends the server, ^C closes it there
 nix run .#help
 ```

@@ -6,7 +6,7 @@ fetched. A study run in the GUI is bought by the conductor (settings' `conductor
 in to in the browser, once), and the copy then takes those answers of it; nothing is bought here.
 
 ```sh
-gmaps_optimal_placement view     [-c <category>] --port <p> --site <dir> [-o] # the GUI; --spend-real-quota-i-am-certain: a run asks nothing first
+gmaps_optimal_placement view     [-c <category>] --port <p> --site <dir> [-o] # the GUI; --spend-real-quota-i-am-certain: a run asks nothing first, the panel pulls and refreshes
 gmaps_optimal_placement fit      [-c <category>]                         # refit rank::COEF
 gmaps_optimal_placement strength [-c <category>]                         # cross-validate the entrants
 gmaps_optimal_placement misc <country> <tally>                           # which towns are worth a study

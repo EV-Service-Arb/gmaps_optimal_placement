@@ -68,9 +68,9 @@ toml = "1.2.1"
 # core's types in the overlay's .d.ts
 tsify = "0.5.8"
 ureq = "3.5.2"
-# the CLI's own settings, and `Timeframe` for the cache ages. Only the CLI depends on it: `_sources`
-# is handed resolved durations, so the library and the wasm build stay clear of it.
-v_utils = { version = "=2.18.0", default-features = false, features = ["cli", "macros"] }
+# the CLI's own settings, and `Timeframe` for the ages, the GUI's server included. `_sources` and the page are
+# handed resolved durations, so the library and the wasm build stay clear of it.
+v_utils = { version = "=2.18.0", default-features = false }
 wasm-bindgen = "=0.2.129"
 zip = "9.8.1"
 

@@ -18,14 +18,13 @@
 //! Both fields are live at once, so a pairing is two choices in either order — which is what a step
 //! sequence could not do, having already spent the first choice by the time the second is on
 //! screen. Neither field loads anything on its own; Load spends the pair, and marks whichever
-//! field is still empty. Run buys the pair (`run`), then loads it. Both open on the active tab's.
+//! field is still empty. Run buys the pair again, whole (`run`), then loads it. Both open on the active tab's.
 //!
 //! [`NO_TRADE`] sits at the end of the category field rather than at its head: a city on its own is the
 //! cheap question, not the usual one, and the highlight opens on whatever a field's first row is.
 //!
 //! Chrome consumes `Ctrl+T`, `Ctrl+W` and `Ctrl+1..9` before a page sees them, so the defaults are
-//! bare keys. The map affords it: its only text inputs are the picker's, and the keymap stands aside
-//! while one has the caret.
+//! bare keys. The map affords it: the keymap stands aside while a text input has the caret.
 #[cfg(feature = "ssr")]
 use std::path::PathBuf;
 
@@ -135,7 +134,9 @@ pub fn TabBar(state: State) -> impl IntoView {
 								class:on=move || state.active.get() == i
 								on:click=move |_| crate::map::activate(state, i)
 							>
-								{t.label}
+								<span class="name" title=t.label.clone()>
+									{t.label.clone()}
+								</span>
 								<span
 									class="x"
 									title="close"
@@ -273,7 +274,7 @@ pub fn Picker(state: State, pool: Pool) -> impl IntoView {
 					<Button on_click=Callback::new(load)>"Load"</Button>
 					<Button
 						variant=ButtonVariant::Outline
-						title="buy what this study is built from: a new one, or again over answers that aged"
+						title="buy everything this study is built from, whatever of it is held"
 						disabled=Signal::derive(move || trade.with(|t| matches!(t, Some(None))))
 						on_click=Callback::new(run)
 					>

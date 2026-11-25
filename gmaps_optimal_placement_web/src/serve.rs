@@ -6,7 +6,7 @@
 use std::{collections::HashMap, convert::Infallible, net::SocketAddr, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
 
 use axum::{
-	Router,
+	Json, Router,
 	extract::Path as UrlPath,
 	http::{HeaderMap, StatusCode, header},
 	response::sse::{Event, Sse},
@@ -21,8 +21,9 @@ use tokio::{
 	sync::{Notify, watch},
 	time::{sleep, timeout},
 };
+use v_utils::Timeframe;
 
-use crate::run::Buyer;
+use crate::run::{Again, Buyer};
 
 /// A `Work` per build: the CLI's holds a read-only sqlite connection, which does not cross threads.
 pub type Works = Arc<dyn Fn() -> Result<Work> + Send + Sync>;
@@ -35,7 +36,8 @@ type Pool = Arc<HashMap<(Option<String>, String), (Definition, Slot)>>;
 
 /// `categories` and `locations` are the two axes, each by the label the picker shows. `site` is
 /// where `wasm-bindgen` put the client, as `pkg/`. `open` opens the page in the default browser, and
-/// the server and the pages on it then end together. `certain`: a run is not confirmed.
+/// the server and the pages on it then end together. `certain`: a run is not confirmed, and the panel
+/// may pull. `old`: how far back is, until the page says otherwise.
 #[expect(clippy::too_many_arguments, reason = "the CLI's one call")]
 pub fn serve(
 	addr: SocketAddr,
@@ -46,6 +48,7 @@ pub fn serve(
 	works: Works,
 	buyer: Arc<dyn Buyer>,
 	certain: bool,
+	old: Timeframe,
 	open: bool,
 ) -> Result<()> {
 	let pkg = site.join("pkg");
@@ -65,6 +68,7 @@ pub fn serve(
 		"categories": categories.iter().map(|(k, _)| k).collect::<Vec<_>>(),
 		"locations": locations.iter().map(|(l, _)| l).collect::<Vec<_>>(),
 		"certain": certain,
+		"old": old,
 	})
 	.to_string();
 	let ours = format!("http://{addr}");
@@ -90,14 +94,14 @@ pub fn serve(
 		)
 		.route(
 			"/run/{category}/{location}",
-			post(move |UrlPath((c, l)): UrlPath<(String, String)>, headers: HeaderMap| {
+			post(move |UrlPath((c, l)): UrlPath<(String, String)>, headers: HeaderMap, Json(again): Json<Again>| {
 				let (pool, works, buyer, ours) = ran.clone();
 				async move {
 					let (def, slot) = spending(&pool, &ours, &headers, (Some(c), l))?;
 					let mut slot = slot.lock_owned().await;
 					// the slot goes with it: a page that left does not stop a run
 					let payload = blocking(format!("running {}", def.name()), move || {
-						buyer.run(&def)?;
+						buyer.run(&def, again)?;
 						let payload = build(&def, &works)?;
 						// any other may share a tile with it; one locked is being built or run
 						for (_, other) in pool.values() {

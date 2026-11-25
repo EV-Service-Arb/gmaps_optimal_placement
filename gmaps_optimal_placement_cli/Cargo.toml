@@ -31,7 +31,7 @@ serde_json.workspace = true
 sha2.workspace = true
 smart-default.workspace = true
 ureq = { workspace = true, features = ["json"] }
-v_utils.workspace = true
+v_utils = { workspace = true, features = ["cli", "macros"] }
 
 [lints]
 workspace = true

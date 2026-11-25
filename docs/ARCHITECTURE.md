@@ -146,11 +146,12 @@ asks again, since whether another page is behind one is known only once it is an
 lacking it calls `build`. Placement never counts a purchase.
 
 A study run in the CLI's GUI is the conductor's pull of its whole `Definition`, at the tokens of
-whoever signed this machine in to it; the conductor need keep neither the area nor the category.
+whoever signed this machine in to it; the conductor need keep neither the area nor the category. It buys
+what prod lacks, and asks again of what prod holds: everything, what is older than the GUI says, or nothing.
 
-`Work::since` is the pull's: an answer fetched before it is lacking. The host keeps when the first
-pull since the study's last whole one began, and forgets it once one ends whole, so what a stopped
-pull paid for is served to its retry and a refunded failure is never bought twice.
+`Work::since` is the pull's: an answer fetched before it is lacking. Of a pull that asks everything again,
+the host keeps when the first since the study's last whole one began, and forgets it once one ends whole,
+so what a stopped pull paid for is served to its retry and a refunded failure is never bought twice.
 
 Every `asks` and `build` keeps the definition under `studies/<id>.json`, whichever host built it:
 that is what `fit` harvests. Its name is its bytes' SHA-256, which tells a definition of another

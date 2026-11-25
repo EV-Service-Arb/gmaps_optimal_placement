@@ -73,7 +73,7 @@ enum Cmd {
 		/// Open it in the default browser; closing it there ends this, and SIGINT closes it there
 		#[arg(short, long)]
 		open: bool,
-		/// Run a study without asking first what it buys
+		/// Run a study without asking first what it buys, and let the panel pull and refresh one
 		#[arg(long)]
 		spend_real_quota_i_am_certain: bool,
 	},
@@ -141,7 +141,7 @@ fn main() -> Result<()> {
 			let key = cfg.maps_key.ok_or_else(|| eyre::eyre!("the GUI draws on Google Maps, and settings carry no `maps_key`"))?;
 			let studied = studied(&work.path().join("studies"))?;
 			let (categories, locations) = (categories(&of, &studied)?, locations(&studied));
-			let works: gmaps_optimal_placement_web::Works = Arc::new(works);
+			let (works, old): (gmaps_optimal_placement_web::Works, _) = (Arc::new(works), cfg.age.inventory);
 			let buyer = Arc::new(conductor::Conductor {
 				origin: cfg.conductor,
 				session: v_utils::xdg_state_file!("conductor_session"),
@@ -150,7 +150,7 @@ fn main() -> Result<()> {
 				works: works.clone(),
 				turn: Mutex::default(),
 			});
-			gmaps_optimal_placement_web::serve(SocketAddr::from(([127, 0, 0, 1], port)), site, key, categories, locations, works, buyer, certain, open)
+			gmaps_optimal_placement_web::serve(SocketAddr::from(([127, 0, 0, 1], port)), site, key, categories, locations, works, buyer, certain, old, open)
 		}
 		Cmd::Misc { country, tally, per, floor, out } => {
 			let compiled = gmaps_optimal_placement_misc::compile(country, tally, &per, floor, &work)?;

@@ -2396,6 +2396,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower-http 0.7.1",
+ "v_utils",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

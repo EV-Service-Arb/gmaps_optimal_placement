@@ -4,7 +4,8 @@
 //!
 //! ```text
 //! quote ─ GET /api/v1/tokens                     the price of a search, the balance
-//! run   ─ POST /api/v1/placement/pull            the Definition, bought whole and charged; its end an event
+//! run   ─ POST /api/v1/placement/pull            the Definition and which held answers are asked again,
+//!                                                bought and charged; its end an event
 //!       └ GET /api/queries_cache/gop/{key}       each answer it is built from ─▶ the copy
 //! 401   ─ /mcp/{register,authorize,token}        signed in to in the browser, once
 //! ```
@@ -27,7 +28,7 @@ use eyre::{Result, WrapErr, bail, ensure, eyre};
 use gmaps_optimal_placement::{Held, Work};
 use gmaps_optimal_placement_core::{Ask, Definition, SEARCH_TEXT};
 use gmaps_optimal_placement_sources::work::Kind;
-use gmaps_optimal_placement_web::{Buyer, Quote, Works};
+use gmaps_optimal_placement_web::{Again, Buyer, Quote, Works};
 use sa_core::queries_cache::{Key, PREFIX, Scheme, Stored, gop};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -60,7 +61,7 @@ impl Conductor {
 	}
 
 	/// As who is signed in, who is asked to when nobody is: a POST of `body`, or a GET.
-	fn api(&self, path: &str, body: Option<&Definition>) -> Result<String> {
+	fn api(&self, path: &str, body: Option<&serde_json::Value>) -> Result<String> {
 		let url = format!("{}{path}", self.origin()?);
 		let mut signed_in = false;
 		loop {
@@ -74,7 +75,7 @@ impl Conductor {
 			};
 			let bearer = format!("Bearer {bearer}");
 			let mut res = match body {
-				Some(def) => agent(PULL).post(&url).header("authorization", &bearer).send_json(def),
+				Some(body) => agent(PULL).post(&url).header("authorization", &bearer).send_json(body),
 				None => agent(Duration::from_secs(30)).get(&url).header("authorization", &bearer).call(),
 			}
 			.wrap_err_with(|| url.clone())?;
@@ -155,9 +156,14 @@ impl Buyer for Conductor {
 		})
 	}
 
-	fn run(&self, def: &Definition) -> Result<()> {
+	fn run(&self, def: &Definition, again: Again) -> Result<()> {
+		let again = match again {
+			Again::Every => serde_json::json!("every"),
+			Again::Older(d) => serde_json::json!({ "older_s": u32::try_from(d.as_secs()).wrap_err_with(|| format!("{d:?} is further back than the conductor takes"))? }),
+			Again::Nothing => serde_json::json!("nothing"),
+		};
 		let turn = self.turn.lock().map_err(|_| eyre!("an earlier run panicked: what it left of the copy is not known"))?;
-		let ended = self.api("/api/v1/placement/pull", Some(def))?;
+		let ended = self.api("/api/v1/placement/pull", Some(&serde_json::json!({ "definition": def, "again": again })))?;
 		let said = |field: &str| ended.lines().find_map(|l| l.strip_prefix(field));
 		match said("event: ") {
 			Some("pulled") => {}

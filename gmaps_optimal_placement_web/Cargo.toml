@@ -31,6 +31,7 @@ ssr = [
     "dep:leptos_axum",
     "dep:tokio",
     "dep:tower-http",
+    "dep:v_utils",
     "dep:xdg",
     "leptos/ssr",
 ]
@@ -56,6 +57,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
+v_utils = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true }

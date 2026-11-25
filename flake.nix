@@ -123,18 +123,27 @@
             # shellcheck disable=SC2016
             printf '#!/bin/sh\nexec curl -sfL -o /dev/null "$1"\n' > "$own/xdg-open"
             chmod +x "$own/xdg-open"
-            PATH="$own:$PATH" XDG_STATE_HOME="$own" cargo run -p gmaps_optimal_placement_cli -- \
-              --queries-cache "$own/panel.db" --conductor "http://127.0.0.1:$SMOKE_CONDUCTOR_PORT" \
-              view --port "$port" --site target/smoke "$@" &
-            server=$!
+            server=
             trap 'kill $server 2>/dev/null || true; rm -rf "$own"' EXIT
-            up=
-            for _ in $(seq 120); do
-              curl -sf -o /dev/null "http://127.0.0.1:$port/pkg/gmaps_optimal_placement_web.js" && { up=1; break; }
-              sleep 1
-            done
-            [ -n "$up" ] || { echo "server never came up" >&2; exit 1; }
-            node examples/smoke.js "http://127.0.0.1:$port/"
+            smoked() {
+              page=$1
+              shift
+              PATH="$own:$PATH" XDG_STATE_HOME="$own" target/debug/gmaps_optimal_placement \
+                --queries-cache "$own/panel.db" --conductor "http://127.0.0.1:$SMOKE_CONDUCTOR_PORT" \
+                view --port "$port" --site target/smoke "$@" &
+              server=$!
+              up=
+              for _ in $(seq 120); do
+                curl -sf -o /dev/null "http://127.0.0.1:$port/pkg/gmaps_optimal_placement_web.js" && { up=1; break; }
+                sleep 1
+              done
+              [ -n "$up" ] || { echo "server never came up" >&2; exit 1; }
+              node examples/smoke.js "http://127.0.0.1:$port/" "$page"
+              kill "$server"
+              wait "$server" || true # killed
+            }
+            smoked asked "$@"
+            smoked certain --spend-real-quota-i-am-certain "$@"
             node examples/smoke_open.js target/debug/gmaps_optimal_placement view --port "$((port + 1))" --site target/smoke "$@"
           '';
         };
@@ -147,7 +156,8 @@
                                             studies are over, under every category they carry, or on its own;
                                             category and location are picked side by side, `t` opens another
                                             as a tab over the same map. What is not held is named; Run has the
-                                            conductor buy it, confirmed first unless --spend-real-quota-i-am-certain.
+                                            conductor buy it, confirmed first unless --spend-real-quota-i-am-certain,
+                                            with which the panel pulls what is lacking and refreshes what is old.
                                             --open: in the default browser; closing it there ends the server,
                                             ^C closes it there
             nix run .#smoke                 the GUI in headless Chromium: pick a pairing, see the map paint;

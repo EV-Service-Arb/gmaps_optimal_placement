@@ -4,7 +4,8 @@ body{font:13px/1.45 system-ui,sans-serif} /* not on html: the uikit is sized in 
 #tabs{position:absolute;z-index:8;inset:0 0 auto;height:30px;display:flex;align-items:stretch;
       background:#14171c;border-bottom:1px solid #2a2f38;color:#b8c0cc;font-size:12px}
 .tab{display:flex;align-items:center;gap:6px;padding:0 8px 0 12px;max-width:230px;cursor:pointer;
-     border-right:1px solid #2a2f38;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+     border-right:1px solid #2a2f38;white-space:nowrap}
+.tab .name{overflow:hidden;text-overflow:ellipsis}
 .tab:hover{background:#1b1e23}
 .tab.on{background:#232830;color:#fff;box-shadow:inset 0 -2px 0 #2f6df6}
 .tab .x{font-size:9px;color:#8892a0;opacity:0;transition:opacity .1s}
@@ -18,7 +19,7 @@ body{font:13px/1.45 system-ui,sans-serif} /* not on html: the uikit is sized in 
 #settings button.sec{width:64px;margin:0;font-variant-numeric:tabular-nums}
 .panel{position:absolute;z-index:5;background:#1b1e23ee;color:#e8e8ea;border-radius:8px;
        padding:10px 12px;box-shadow:0 4px 18px #000a;backdrop-filter:blur(3px)}
-#ctl{top:10px;left:10px;width:266px;max-height:calc(100% - 20px);overflow:auto}
+#ctl{top:40px;left:10px;width:266px;max-height:calc(100% - 70px);overflow:auto}
 #report{bottom:10px;left:10px;width:266px;max-height:52%;overflow:auto}
 #banner{position:absolute;z-index:7;top:40px;left:50%;transform:translateX(-50%);
         background:#4a1d1de6;color:#ffb4b4;border:1px solid #7a2b2b;border-radius:6px;padding:6px 10px;
@@ -32,10 +33,13 @@ label{display:block;margin:7px 0 2px;color:#b8c0cc;font-size:11.5px}
 select,input[type=range]{width:100%}
 select{background:#2a2f38;color:#e8e8ea;border:1px solid #3a4150;border-radius:5px;padding:4px}
 .row,.cat{display:flex;gap:8px;align-items:center;margin-top:5px}
+.older{justify-content:space-between}.older input{width:64px;background:#2a2f38;color:inherit;border:1px solid #3a4150;border-radius:5px;padding:3px 5px;font:inherit}
+.older input[aria-invalid=true]{border-color:#ff7b7b}
 .row input{margin:0}.row label,.cat label{margin:0;color:#dfe4ea;font-size:12px}
 :where(.panel) button{width:100%;margin-top:9px;background:#2f6df6;color:#fff;border:0;border-radius:5px;
        padding:7px;font-size:12px;cursor:pointer}
 :where(.panel) button:hover{background:#4b83ff}
+:where(.panel) button:disabled{opacity:.45;cursor:default}
 button.sec{background:#39404d}button.sec:hover{background:#4a5361}
 .acts{float:right;display:flex;gap:4px;margin:-2px -2px 0 6px}
 button.act{width:22px;margin:0;padding:2px 0;background:#39404d;font-size:12px;line-height:1}

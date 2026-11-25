@@ -10,15 +10,17 @@ gmaps_optimal_placement view [-c ..] --port <p> --site <dir> [--open]
           ├─ GET /payload/{category}/{location}  load(&def)?.build(&work), once per pairing
           ├─ GET /place/{location}            the same with no category: the grid alone
           ├─ POST /quote/{category}/{location}   what a run buys at least, to be confirmed; from this page alone
-          ├─ POST /run/{category}/{location}     bought (`Buyer`), and built again; from this page alone
+          ├─ POST /run/{category}/{location}     an `Again`: bought (`Buyer`), and built again; from this page alone
           ├─ GET /page                        --open: held by every page while it is open; an event closes it
           ├─ GET /pkg/*                       the client wasm (`hydrate`), built apart from the server (`ssr`)
-          └─ /api/*                           server fns: the keys, under XDG_CONFIG_HOME
+          └─ /api/*                           server fns: the keys, under XDG_CONFIG_HOME; a typed `Timeframe`, read
 ```
 
 A build is the library's `load` and `build` on a blocking thread, over a fresh `Work`, exactly as
 the conductor builds its own, and what is not held is the payload's notice. A run is the `Buyer`'s and
 goes on without the page that asked for it; every payload built before it is built again when asked for.
+The picker's Run asks everything again. The panel's Pull buys what is lacking, its Refresh what is older than
+it says besides; both only under `--spend-real-quota-i-am-certain`, and unconfirmed.
 
 A tab is one study's `Model` plus the controls as they stood when it was last left. Switching writes
 the live signals into the tab being left and reads the next one into them. There is one

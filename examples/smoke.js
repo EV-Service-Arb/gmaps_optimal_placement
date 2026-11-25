@@ -1,4 +1,6 @@
-/* Drives the GUI in headless Chromium over CDP. Run: node smoke.js <url>
+/* Drives the GUI in headless Chromium over CDP. Run: node smoke.js <url> [certain]
+ *
+ * `certain`: the server was given --spend-real-quota-i-am-certain, and the panel's pull is what is driven.
  *
  * Only what is genuinely browser-shaped lives here: the island hydrates, the picker takes a pairing,
  * the overlay paints and its dots attach. The model's own numbers are `cargo t -p
@@ -14,7 +16,8 @@ const fs = require("node:fs");
 const http = require("node:http");
 
 const URL_ = process.argv[2];
-assert(URL_, "usage: node smoke.js <url>");
+assert(URL_, "usage: node smoke.js <url> [certain]");
+const CERTAIN = process.argv[3] === "certain";
 const CATEGORY = process.env.SMOKE_CATEGORY || "Plombier·FR";
 const LOCATION = process.env.SMOKE_LOCATION || "lyon";
 const PORT = 9333;
@@ -47,7 +50,7 @@ http.createServer(async (req, res) => {
       return res.end(":\n\nevent: pulled\ndata: {}\n\n");
     }
     case "GET /api/queries_cache/gop/KEY": {
-      const { lat, lng } = conductor.pulls.at(-1).area.center;
+      const { lat, lng } = conductor.pulls.at(-1).definition.area.center;
       const places = [{ id: "smoke", displayName: { text: "Plomberie de la fumée" }, location: { latitude: lat, longitude: lng }, rating: 4.5, userRatingCount: 10 }];
       return answer(200, { answer: { places }, fetched_at: new Date().toISOString() });
     }
@@ -130,6 +133,46 @@ async function main() {
   assert(s.painted > 100, "the overlay's canvas actually painted");
   assert(s.dots > 0, "the competitors are on the map");
 
+  const top = "document.querySelector('#ctl').getBoundingClientRect().top - document.querySelector('#tabs').getBoundingClientRect().bottom";
+  assert((await evaluate(top)) >= 0, "the panel is under the tab bar, not behind it");
+  assert(await evaluate("(p => p.top >= 0 && p.bottom <= innerHeight)(document.querySelector('#ctl').getBoundingClientRect())"), "and whole on the screen");
+  const inTab = "(t => t.querySelector('.x').getBoundingClientRect().right <= t.getBoundingClientRect().right)(document.querySelector('#tabs .tab'))";
+  assert(await evaluate(inTab), "a tab's close is in it, however long its name");
+  await evaluate("document.querySelector('#pull').scrollIntoView({ block: 'end' })");
+  const refresh = "document.querySelector('#pull button.refresh')";
+  assert.equal(await evaluate(refresh + ".disabled"), !CERTAIN, "the panel spends only where the server was told it may");
+  if (CERTAIN) {
+    const say = (el, v) => evaluate("(e => { e.value = " + JSON.stringify(v) + "; e.dispatchEvent(new Event('input', { bubbles: true })); })(document.querySelector('" + el + "'))");
+    const old = () => evaluate("document.querySelector('#older').value");
+    assert.equal(await old(), "1w", "old is what the settings say");
+    await say("#pull input[type=range]", "14");
+    await sleep(300);
+    assert.equal(await old(), "1y", "the slider's end is what the input reads");
+    for (const nothing of ["soon", "0d"]) {
+      await say("#older", nothing);
+      await sleep(300);
+      assert(await evaluate(refresh + ".disabled && document.querySelector('#older').getAttribute('aria-invalid') === 'true'"), nothing + " is no age, and refreshes nothing");
+    }
+    await say("#older", "3d");
+    await sleep(300);
+    assert.equal(await evaluate("document.querySelector('#pull input[type=range]').value"), "7", "the slider follows the input");
+    fs.writeFileSync("target/smoke/pull.png", Buffer.from((await send("Page.captureScreenshot")).result.data, "base64"));
+    await evaluate(refresh + ".click()");
+    await until("!document.querySelector('#banner') && !" + refresh + ".disabled", "the refresh", 120);
+    assert.deepEqual(conductor.pulls.map(p => p.again), [{ older_s: 3 * 86400 }], "one pull, of what is old enough");
+    assert(!(await evaluate("!!document.querySelector('#confirm')")), "asked of nobody");
+    await send("Input.dispatchKeyEvent", { type: "keyDown", key: "t", text: "t" });
+    await until("!!document.querySelector('#picker')", "the picker again", 20);
+    await pick(0, "(no category");
+    await pick(1, LOCATION);
+    await evaluate("document.querySelector('#picker [data-slot=button]').click()");
+    await until("document.querySelectorAll('#tabs .tab:not(.add)').length === 2 && !document.querySelector('#pull')", "the location alone, whose grid is nobody's to buy");
+    assert.deepEqual(errors, [], "no uncaught exceptions");
+    log("\nOK — the panel's pull");
+    chrome.kill();
+    process.exit(0);
+  }
+
   // the map's corner, which no competitor sits on
   await sleep(1000);
   const at = { x: 1300, y: 700 };
@@ -174,11 +217,12 @@ async function main() {
   await decide("alert-dialog-action");
   await until("/oldest 0 d/i.test(document.querySelector('#ctl').innerText)", "a map as of the run");
   assert.equal(conductor.pulls.length, 1, "a run is one pull");
-  assert.equal(conductor.pulls[0].category.trade.name, CATEGORY.split("·")[0], "of the pairing picked");
+  assert.equal(conductor.pulls[0].definition.category.trade.name, CATEGORY.split("·")[0], "of the pairing picked");
+  assert.equal(conductor.pulls[0].again, "every", "and everything of it");
   assert.equal(await evaluate("document.querySelectorAll('#tabs .tab:not(.add)').length"), 1, "in the tab it was open in");
   assert.equal(await evaluate("document.querySelector('#banner')?.innerText ?? null"), null, "and whole");
 
-  const forged = await fetch(new URL("run/" + encodeURIComponent(CATEGORY) + "/" + LOCATION, URL_), { method: "POST", headers: { origin: "http://evil.example" } });
+  const forged = await fetch(new URL("run/" + encodeURIComponent(CATEGORY) + "/" + LOCATION, URL_), { method: "POST", headers: { origin: "http://evil.example", "content-type": "application/json" }, body: JSON.stringify("every") });
   assert.equal(forged.status, 403, "another site's page runs nothing");
 
   assert.deepEqual(errors, [], "no uncaught exceptions");
